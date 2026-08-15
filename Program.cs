@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -13,8 +11,13 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+
+#if WINDOWS
+using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 using Microsoft.Win32;
+#endif
 
 namespace NsoAlbumSync;
 
@@ -23,6 +26,7 @@ internal static class Program
 {
     private const string AppMutexName = "NSOAlbumSync_SingleInstance_Mutex_f8bb0128";
 
+#if WINDOWS
     [STAThread]
     private static void Main()
     {
@@ -40,10 +44,25 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         Application.Run(new NsoTrayAppContext());
     }
+#else
+    private static async Task Main(string[] args)
+    {
+        using var mutex = new Mutex(true, AppMutexName, out bool isNewInstance);
+        if (!isNewInstance)
+        {
+            Console.WriteLine("NSO Album Sync is already running in the background.");
+            return;
+        }
+
+        var daemon = new NsoDaemonRunner();
+        await daemon.RunAsync();
+    }
+#endif
 }
 #endregion
 
-#region System Tray Application Context
+#if WINDOWS
+#region Windows System Tray Application Context
 public class NsoTrayAppContext : ApplicationContext
 {
     private readonly NotifyIcon _trayIcon;
@@ -407,7 +426,7 @@ public class NsoTrayAppContext : ApplicationContext
 }
 #endregion
 
-#region Sign-In Interactive Dialog
+#region Sign-In Interactive Dialog (Windows)
 public class SignInForm : Form
 {
     private readonly NintendoAuthManager _authManager;
@@ -582,6 +601,118 @@ public class SignInForm : Form
     }
 }
 #endregion
+#else
+#region Cross-Platform Daemon Runner (macOS / Linux)
+public class NsoDaemonRunner
+{
+    private readonly ConfigManager _configManager;
+    private readonly NintendoAuthManager _authManager;
+    private readonly SyncEngine _syncEngine;
+
+    public NsoDaemonRunner()
+    {
+        _configManager = new ConfigManager();
+        _authManager = new NintendoAuthManager();
+        _syncEngine = new SyncEngine(_configManager, _authManager);
+    }
+
+    public async Task RunAsync()
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("========================================");
+        Console.WriteLine("   NSO Album Sync (Nintendo Switch)     ");
+        Console.WriteLine("========================================");
+        Console.ResetColor();
+
+        if (string.IsNullOrEmpty(_configManager.Config.SessionToken))
+        {
+            await RunInteractiveSetupAsync();
+        }
+
+        Console.WriteLine($"\n[NSO Album Sync] Active account: {_configManager.Config.UserNickname}");
+        Console.WriteLine($"[NSO Album Sync] Destination: {_configManager.Config.DestinationFolder}");
+        Console.WriteLine($"[NSO Album Sync] Auto-sync interval: {_configManager.Config.SyncIntervalMinutes} minutes");
+
+        // Initial Sync
+        await DoSyncAsync();
+
+        // Hourly Background Loop
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(Math.Max(1, _configManager.Config.SyncIntervalMinutes)));
+        while (await timer.WaitForNextTickAsync())
+        {
+            if (_configManager.Config.AutoSyncEnabled)
+            {
+                await DoSyncAsync();
+            }
+        }
+    }
+
+    private async Task DoSyncAsync()
+    {
+        try
+        {
+            Console.WriteLine($"\n[{DateTime.Now:HH:mm:ss}] Checking for new Switch album captures...");
+            var result = await _syncEngine.SyncAlbumAsync();
+            _configManager.Config.LastSyncTime = DateTime.UtcNow;
+            _configManager.Save();
+
+            if (result.NewDownloads > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Successfully synced {result.NewDownloads} new capture(s)!");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Album is up to date (Total on account: {result.TotalFound}).");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Sync error: {ex.Message}");
+            Console.ResetColor();
+        }
+    }
+
+    private async Task RunInteractiveSetupAsync()
+    {
+        Console.WriteLine("\n[First-Time Setup] No Nintendo Account configured.");
+        string url = _authManager.GetAuthorizeUrl();
+
+        Console.WriteLine("1. Opening browser to official Nintendo login page...");
+        NintendoAuthManager.OpenBrowser(url);
+
+        Console.WriteLine("\n2. Log in and right-click / copy the link on 'Select this person' (or redirect URL).");
+        Console.Write("Paste link here: ");
+        string? link = Console.ReadLine()?.Trim();
+
+        while (string.IsNullOrEmpty(link))
+        {
+            Console.Write("Please paste a valid redirect link: ");
+            link = Console.ReadLine()?.Trim();
+        }
+
+        Console.WriteLine("\nAuthenticating with Nintendo...");
+        var authResult = await _authManager.CompleteLoginFromInputAsync(link);
+        _configManager.Config.SessionToken = authResult.SessionToken;
+        _configManager.Config.UserNickname = authResult.UserNickname;
+
+        Console.Write($"\nWhere would you like to save captures? [Default: {_configManager.Config.DestinationFolder}]: ");
+        string? customPath = Console.ReadLine()?.Trim();
+        if (!string.IsNullOrEmpty(customPath))
+        {
+            _configManager.Config.DestinationFolder = Path.GetFullPath(customPath);
+        }
+
+        _configManager.Save();
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"\nSetup complete! Signed in as {authResult.UserNickname}.");
+        Console.ResetColor();
+    }
+}
+#endregion
+#endif
 
 #region Sync Engine & USB File Generator
 public class SyncEngine
@@ -755,6 +886,29 @@ public class NintendoAuthManager
 
         var queryString = string.Join("&", query.Select(kvp => $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
         return $"https://accounts.nintendo.com/connect/1.0.0/authorize?{queryString}";
+    }
+
+    public static void OpenBrowser(string url)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                Process.Start("open", url);
+            }
+            else
+            {
+                Process.Start("xdg-open", url);
+            }
+        }
+        catch
+        {
+            Console.WriteLine($"Please open this URL in your browser: {url}");
+        }
     }
 
     public async Task<AuthResult> CompleteLoginFromInputAsync(string input)
@@ -1350,7 +1504,8 @@ public class ConfigManager
         {
             DestinationFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Nintendo Switch Album"),
             AutoSyncEnabled = true,
-            SyncIntervalMinutes = 60
+            SyncIntervalMinutes = 60,
+            NxapiAuthClientId = "eJ8TDme0c-Z4czx5SvZabA"
         };
     }
 
@@ -1391,6 +1546,7 @@ public class ConfigManager
 }
 #endregion
 
+#if WINDOWS
 #region Helpers & Windows Registry Startup
 public static class StartupHelper
 {
@@ -1611,3 +1767,4 @@ public static class IconGenerator
     }
 }
 #endregion
+#endif
