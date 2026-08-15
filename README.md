@@ -34,21 +34,21 @@
 🛡️ **Public `nxapi-znca-api` Integration** - Zero Android emulators or rooting needed. Strictly follows maintainer guidelines with 2-hour Coral session caching, dynamic version discovery, and combined `/f` attestation.
 
 > **Pre-compiled Binaries Available!**
-> You can download ready-to-use binaries for Windows, macOS (codesigned), and Linux directly from the **[Releases](https://github.com/Dycool/nso-album-sync/releases)** page.
+> You can download ready-to-use binaries for Windows, macOS (codesigned), and Linux directly from the **[Releases](https://github.com/Dycool/NSO-Album-Sync/releases)** page.
 
 ---
 
 ## 🚀 Quick Start (Pre-compiled)
 
 **1. 🪟 Windows:**
-* Download `nso-album-sync.exe` from [**Releases](https://github.com/Dycool/nso-album-sync/releases)**.
+* Download `nso-album-sync.exe` from [**Releases](https://github.com/Dycool/NSO-Album-Sync/releases)**.
 * Double-click `nso-album-sync.exe` to launch into your System Tray.
 * Click **"🌐 1. Open Nintendo Sign-In Page"** in the one-time sign-in window.
 * Log into your Nintendo Account in your browser, right-click (or copy link) on the **"Select this person"** button, paste the link into the app, and click **"✅ Sign In & Connect"**.
 * *(Optional)* Right-click the tray icon and toggle **"🚀 Start on Boot"**.
 
 **2. 🍎 macOS & 🐧 Linux:**
-* Download the macOS (`tar.gz`) or Linux binary from [**Releases](https://github.com/Dycool/nso-album-sync/releases)**.
+* Download the macOS (`tar.gz`) or Linux binary from [**Releases](https://github.com/Dycool/NSO-Album-Sync/releases)**.
 * Extract and run `./nso-album-sync` (macOS binaries are pre-codesigned with ad-hoc signatures).
 
 ---

@@ -1452,7 +1452,7 @@ public class NxapiClient
     private const string NxapiZncaBase = "https://nxapi-znca-api.fancy.org.uk/api/znca";
     private const string DefaultNxapiAuthClientId = "eJ8TDme0c-Z4czx5SvZabA";
     private const string NxapiClientVersion = "w8zSLBsxR7rVoGJA";
-    private const string UserAgent = "nso-album-sync/1.0 (+https://github.com/dycool/nso-album-sync)";
+    private const string UserAgent = "nso-album-sync/1.0 (+https://github.com/Dycool/NSO-Album-Sync)";
 
     private readonly HttpClient _http;
     private readonly ConfigManager? _configManager;
