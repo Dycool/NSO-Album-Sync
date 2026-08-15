@@ -759,8 +759,9 @@ public class SyncEngine
             string relativePath = GetSwitchUsbPath(item);
             string fullPath = Path.Combine(destinationRoot, relativePath);
 
-            // Check if already downloaded and file exists
-            if (ledger.Contains(mediaKey) && File.Exists(fullPath))
+            // Check if already downloaded and valid file exists on disk
+            // If the user deleted the file and it is still in the cloud album, it will automatically re-download it!
+            if (ledger.Contains(mediaKey) && File.Exists(fullPath) && new FileInfo(fullPath).Length > 0)
             {
                 continue;
             }
