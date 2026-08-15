@@ -448,7 +448,7 @@ public class SignInForm : Form
     {
         Text = "Nintendo Account Sign-In - NSO Album Sync";
         Icon = IconGenerator.CreateAlbumIcon();
-        ClientSize = new Size(560, 465);
+        ClientSize = new Size(620, 485);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -459,7 +459,7 @@ public class SignInForm : Form
         var header = new Label
         {
             Text = "Nintendo Switch Online Album Sync",
-            Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+            Font = new Font("Segoe UI", 12.5f, FontStyle.Bold),
             ForeColor = Color.FromArgb(220, 20, 60),
             Location = new Point(24, 16),
             AutoSize = true
@@ -468,28 +468,28 @@ public class SignInForm : Form
         // nxapi public API terms compliance: Third-party service disclosure & explicit acknowledgement
         var disclosurePanel = new Panel
         {
-            Location = new Point(24, 46),
-            Size = new Size(512, 116),
+            Location = new Point(24, 48),
+            Size = new Size(570, 134),
             BackColor = Color.FromArgb(238, 242, 246),
             BorderStyle = BorderStyle.FixedSingle
         };
 
         var disclosureLabel = new Label
         {
-            Text = "ℹ️ Third-Party Service Disclosure:\n" +
+            Text = "Third-Party Service Disclosure:\n" +
                    "To calculate Nintendo Switch Online attestation hashes and decrypt media lists, authentication tokens and Coral requests are securely processed via the public nxapi-znca-api (fancy.org.uk) service. Tokens are kept in-memory only and never stored on remote servers.",
-            Location = new Point(10, 8),
-            Size = new Size(490, 68),
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            Location = new Point(12, 10),
+            Size = new Size(544, 82),
+            Font = new Font("Segoe UI", 8.75f, FontStyle.Regular),
             ForeColor = Color.FromArgb(60, 64, 67)
         };
 
         var acknowledgeCheck = new CheckBox
         {
             Text = "I acknowledge that tokens and requests are processed via nxapi-znca-api",
-            Location = new Point(10, 82),
-            Size = new Size(490, 24),
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+            Location = new Point(12, 96),
+            Size = new Size(544, 26),
+            Font = new Font("Segoe UI", 8.75f, FontStyle.Bold),
             ForeColor = Color.FromArgb(30, 30, 30),
             Cursor = Cursors.Hand
         };
@@ -501,16 +501,16 @@ public class SignInForm : Form
             Text = "1. Click the button below to open Nintendo's official sign-in page in your browser.\n" +
                    "2. Log in and right-click / copy the link on 'Select this person' (or copy redirect URL).\n" +
                    "3. Paste the copied link in the box below and click 'Sign In && Connect'.",
-            Location = new Point(24, 172),
-            Size = new Size(512, 62),
+            Location = new Point(24, 194),
+            Size = new Size(570, 60),
             ForeColor = Color.FromArgb(40, 40, 40)
         };
 
         _openBrowserBtn = new Button
         {
             Text = "🌐 1. Open Nintendo Sign-In Page",
-            Location = new Point(24, 242),
-            Size = new Size(512, 38),
+            Location = new Point(24, 262),
+            Size = new Size(570, 40),
             BackColor = Color.FromArgb(200, 200, 200),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
@@ -531,7 +531,7 @@ public class SignInForm : Form
         var inputLabel = new Label
         {
             Text = "2. Paste redirect link or code here:",
-            Location = new Point(24, 290),
+            Location = new Point(24, 314),
             AutoSize = true,
             ForeColor = Color.FromArgb(60, 60, 60),
             Font = new Font("Segoe UI", 9f, FontStyle.Bold)
@@ -539,8 +539,8 @@ public class SignInForm : Form
 
         _linkInput = new TextBox
         {
-            Location = new Point(24, 314),
-            Size = new Size(512, 26),
+            Location = new Point(24, 338),
+            Size = new Size(570, 26),
             PlaceholderText = "npf71b963c1b7b6d119://auth#session_token_code=..."
         };
         _linkInput.TextChanged += (s, e) => _signInBtn.Enabled = !string.IsNullOrWhiteSpace(_linkInput.Text) && acknowledgeCheck.Checked;
@@ -548,16 +548,16 @@ public class SignInForm : Form
         _statusLabel = new Label
         {
             Text = "",
-            Location = new Point(24, 350),
-            Size = new Size(512, 20),
+            Location = new Point(24, 372),
+            Size = new Size(570, 20),
             ForeColor = Color.FromArgb(100, 100, 100)
         };
 
         _signInBtn = new Button
         {
             Text = "✅ Sign In && Connect",
-            Location = new Point(24, 376),
-            Size = new Size(512, 42),
+            Location = new Point(24, 398),
+            Size = new Size(570, 44),
             BackColor = Color.FromArgb(46, 150, 234),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
