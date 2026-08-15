@@ -750,8 +750,8 @@ public class SyncEngine
         Directory.CreateDirectory(destinationRoot);
 
         // 2. Index all existing local capture timestamp prefixes across ALL subdirectories
-        // This guarantees 100% LANGUAGE-AGNOSTIC and REGION-AGNOSTIC deduplication!
-        // (e.g. Even if game folders are named in Portuguese, Japanese, French, or English)
+        // and map each capture prefix to its actual directory name on disk
+        var prefixToLocalFolderMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var existingCapturePrefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
@@ -766,6 +766,8 @@ public class SyncEngine
                         {
                             string fileName = Path.GetFileName(filePath);
                             string baseName = Path.GetFileNameWithoutExtension(filePath);
+                            string? dirPath = Path.GetDirectoryName(filePath);
+                            string localFolderName = !string.IsNullOrEmpty(dirPath) ? Path.GetFileName(dirPath) : "";
 
                             string prefix = baseName;
                             if (prefix.EndsWith("_c", StringComparison.OrdinalIgnoreCase))
@@ -775,6 +777,11 @@ public class SyncEngine
 
                             existingCapturePrefixes.Add(fileName);
                             existingCapturePrefixes.Add(prefix);
+
+                            if (!string.IsNullOrEmpty(localFolderName) && !prefixToLocalFolderMap.ContainsKey(prefix))
+                            {
+                                prefixToLocalFolderMap[prefix] = localFolderName;
+                            }
                         }
                     }
                     catch { }
@@ -783,11 +790,31 @@ public class SyncEngine
         }
         catch { }
 
+        // 3. Dynamic Title ID to Local Folder Learner:
+        // Cross-reference existing files against the cloud media items to learn the exact local folder
+        // for each 16-hex Nintendo Title ID (100% universal across all languages & custom names!)
+        var titleIdToFolderMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in mediaItems)
+        {
+            if (string.IsNullOrWhiteSpace(item.TitleId)) continue;
+
+            long ts = item.CapturedAt > 0 ? item.CapturedAt : item.UploadedAt;
+            if (ts <= 0) continue;
+            long itemMs = ts > 10_000_000_000 ? ts : ts * 1000;
+            var dt = DateTimeOffset.FromUnixTimeMilliseconds(itemMs).LocalDateTime;
+            string pfx = $"{dt.Year:D4}{dt.Month:D2}{dt.Day:D2}{dt.Hour:D2}{dt.Minute:D2}{dt.Second:D2}00";
+
+            if (prefixToLocalFolderMap.TryGetValue(pfx, out string? folder) && !string.IsNullOrEmpty(folder))
+            {
+                titleIdToFolderMap[item.TitleId] = folder;
+            }
+        }
+
         int newDownloaded = 0;
 
         foreach (var item in mediaItems)
         {
-            string relativePath = GetSwitchUsbPath(destinationRoot, item);
+            string relativePath = GetSwitchUsbPath(destinationRoot, item, titleIdToFolderMap);
             string fullPath = Path.Combine(destinationRoot, relativePath);
 
             long timestamp = item.CapturedAt > 0 ? item.CapturedAt : item.UploadedAt;
@@ -812,7 +839,7 @@ public class SyncEngine
                 Directory.CreateDirectory(parentDir);
             }
 
-            // 3. Download media stream directly from Nintendo CDN
+            // 4. Download media stream directly from Nintendo CDN
             using (var response = await _http.GetAsync(item.ContentUri, HttpCompletionOption.ResponseHeadersRead))
             {
                 response.EnsureSuccessStatusCode();
@@ -820,7 +847,7 @@ public class SyncEngine
                 await response.Content.CopyToAsync(fs);
             }
 
-            // 4. Preserve original capture timestamps on local filesystem
+            // 5. Preserve original capture timestamps on local filesystem
             if (timestamp > 0)
             {
                 var captureTime = DateTimeOffset.FromUnixTimeMilliseconds(ms).LocalDateTime;
@@ -844,7 +871,7 @@ public class SyncEngine
     /// Exact official Nintendo Switch / Switch 2 PC USB transfer structure:
     /// Album/<Game Name>/YYYYMMDDHHMMSS00_c.jpg (or .mp4)
     /// </summary>
-    private static string GetSwitchUsbPath(string destinationRoot, MediaItem item)
+    private static string GetSwitchUsbPath(string destinationRoot, MediaItem item, Dictionary<string, string>? titleIdMap = null)
     {
         long timestamp = item.CapturedAt > 0 ? item.CapturedAt : item.UploadedAt;
         if (timestamp <= 0) timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -866,8 +893,19 @@ public class SyncEngine
         bool isAlreadyAlbum = string.Equals(folderName, "Album", StringComparison.OrdinalIgnoreCase);
         string effectiveAlbumDir = isAlreadyAlbum ? destinationRoot : Path.Combine(destinationRoot, "Album");
 
-        // Intelligently resolve the folder name against existing local folders (reuses existing PT/ES/JA/EN folders)
-        string resolvedGameFolder = ResolveGameFolderName(effectiveAlbumDir, item.AppName);
+        // 1. Check if this game's Title ID was learned directly from an existing capture in the local album
+        string? resolvedGameFolder = null;
+        if (!string.IsNullOrEmpty(item.TitleId) && titleIdMap != null && titleIdMap.TryGetValue(item.TitleId, out string? learnedFolder))
+        {
+            resolvedGameFolder = learnedFolder;
+        }
+
+        // 2. Otherwise, intelligently resolve via localization database / existing folders
+        if (string.IsNullOrEmpty(resolvedGameFolder))
+        {
+            resolvedGameFolder = ResolveGameFolderName(effectiveAlbumDir, item.AppName);
+        }
+
         string filename = $"{timePrefix}_c.{ext}";
 
         if (isAlreadyAlbum)
@@ -1660,9 +1698,14 @@ public class CoralClient
         {
             foreach (var item in mediaArr.EnumerateArray())
             {
+                string titleId = "";
+                if (item.TryGetProperty("titleId", out var tidProp)) titleId = tidProp.GetString() ?? "";
+                else if (item.TryGetProperty("applicationId", out var aidProp)) titleId = aidProp.GetString() ?? "";
+
                 list.Add(new MediaItem
                 {
                     Id = item.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "",
+                    TitleId = titleId,
                     AppName = item.TryGetProperty("appName", out var app) ? app.GetString() ?? "Nintendo Switch" : "Nintendo Switch",
                     Type = item.TryGetProperty("type", out var type) ? type.GetString() ?? "image" : "image",
                     CapturedAt = item.TryGetProperty("capturedAt", out var cap) ? cap.GetInt64() : 0,
@@ -1681,6 +1724,7 @@ public class CoralClient
 public class MediaItem
 {
     public string Id { get; set; } = "";
+    public string TitleId { get; set; } = "";
     public string AppName { get; set; } = "";
     public string Type { get; set; } = "";
     public long CapturedAt { get; set; }
