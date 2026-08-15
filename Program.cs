@@ -860,17 +860,89 @@ public class SyncEngine
 
         string timePrefix = $"{yyyy}{mm}{dd}{hh}{min}{sec}00";
         string ext = string.Equals(item.Type, "video", StringComparison.OrdinalIgnoreCase) ? "mp4" : "jpg";
-        string folder = SanitizeFolderName(item.AppName);
+
+        // Determine the effective album directory (handle whether user pointed directly to Album or parent)
+        string folderName = Path.GetFileName(destinationRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        bool isAlreadyAlbum = string.Equals(folderName, "Album", StringComparison.OrdinalIgnoreCase);
+        string effectiveAlbumDir = isAlreadyAlbum ? destinationRoot : Path.Combine(destinationRoot, "Album");
+
+        // Intelligently resolve the folder name against existing local folders (reuses existing PT/ES/JA/EN folders)
+        string resolvedGameFolder = ResolveGameFolderName(effectiveAlbumDir, item.AppName);
         string filename = $"{timePrefix}_c.{ext}";
 
-        // If user already pointed directly to an "Album" folder, don't nest "Album/Album/"
-        string folderName = Path.GetFileName(destinationRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-        if (string.Equals(folderName, "Album", StringComparison.OrdinalIgnoreCase))
+        if (isAlreadyAlbum)
         {
-            return Path.Combine(folder, filename);
+            return Path.Combine(resolvedGameFolder, filename);
         }
 
-        return Path.Combine("Album", folder, filename);
+        return Path.Combine("Album", resolvedGameFolder, filename);
+    }
+
+    /// <summary>
+    /// Intelligently resolves game folder name by matching against existing local folders.
+    /// Prevents creating duplicate folders when local backups were named under different language settings.
+    /// </summary>
+    private static string ResolveGameFolderName(string albumDir, string? apiAppName)
+    {
+        string defaultClean = SanitizeFolderName(apiAppName);
+        if (!Directory.Exists(albumDir))
+            return defaultClean;
+
+        try
+        {
+            var directories = Directory.GetDirectories(albumDir);
+            
+            // 1. Exact case-insensitive match
+            foreach (var dir in directories)
+            {
+                string dirName = Path.GetFileName(dir);
+                if (string.Equals(dirName, defaultClean, StringComparison.OrdinalIgnoreCase))
+                    return dirName;
+            }
+
+            // 2. Normalized match (stripping punctuation, trademarks, colons, accents, spaces)
+            string normApi = NormalizeForMatching(apiAppName);
+            if (!string.IsNullOrEmpty(normApi))
+            {
+                foreach (var dir in directories)
+                {
+                    string dirName = Path.GetFileName(dir);
+                    string normDir = NormalizeForMatching(dirName);
+                    if (string.Equals(normDir, normApi, StringComparison.OrdinalIgnoreCase))
+                        return dirName; // Reuses the user's existing local folder!
+                }
+
+                // 3. Substring / Prefix match (e.g. "Super Mario Bros. Wonder" vs "Super Mario Bros Wonder")
+                foreach (var dir in directories)
+                {
+                    string dirName = Path.GetFileName(dir);
+                    string normDir = NormalizeForMatching(dirName);
+                    if (normDir.Length >= 6 && normApi.Length >= 6)
+                    {
+                        if (normDir.Contains(normApi, StringComparison.OrdinalIgnoreCase) ||
+                            normApi.Contains(normDir, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return dirName;
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+
+        return defaultClean;
+    }
+
+    private static string NormalizeForMatching(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return "";
+        var sb = new StringBuilder();
+        foreach (char c in input)
+        {
+            if (char.IsLetterOrDigit(c))
+                sb.Append(char.ToLowerInvariant(c));
+        }
+        return sb.ToString();
     }
 
     private static string SanitizeFolderName(string? name)
