@@ -448,7 +448,7 @@ public class SignInForm : Form
     {
         Text = "Nintendo Account Sign-In - NSO Album Sync";
         Icon = IconGenerator.CreateAlbumIcon();
-        Size = new Size(540, 360);
+        Size = new Size(560, 480);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -465,34 +465,79 @@ public class SignInForm : Form
             AutoSize = true
         };
 
+        // nxapi public API terms compliance: Third-party service disclosure & explicit acknowledgement
+        var disclosurePanel = new Panel
+        {
+            Location = new Point(24, 50),
+            Size = new Size(495, 88),
+            BackColor = Color.FromArgb(238, 242, 246),
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        var disclosureLabel = new Label
+        {
+            Text = "ℹ️ Third-Party Service Disclosure:\n" +
+                   "To calculate Nintendo Switch Online attestation hashes and decrypt media lists, authentication tokens and Coral requests are securely processed via the public nxapi-znca-api (fancy.org.uk) service. Tokens are kept in-memory only and never stored on remote servers.",
+            Location = new Point(8, 6),
+            Size = new Size(475, 52),
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            ForeColor = Color.FromArgb(60, 64, 67)
+        };
+
+        var acknowledgeCheck = new CheckBox
+        {
+            Text = "I acknowledge that tokens and requests are processed via nxapi-znca-api",
+            Location = new Point(10, 60),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(30, 30, 30),
+            Cursor = Cursors.Hand
+        };
+        disclosurePanel.Controls.Add(disclosureLabel);
+        disclosurePanel.Controls.Add(acknowledgeCheck);
+
         var instructions = new Label
         {
             Text = "1. Click the button below to open Nintendo's official sign-in page in your browser.\n" +
                    "2. Log in and right-click / copy the link on 'Select this person' (or copy redirect URL).\n" +
                    "3. Paste the copied link in the box below and click 'Sign In & Connect'.",
-            Location = new Point(24, 52),
-            Size = new Size(480, 60),
+            Location = new Point(24, 146),
+            Size = new Size(495, 54),
             ForeColor = Color.FromArgb(40, 40, 40)
         };
 
         _openBrowserBtn = new Button
         {
             Text = "🌐 1. Open Nintendo Sign-In Page",
-            Location = new Point(24, 122),
-            Size = new Size(475, 36),
+            Location = new Point(24, 206),
+            Size = new Size(495, 36),
             BackColor = Color.FromArgb(230, 0, 18),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            Cursor = Cursors.Hand
+            Cursor = Cursors.Hand,
+            Enabled = false
         };
         _openBrowserBtn.FlatAppearance.BorderSize = 0;
         _openBrowserBtn.Click += (s, e) => OpenBrowserOAuth();
 
+        acknowledgeCheck.CheckedChanged += (s, e) =>
+        {
+            _openBrowserBtn.Enabled = acknowledgeCheck.Checked;
+            if (acknowledgeCheck.Checked)
+            {
+                _openBrowserBtn.BackColor = Color.FromArgb(230, 0, 18);
+            }
+            else
+            {
+                _openBrowserBtn.BackColor = Color.FromArgb(200, 200, 200);
+            }
+        };
+
         var inputLabel = new Label
         {
             Text = "2. Paste redirect link or code here:",
-            Location = new Point(24, 172),
+            Location = new Point(24, 252),
             AutoSize = true,
             ForeColor = Color.FromArgb(60, 60, 60),
             Font = new Font("Segoe UI", 9f, FontStyle.Bold)
@@ -500,25 +545,25 @@ public class SignInForm : Form
 
         _linkInput = new TextBox
         {
-            Location = new Point(24, 194),
-            Size = new Size(475, 26),
+            Location = new Point(24, 274),
+            Size = new Size(495, 26),
             PlaceholderText = "npf71b963c1b7b6d119://auth#session_token_code=..."
         };
-        _linkInput.TextChanged += (s, e) => _signInBtn.Enabled = !string.IsNullOrWhiteSpace(_linkInput.Text);
+        _linkInput.TextChanged += (s, e) => _signInBtn.Enabled = !string.IsNullOrWhiteSpace(_linkInput.Text) && acknowledgeCheck.Checked;
 
         _statusLabel = new Label
         {
             Text = "",
-            Location = new Point(24, 230),
-            Size = new Size(475, 20),
+            Location = new Point(24, 308),
+            Size = new Size(495, 20),
             ForeColor = Color.FromArgb(100, 100, 100)
         };
 
         _signInBtn = new Button
         {
             Text = "✅ Sign In & Connect",
-            Location = new Point(24, 258),
-            Size = new Size(475, 38),
+            Location = new Point(24, 334),
+            Size = new Size(495, 38),
             BackColor = Color.FromArgb(46, 150, 234),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
@@ -532,6 +577,7 @@ public class SignInForm : Form
         Controls.AddRange(new Control[]
         {
             header,
+            disclosurePanel,
             instructions,
             _openBrowserBtn,
             inputLabel,
@@ -677,10 +723,31 @@ public class NsoDaemonRunner
 
     private async Task RunInteractiveSetupAsync()
     {
+        Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("\n[First-Time Setup] No Nintendo Account configured.");
+        Console.ResetColor();
+
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("\nℹ️  Third-Party Service Disclosure:");
+        Console.WriteLine("To calculate Nintendo Switch Online attestation hashes and decrypt media lists,");
+        Console.WriteLine("authentication tokens and Coral requests are securely processed via the public");
+        Console.WriteLine("nxapi-znca-api (fancy.org.uk) service. Tokens are kept in-memory only and never stored.");
+        Console.ResetColor();
+
+        Console.Write("\nDo you acknowledge and agree to proceed? [y/N]: ");
+        string? ack = Console.ReadLine()?.Trim().ToLowerInvariant();
+        if (ack != "y" && ack != "yes")
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("Sign-in cancelled. Exiting.");
+            Console.ResetColor();
+            Environment.Exit(0);
+            return;
+        }
+
         string url = _authManager.GetAuthorizeUrl();
 
-        Console.WriteLine("1. Opening browser to official Nintendo login page...");
+        Console.WriteLine("\n1. Opening browser to official Nintendo login page...");
         NintendoAuthManager.OpenBrowser(url);
 
         Console.WriteLine("\n2. Log in and right-click / copy the link on 'Select this person' (or redirect URL).");
