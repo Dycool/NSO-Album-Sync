@@ -1246,7 +1246,7 @@ public class NintendoAuthManager
             Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
         };
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.UserAgent.ParseAdd("Dalvik/2.1.0 (Linux; U; Android 12)");
+        request.Headers.TryAddWithoutValidation("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 12)");
 
         using var response = await _http.SendAsync(request);
         string json = await response.Content.ReadAsStringAsync();
@@ -1270,7 +1270,7 @@ public class NintendoAuthManager
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Add("Accept-Language", "en-GB");
-        request.Headers.UserAgent.ParseAdd("NASDKAPI; Android");
+        request.Headers.TryAddWithoutValidation("User-Agent", "NASDKAPI; Android");
 
         using var response = await _http.SendAsync(request);
         string json = await response.Content.ReadAsStringAsync();
@@ -1303,7 +1303,7 @@ public class NintendoAuthManager
         {
             Content = new FormUrlEncodedContent(form)
         };
-        request.Headers.UserAgent.ParseAdd("NASDKAPI; Android");
+        request.Headers.TryAddWithoutValidation("User-Agent", "NASDKAPI; Android");
 
         using var response = await _http.SendAsync(request);
         string json = await response.Content.ReadAsStringAsync();
@@ -1401,7 +1401,7 @@ public class NxapiClient
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, $"{NxapiZncaBase}/config");
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            req.Headers.UserAgent.ParseAdd(UserAgent);
+            req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
 
             using var resp = await _http.SendAsync(req);
             if (resp.IsSuccessStatusCode)
@@ -1445,7 +1445,7 @@ public class NxapiClient
                 Content = new FormUrlEncodedContent(form)
             };
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            req.Headers.UserAgent.ParseAdd(UserAgent);
+            req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
 
             using var resp = await _http.SendAsync(req);
             if (resp.IsSuccessStatusCode)
@@ -1502,7 +1502,7 @@ public class NxapiClient
         req.Headers.Add("X-znca-Platform", "Android");
         req.Headers.Add("X-znca-Version", nsoVersion);
         req.Headers.Add("X-znca-Client-Version", NxapiClientVersion);
-        req.Headers.UserAgent.ParseAdd(UserAgent);
+        req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
         if (!string.IsNullOrEmpty(authToken))
         {
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", authToken);
@@ -1546,7 +1546,7 @@ public class NxapiClient
         req.Headers.Add("X-znca-Platform", "Android");
         req.Headers.Add("X-znca-Version", nsoVersion);
         req.Headers.Add("X-znca-Client-Version", NxapiClientVersion);
-        req.Headers.UserAgent.ParseAdd(UserAgent);
+        req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
         if (!string.IsNullOrEmpty(authToken))
         {
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", authToken);
@@ -1589,7 +1589,7 @@ public class NxapiClient
         req.Headers.Add("X-znca-Platform", "Android");
         req.Headers.Add("X-znca-Version", nsoVersion);
         req.Headers.Add("X-znca-Client-Version", NxapiClientVersion);
-        req.Headers.UserAgent.ParseAdd(UserAgent);
+        req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
         if (!string.IsNullOrEmpty(authToken))
         {
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", authToken);
@@ -1644,7 +1644,7 @@ public class CoralClient
         req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         req.Headers.Add("X-Platform", "Android");
         req.Headers.Add("X-ProductVersion", nsoVersion);
-        req.Headers.UserAgent.ParseAdd($"com.nintendo.znca/{nsoVersion}(Android/12)");
+        req.Headers.TryAddWithoutValidation("User-Agent", $"com.nintendo.znca/{nsoVersion}(Android/12)");
 
         using var resp = await _http.SendAsync(req);
         byte[] respBytes = await resp.Content.ReadAsByteArrayAsync();
@@ -1684,7 +1684,7 @@ public class CoralClient
         };
         req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", coralToken);
-        req.Headers.UserAgent.ParseAdd($"com.nintendo.znca/{nsoVersion}(Android/12)");
+        req.Headers.TryAddWithoutValidation("User-Agent", $"com.nintendo.znca/{nsoVersion}(Android/12)");
 
         using var resp = await _http.SendAsync(req);
         byte[] respBytes = await resp.Content.ReadAsByteArrayAsync();
