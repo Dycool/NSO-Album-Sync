@@ -1467,6 +1467,9 @@ public static class IconGenerator
         return _cachedAlbumIcon;
     }
 
+    private const string NsoPath1Data = "M23.224,26.1H8.784C8.095,26.1 7.535,25.54 7.535,24.851V16.24C7.488,14.788 8.081,13.24 9.089,12.195C10.059,11.187 11.348,10.654 12.816,10.654C14.284,10.654 15.563,11.22 16.535,12.246C17.19,12.939 17.647,13.792 17.869,14.71C18.504,14.361 19.236,14.167 20.02,14.167C22.21,14.167 24.473,15.861 24.473,18.695V24.849C24.473,25.539 23.913,26.098 23.224,26.098V26.1ZM10.033,23.601H21.974V18.696C21.974,17.426 20.982,16.667 20.02,16.667C18.89,16.667 18.066,17.515 18.014,18.728C17.985,19.398 17.433,19.924 16.766,19.924C16.757,19.924 16.748,19.924 16.739,19.924C16.06,19.909 15.517,19.356 15.517,18.675V16.219C15.517,16.196 15.517,16.174 15.518,16.151C15.562,15.356 15.263,14.538 14.72,13.966C14.37,13.596 13.754,13.154 12.814,13.154C12.03,13.154 11.382,13.415 10.886,13.928C10.217,14.622 10.008,15.57 10.03,16.17C10.03,16.187 10.03,16.202 10.03,16.217V23.6L10.033,23.601Z";
+    private const string NsoPath2Data = "M28.918,26.1H3.082C1.934,26.1 1,25.166 1,24.018V7.582C1,6.434 1.934,5.5 3.082,5.5H28.918C30.066,5.5 31,6.434 31,7.582V24.018C31,25.166 30.066,26.1 28.918,26.1ZM3.497,23.601H28.5V7.999H3.497V23.601Z";
+
     public static Bitmap DrawAlbumBitmap(int size)
     {
         var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
@@ -1476,65 +1479,108 @@ public static class IconGenerator
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         g.Clear(Color.Transparent);
 
-        float scale = size / 24f;
+        float scale = size / 32f;
 
-        // Official NSO Album Blue rounded card (rx: 3.5, w: 19, h: 16.4)
-        float x = 2.5f * scale;
-        float y = 3.8f * scale;
-        float w = 19.0f * scale;
-        float h = 16.4f * scale;
-        float r = 3.5f * scale;
+        using var matrix = new Matrix();
+        matrix.Scale(scale, scale);
 
-        var cardPath = GetRoundedRectPath(new RectangleF(x, y, w, h), r);
-        Color nsoBlue = Color.FromArgb(46, 150, 234); // Official NSO Album #2e96ea
-        using var blueBrush = new SolidBrush(nsoBlue);
+        using var path1 = ParseSvgPath(NsoPath1Data);
+        using var path2 = ParseSvgPath(NsoPath2Data);
 
-        // Exact twin-peak cutout path from official NSO app:
-        // M4 21 V16.8 C5.2 13.5 8 13.2 9.8 15.6 C11.2 13.6 13.8 13.6 15.2 16.8 C15.8 18.2 16.2 19 17.5 21 Z
-        var cutoutPath = new GraphicsPath();
-        cutoutPath.StartFigure();
-        cutoutPath.AddLine(4f * scale, 21f * scale, 4f * scale, 16.8f * scale);
-        cutoutPath.AddBezier(
-            4f * scale, 16.8f * scale,
-            5.2f * scale, 13.5f * scale,
-            8.0f * scale, 13.2f * scale,
-            9.8f * scale, 15.6f * scale
-        );
-        cutoutPath.AddBezier(
-            9.8f * scale, 15.6f * scale,
-            11.2f * scale, 13.6f * scale,
-            13.8f * scale, 13.6f * scale,
-            15.2f * scale, 16.8f * scale
-        );
-        cutoutPath.AddBezier(
-            15.2f * scale, 16.8f * scale,
-            15.8f * scale, 18.2f * scale,
-            16.2f * scale, 19.0f * scale,
-            17.5f * scale, 21.0f * scale
-        );
-        cutoutPath.CloseFigure();
+        path1.Transform(matrix);
+        path2.Transform(matrix);
 
-        using var region = new Region(cardPath);
-        region.Exclude(cutoutPath);
-        g.FillRegion(blueBrush, region);
+        // Official Nintendo color from APK/IPA (#3571E9)
+        Color nsoOfficialBlue = Color.FromArgb(53, 113, 233);
+        using var brush = new SolidBrush(nsoOfficialBlue);
+
+        g.FillPath(brush, path2);
+        g.FillPath(brush, path1);
 
         return bmp;
     }
 
-    private static GraphicsPath GetRoundedRectPath(RectangleF rect, float radius)
+    private static GraphicsPath ParseSvgPath(string pathData)
     {
-        var path = new GraphicsPath();
-        float diameter = radius * 2;
-        var arc = new RectangleF(rect.X, rect.Y, diameter, diameter);
+        var path = new GraphicsPath { FillMode = FillMode.Winding };
+        var matches = System.Text.RegularExpressions.Regex.Matches(pathData, @"([a-zA-Z])|([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)");
 
-        path.AddArc(arc, 180, 90);
-        arc.X = rect.Right - diameter;
-        path.AddArc(arc, 270, 90);
-        arc.Y = rect.Bottom - diameter;
-        path.AddArc(arc, 0, 90);
-        arc.X = rect.Left;
-        path.AddArc(arc, 90, 90);
-        path.CloseFigure();
+        char command = 'M';
+        int i = 0;
+        PointF currentPoint = PointF.Empty;
+        PointF startPoint = PointF.Empty;
+
+        while (i < matches.Count)
+        {
+            string token = matches[i].Value;
+            if (char.IsLetter(token[0]))
+            {
+                command = token[0];
+                i++;
+            }
+
+            switch (command)
+            {
+                case 'M':
+                    {
+                        float x = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        float y = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        currentPoint = new PointF(x, y);
+                        startPoint = currentPoint;
+                        path.StartFigure();
+                        command = 'L';
+                    }
+                    break;
+                case 'L':
+                    {
+                        float x = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        float y = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        var target = new PointF(x, y);
+                        path.AddLine(currentPoint, target);
+                        currentPoint = target;
+                    }
+                    break;
+                case 'H':
+                    {
+                        float x = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        var target = new PointF(x, currentPoint.Y);
+                        path.AddLine(currentPoint, target);
+                        currentPoint = target;
+                    }
+                    break;
+                case 'V':
+                    {
+                        float y = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        var target = new PointF(currentPoint.X, y);
+                        path.AddLine(currentPoint, target);
+                        currentPoint = target;
+                    }
+                    break;
+                case 'C':
+                    {
+                        float x1 = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        float y1 = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        float x2 = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        float y2 = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        float x = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+                        float y = float.Parse(matches[i++].Value, System.Globalization.CultureInfo.InvariantCulture);
+
+                        var endPoint = new PointF(x, y);
+                        path.AddBezier(currentPoint, new PointF(x1, y1), new PointF(x2, y2), endPoint);
+                        currentPoint = endPoint;
+                    }
+                    break;
+                case 'Z':
+                case 'z':
+                    path.CloseFigure();
+                    currentPoint = startPoint;
+                    break;
+                default:
+                    i++;
+                    break;
+            }
+        }
+
         return path;
     }
 }
