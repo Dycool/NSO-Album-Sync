@@ -1449,6 +1449,59 @@ public class MediaItem
 }
 #endregion
 
+#region Secure Storage (DPAPI & File Permissions)
+public static class SecretStore
+{
+    private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("NSO_Album_Sync_Salt_9981");
+
+    public static string EncryptSecret(string plainText)
+    {
+        if (string.IsNullOrEmpty(plainText)) return "";
+        try
+        {
+#if WINDOWS
+            byte[] plainBytes = Encoding.UTF8.GetBytes(plainText);
+            byte[] cipherBytes = ProtectedData.Protect(plainBytes, Entropy, DataProtectionScope.CurrentUser);
+            return "dpapi:" + Convert.ToBase64String(cipherBytes);
+#else
+            // Fallback for non-Windows
+            return plainText;
+#endif
+        }
+        catch
+        {
+            return plainText;
+        }
+    }
+
+    public static string DecryptSecret(string cipherText)
+    {
+        if (string.IsNullOrEmpty(cipherText)) return "";
+        if (cipherText.StartsWith("dpapi:", StringComparison.Ordinal))
+        {
+            try
+            {
+#if WINDOWS
+                string b64 = cipherText.Substring("dpapi:".Length);
+                byte[] cipherBytes = Convert.FromBase64String(b64);
+                byte[] plainBytes = ProtectedData.Unprotect(cipherBytes, Entropy, DataProtectionScope.CurrentUser);
+                return Encoding.UTF8.GetString(plainBytes);
+#else
+                return cipherText;
+#endif
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        // Backward compatibility for unencrypted tokens
+        return cipherText;
+    }
+}
+#endregion
+
 #region Configuration & State Persistence
 public class AppConfig
 {
@@ -1490,6 +1543,9 @@ public class ConfigManager
                 var loaded = JsonSerializer.Deserialize<AppConfig>(json);
                 if (loaded != null)
                 {
+                    // Decrypt protected session token
+                    loaded.SessionToken = SecretStore.DecryptSecret(loaded.SessionToken);
+
                     if (string.IsNullOrWhiteSpace(loaded.DestinationFolder))
                     {
                         loaded.DestinationFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Nintendo Switch Album");
@@ -1513,8 +1569,30 @@ public class ConfigManager
     {
         try
         {
-            string json = JsonSerializer.Serialize(Config, new JsonSerializerOptions { WriteIndented = true });
+            // Clone config to encrypt SessionToken on disk without altering in-memory state
+            var diskCopy = new AppConfig
+            {
+                SessionToken = SecretStore.EncryptSecret(Config.SessionToken),
+                UserNickname = Config.UserNickname,
+                DestinationFolder = Config.DestinationFolder,
+                AutoSyncEnabled = Config.AutoSyncEnabled,
+                SyncIntervalMinutes = Config.SyncIntervalMinutes,
+                NxapiAuthClientId = Config.NxapiAuthClientId,
+                LastSyncTime = Config.LastSyncTime
+            };
+
+            string json = JsonSerializer.Serialize(diskCopy, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_configPath, json);
+
+            // Restrict file permissions to current user only on Unix
+            if (!OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    File.SetUnixFileMode(_configPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+                catch { }
+            }
         }
         catch { }
     }
