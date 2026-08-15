@@ -748,39 +748,59 @@ public class SyncEngine
         }
 
         Directory.CreateDirectory(destinationRoot);
+
+        // 2. Index all existing local capture timestamp prefixes across ALL subdirectories
+        // This guarantees 100% LANGUAGE-AGNOSTIC and REGION-AGNOSTIC deduplication!
+        // (e.g. Even if game folders are named in Portuguese, Japanese, French, or English)
+        var existingCapturePrefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (Directory.Exists(destinationRoot))
+            {
+                foreach (string filePath in Directory.EnumerateFiles(destinationRoot, "*.*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        var fi = new FileInfo(filePath);
+                        if (fi.Length > 0)
+                        {
+                            string fileName = Path.GetFileName(filePath);
+                            string baseName = Path.GetFileNameWithoutExtension(filePath);
+
+                            string prefix = baseName;
+                            if (prefix.EndsWith("_c", StringComparison.OrdinalIgnoreCase))
+                                prefix = prefix.Substring(0, prefix.Length - 2);
+                            else if (prefix.EndsWith("-00", StringComparison.OrdinalIgnoreCase))
+                                prefix = prefix.Substring(0, prefix.Length - 3);
+
+                            existingCapturePrefixes.Add(fileName);
+                            existingCapturePrefixes.Add(prefix);
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+
         int newDownloaded = 0;
 
         foreach (var item in mediaItems)
         {
-            string relativePath = GetSwitchUsbPath(item);
+            string relativePath = GetSwitchUsbPath(destinationRoot, item);
             string fullPath = Path.Combine(destinationRoot, relativePath);
 
-            // 1. Check if exact file already exists and is non-empty
-            bool fileExistsOnDisk = File.Exists(fullPath) && new FileInfo(fullPath).Length > 0;
+            long timestamp = item.CapturedAt > 0 ? item.CapturedAt : item.UploadedAt;
+            if (timestamp <= 0) timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            long ms = timestamp > 10_000_000_000 ? timestamp : timestamp * 1000;
 
-            // 2. Check alternate official Switch USB variants (e.g. without _c or with -00)
-            if (!fileExistsOnDisk)
-            {
-                string? dir = Path.GetDirectoryName(fullPath);
-                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
-                {
-                    string ext = Path.GetExtension(fullPath);
-                    string baseName = Path.GetFileNameWithoutExtension(fullPath);
-                    string prefix = baseName.EndsWith("_c") ? baseName.Substring(0, baseName.Length - 2) : baseName;
+            var d = DateTimeOffset.FromUnixTimeMilliseconds(ms).LocalDateTime;
+            string timePrefix = $"{d.Year:D4}{d.Month:D2}{d.Day:D2}{d.Hour:D2}{d.Minute:D2}{d.Second:D2}00";
+            string ext = string.Equals(item.Type, "video", StringComparison.OrdinalIgnoreCase) ? "mp4" : "jpg";
+            string exactFileName = $"{timePrefix}_c.{ext}";
 
-                    string altPath1 = Path.Combine(dir, $"{prefix}{ext}");
-                    string altPath2 = Path.Combine(dir, $"{prefix}-00{ext}");
-
-                    if ((File.Exists(altPath1) && new FileInfo(altPath1).Length > 0) ||
-                        (File.Exists(altPath2) && new FileInfo(altPath2).Length > 0))
-                    {
-                        fileExistsOnDisk = true;
-                    }
-                }
-            }
-
-            // If file already exists on disk (from previous sync or manual Switch USB copy), SKIP!
-            if (fileExistsOnDisk)
+            // Language-agnostic check: If this capture timestamp already exists in ANY game folder, SKIP!
+            if (existingCapturePrefixes.Contains(exactFileName) || existingCapturePrefixes.Contains(timePrefix))
             {
                 continue;
             }
@@ -801,10 +821,8 @@ public class SyncEngine
             }
 
             // 4. Preserve original capture timestamps on local filesystem
-            long tsSeconds = item.CapturedAt > 0 ? item.CapturedAt : item.UploadedAt;
-            if (tsSeconds > 0)
+            if (timestamp > 0)
             {
-                long ms = tsSeconds > 10_000_000_000 ? tsSeconds : tsSeconds * 1000;
                 var captureTime = DateTimeOffset.FromUnixTimeMilliseconds(ms).LocalDateTime;
                 try
                 {
@@ -814,6 +832,8 @@ public class SyncEngine
                 catch { }
             }
 
+            existingCapturePrefixes.Add(exactFileName);
+            existingCapturePrefixes.Add(timePrefix);
             newDownloaded++;
         }
 
@@ -824,7 +844,7 @@ public class SyncEngine
     /// Exact official Nintendo Switch / Switch 2 PC USB transfer structure:
     /// Album/<Game Name>/YYYYMMDDHHMMSS00_c.jpg (or .mp4)
     /// </summary>
-    private static string GetSwitchUsbPath(MediaItem item)
+    private static string GetSwitchUsbPath(string destinationRoot, MediaItem item)
     {
         long timestamp = item.CapturedAt > 0 ? item.CapturedAt : item.UploadedAt;
         if (timestamp <= 0) timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -842,6 +862,13 @@ public class SyncEngine
         string ext = string.Equals(item.Type, "video", StringComparison.OrdinalIgnoreCase) ? "mp4" : "jpg";
         string folder = SanitizeFolderName(item.AppName);
         string filename = $"{timePrefix}_c.{ext}";
+
+        // If user already pointed directly to an "Album" folder, don't nest "Album/Album/"
+        string folderName = Path.GetFileName(destinationRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (string.Equals(folderName, "Album", StringComparison.OrdinalIgnoreCase))
+        {
+            return Path.Combine(folder, filename);
+        }
 
         return Path.Combine("Album", folder, filename);
     }
