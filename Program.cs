@@ -879,50 +879,58 @@ public class SyncEngine
     }
 
     /// <summary>
-    /// Intelligently resolves game folder name by matching against existing local folders.
-    /// Prevents creating duplicate folders when local backups were named under different language settings.
+    /// Intelligently resolves game folder name by cross-referencing built-in title localizations
+    /// and existing local folders on disk.
     /// </summary>
     private static string ResolveGameFolderName(string albumDir, string? apiAppName)
     {
         string defaultClean = SanitizeFolderName(apiAppName);
-        if (!Directory.Exists(albumDir))
+        if (!Directory.Exists(albumDir) || string.IsNullOrWhiteSpace(apiAppName))
             return defaultClean;
 
         try
         {
             var directories = Directory.GetDirectories(albumDir);
-            
-            // 1. Exact case-insensitive match
-            foreach (var dir in directories)
+            var dirMap = directories.ToDictionary(
+                d => Path.GetFileName(d),
+                d => NormalizeForMatching(Path.GetFileName(d)),
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            // 1. Cross-reference all known language aliases and translations from built-in database
+            var synonyms = GameLocalizationDatabase.GetSynonyms(apiAppName).ToList();
+            foreach (var synonym in synonyms)
             {
-                string dirName = Path.GetFileName(dir);
-                if (string.Equals(dirName, defaultClean, StringComparison.OrdinalIgnoreCase))
-                    return dirName;
+                string cleanSynonym = SanitizeFolderName(synonym);
+                string normSynonym = NormalizeForMatching(synonym);
+
+                // Exact match
+                foreach (var kvp in dirMap)
+                {
+                    if (string.Equals(kvp.Key, cleanSynonym, StringComparison.OrdinalIgnoreCase))
+                        return kvp.Key;
+                }
+
+                // Normalized match
+                foreach (var kvp in dirMap)
+                {
+                    if (string.Equals(kvp.Value, normSynonym, StringComparison.OrdinalIgnoreCase))
+                        return kvp.Key;
+                }
             }
 
-            // 2. Normalized match (stripping punctuation, trademarks, colons, accents, spaces)
+            // 2. Fallback fuzzy/substring matching for non-catalogued games
             string normApi = NormalizeForMatching(apiAppName);
             if (!string.IsNullOrEmpty(normApi))
             {
-                foreach (var dir in directories)
+                foreach (var kvp in dirMap)
                 {
-                    string dirName = Path.GetFileName(dir);
-                    string normDir = NormalizeForMatching(dirName);
-                    if (string.Equals(normDir, normApi, StringComparison.OrdinalIgnoreCase))
-                        return dirName; // Reuses the user's existing local folder!
-                }
-
-                // 3. Substring / Prefix match (e.g. "Super Mario Bros. Wonder" vs "Super Mario Bros Wonder")
-                foreach (var dir in directories)
-                {
-                    string dirName = Path.GetFileName(dir);
-                    string normDir = NormalizeForMatching(dirName);
-                    if (normDir.Length >= 6 && normApi.Length >= 6)
+                    if (kvp.Value.Length >= 6 && normApi.Length >= 6)
                     {
-                        if (normDir.Contains(normApi, StringComparison.OrdinalIgnoreCase) ||
-                            normApi.Contains(normDir, StringComparison.OrdinalIgnoreCase))
+                        if (kvp.Value.Contains(normApi, StringComparison.OrdinalIgnoreCase) ||
+                            normApi.Contains(kvp.Value, StringComparison.OrdinalIgnoreCase))
                         {
-                            return dirName;
+                            return kvp.Key;
                         }
                     }
                 }
@@ -960,6 +968,123 @@ public class SyncEngine
         string clean = sb.ToString().Trim();
         return string.IsNullOrWhiteSpace(clean) ? "Other" : clean;
     }
+}
+
+/// <summary>
+/// Built-in cross-lingual Nintendo Switch game title database for seamless multi-language matching.
+/// </summary>
+public static class GameLocalizationDatabase
+{
+    private static readonly List<HashSet<string>> TitleGroups = new()
+    {
+        // Zelda Series
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Breath of the Wild", "The Legend of Zelda: Breath of the Wild", "ゼルダの伝説 ブレス オブ ザ ワイルド", "A Lenda de Zelda Breath of the Wild" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Tears of the Kingdom", "The Legend of Zelda: Tears of the Kingdom", "ゼルダの伝説 ティアーズ オブ ザ キングダム", "A Lenda de Zelda Tears of the Kingdom" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Echoes of Wisdom", "The Legend of Zelda: Echoes of Wisdom", "ゼルダの伝説 知恵のかりもの" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Link's Awakening", "The Legend of Zelda: Link's Awakening", "ゼルダの伝説 夢をみる島" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Skyward Sword HD", "The Legend of Zelda: Skyward Sword HD", "ゼルダの伝説 スカイウォードソード HD" },
+        new(StringComparer.OrdinalIgnoreCase) { "Hyrule Warriors Age of Calamity", "Hyrule Warriors: Age of Calamity", "ゼルダ無双 厄災の黙示録" },
+        new(StringComparer.OrdinalIgnoreCase) { "Hyrule Warriors Definitive Edition", "Hyrule Warriors: Definitive Edition", "ゼルダ無双 ハイラルオールスターズ DX" },
+        
+        // Mario Series
+        new(StringComparer.OrdinalIgnoreCase) { "Super Mario Bros. Wonder", "Super Mario Bros Wonder", "スーパーマリオブラザーズ ワンダー" },
+        new(StringComparer.OrdinalIgnoreCase) { "Super Mario Odyssey", "スーパーマリオ オデッセイ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario Kart 8 Deluxe", "Mario Kart 8 Deluxe™", "マリオカート8 デラックス", "マリオカート8DX" },
+        new(StringComparer.OrdinalIgnoreCase) { "Super Mario 3D World + Bowser's Fury", "Super Mario 3D World + Bowsers Fury", "スーパーマリオ 3Dワールド ＋ フューリーワールド" },
+        new(StringComparer.OrdinalIgnoreCase) { "Super Mario 3D All-Stars", "Super Mario 3D All Stars", "スーパーマリオ 3Dコレクション" },
+        new(StringComparer.OrdinalIgnoreCase) { "Super Mario Maker 2", "スーパーマリオメーカー 2" },
+        new(StringComparer.OrdinalIgnoreCase) { "Super Mario Party", "スーパー マリオパーティ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario Party Superstars", "マリオパーティ スーパースターズ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Super Mario Party Jamboree", "スーパー マリオパーティ ジャンボリー" },
+        new(StringComparer.OrdinalIgnoreCase) { "Super Mario RPG", "スーパーマリオRPG" },
+        new(StringComparer.OrdinalIgnoreCase) { "Paper Mario The Thousand-Year Door", "Paper Mario: The Thousand-Year Door", "ペーパーマリオRPG" },
+        new(StringComparer.OrdinalIgnoreCase) { "Paper Mario The Origami King", "Paper Mario: The Origami King", "ペーパーマリオ オリガミキング" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario + Rabbids Kingdom Battle", "マリオ＋ラビッツ キングダムバトル" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario + Rabbids Sparks of Hope", "マリオ＋ラビッツ ギャラクシーバトル" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario Golf Super Rush", "マリオゴルフ スーパーラッシュ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario Tennis Aces", "マリオテニス エース" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario Strikers Battle League", "マリオストライカーズ バトルリーグ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Luigi's Mansion 3", "Luigis Mansion 3", "ルイージマンション3" },
+        new(StringComparer.OrdinalIgnoreCase) { "Luigi's Mansion 2 HD", "Luigis Mansion 2 HD", "ルイージマンション2 HD" },
+        new(StringComparer.OrdinalIgnoreCase) { "Captain Toad Treasure Tracker", "進め！キノピオ隊長" },
+        new(StringComparer.OrdinalIgnoreCase) { "Princess Peach Showtime!", "Princess Peach: Showtime!", "プリンセスピーチ Showtime!" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario vs. Donkey Kong", "Mario vs Donkey Kong", "マリオvs.ドンキーコング" },
+        new(StringComparer.OrdinalIgnoreCase) { "Donkey Kong Country Tropical Freeze", "Donkey Kong Country: Tropical Freeze", "ドンキーコング トロピカルフリーズ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Donkey Kong Country Returns HD", "ドンキーコング リターンズ HD" },
+        new(StringComparer.OrdinalIgnoreCase) { "WarioWare Get It Together!", "おすそわける メイド イン ワリオ" },
+        new(StringComparer.OrdinalIgnoreCase) { "WarioWare Move It!", "超おどる メイド イン ワリオ" },
+
+        // Smash / Splatoon / Animal Crossing
+        new(StringComparer.OrdinalIgnoreCase) { "Super Smash Bros. Ultimate", "Super Smash Bros Ultimate", "大乱闘スマッシュブラザーズ SPECIAL", "スマブラSP" },
+        new(StringComparer.OrdinalIgnoreCase) { "Splatoon 2", "スプラトゥーン2" },
+        new(StringComparer.OrdinalIgnoreCase) { "Splatoon 3", "スプラトゥーン3" },
+        new(StringComparer.OrdinalIgnoreCase) { "Animal Crossing New Horizons", "Animal Crossing: New Horizons", "あつまれ どうぶつの森", "あつ森" },
+
+        // Pokémon Series
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Scarlet", "Pokemon Scarlet", "ポケットモンスター スカーレット" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Violet", "Pokemon Violet", "ポケットモンスター バイオレット" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Legends Arceus", "Pokemon Legends Arceus", "Pokémon Legends: Arceus", "Pokemon Legends: Arceus", "Pokémon LEGENDS アルセウス" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Legends Z-A", "Pokemon Legends Z-A", "Pokémon Legends: Z-A", "Pokémon LEGENDS Z-A" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Sword", "Pokemon Sword", "ポケットモンスター ソード" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Shield", "Pokemon Shield", "ポケットモンスター シールド" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Brilliant Diamond", "Pokemon Brilliant Diamond", "ポケットモンスター ブリリアントダイヤモンド" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Shining Pearl", "Pokemon Shining Pearl", "ポケットモンスター シャイニングパール" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Let's Go, Pikachu!", "Pokemon Let's Go Pikachu", "ポケットモンスター Let's Go! ピカチュウ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Let's Go, Eevee!", "Pokemon Let's Go Eevee", "ポケットモンスター Let's Go! イーブイ" },
+        new(StringComparer.OrdinalIgnoreCase) { "New Pokémon Snap", "New Pokemon Snap", "New ポケモンスナップ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pokémon Mystery Dungeon Rescue Team DX", "ポケモン不思議のダンジョン 救助隊DX" },
+
+        // Kirby / Pikmin / Metroid
+        new(StringComparer.OrdinalIgnoreCase) { "Kirby and the Forgotten Land", "星のカービィ ディスカバリー" },
+        new(StringComparer.OrdinalIgnoreCase) { "Kirby's Return to Dream Land Deluxe", "星のカービィ Wii デラックス" },
+        new(StringComparer.OrdinalIgnoreCase) { "Kirby Star Allies", "星のカービィ スターアライズ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pikmin 4", "ピクミン4" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pikmin 3 Deluxe", "ピクミン3 デラックス" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pikmin 1", "ピクミン1" },
+        new(StringComparer.OrdinalIgnoreCase) { "Pikmin 2", "ピクミン2" },
+        new(StringComparer.OrdinalIgnoreCase) { "Metroid Dread", "メトロイド ドレッド" },
+        new(StringComparer.OrdinalIgnoreCase) { "Metroid Prime Remastered", "メトロイドプライム リマスタード" },
+        new(StringComparer.OrdinalIgnoreCase) { "Metroid Prime 4 Beyond", "Metroid Prime 4: Beyond", "メトロイドプライム4 ビヨンド" },
+
+        // Xenoblade / Fire Emblem
+        new(StringComparer.OrdinalIgnoreCase) { "Xenoblade Chronicles Definitive Edition", "Xenoblade Chronicles: Definitive Edition", "ゼノブレイド ディフィニティブ・エディション" },
+        new(StringComparer.OrdinalIgnoreCase) { "Xenoblade Chronicles 2", "ゼノブレイド2" },
+        new(StringComparer.OrdinalIgnoreCase) { "Xenoblade Chronicles 3", "ゼノブレイド3" },
+        new(StringComparer.OrdinalIgnoreCase) { "Fire Emblem Three Houses", "Fire Emblem: Three Houses", "ファイアーエムブレム 風花雪月" },
+        new(StringComparer.OrdinalIgnoreCase) { "Fire Emblem Engage", "ファイアーエムブレム エンゲージ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Fire Emblem Warriors Three Hopes", "ファイアーエムブレム無双 風花雪月" },
+
+        // Retro & Online Classics
+        new(StringComparer.OrdinalIgnoreCase) { "Nintendo Switch Sports", "Nintendo Switch Sports" },
+        new(StringComparer.OrdinalIgnoreCase) { "Ring Fit Adventure", "リングフィット アドベンチャー" },
+        new(StringComparer.OrdinalIgnoreCase) { "Clubhouse Games 51 Worldwide Classics", "世界のアソビ大全51", "51 Worldwide Games" },
+        new(StringComparer.OrdinalIgnoreCase) { "Nintendo Entertainment System - Nintendo Switch Online", "Family Computer - Nintendo Switch Online", "ファミリーコンピュータ Nintendo Switch Online", "NES - Nintendo Switch Online", "FC - Nintendo Switch Online" },
+        new(StringComparer.OrdinalIgnoreCase) { "Super Nintendo Entertainment System - Nintendo Switch Online", "Super Famicom - Nintendo Switch Online", "スーパーファミコン Nintendo Switch Online", "SNES - Nintendo Switch Online", "SFC - Nintendo Switch Online" },
+        new(StringComparer.OrdinalIgnoreCase) { "Nintendo 64 - Nintendo Switch Online", "NINTENDO 64 - Nintendo Switch Online", "N64 - Nintendo Switch Online" },
+        new(StringComparer.OrdinalIgnoreCase) { "Game Boy - Nintendo Switch Online", "ゲームボーイ Nintendo Switch Online", "GB - Nintendo Switch Online" },
+        new(StringComparer.OrdinalIgnoreCase) { "Game Boy Advance - Nintendo Switch Online", "ゲームボーイアドバンス Nintendo Switch Online", "GBA - Nintendo Switch Online" },
+        new(StringComparer.OrdinalIgnoreCase) { "SEGA Genesis - Nintendo Switch Online", "SEGA Mega Drive - Nintendo Switch Online", "セガ メガドライブ for Nintendo Switch Online" }
+    };
+
+    public static IEnumerable<string> GetSynonyms(string appName)
+    {
+        if (string.IsNullOrWhiteSpace(appName)) yield break;
+        string norm = Normalize(appName);
+        foreach (var group in TitleGroups)
+        {
+            if (group.Any(title => string.Equals(title, appName, StringComparison.OrdinalIgnoreCase) ||
+                                   Normalize(title) == norm))
+            {
+                foreach (var alias in group)
+                    yield return alias;
+                yield break;
+            }
+        }
+        yield return appName;
+    }
+
+    private static string Normalize(string s) =>
+        new(s.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 }
 
 public class SyncResult
