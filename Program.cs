@@ -596,7 +596,7 @@ public class SyncEngine
     {
         _config = config;
         _auth = auth;
-        _nxapi = new NxapiClient();
+        _nxapi = new NxapiClient(_config);
         _coral = new CoralClient(_auth, _nxapi);
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
     }
@@ -931,21 +931,28 @@ public class UserProfile
 public class NxapiClient
 {
     private const string NxapiZncaBase = "https://nxapi-znca-api.fancy.org.uk/api/znca";
-    private const string NxapiAuthClientId = "JGN1is1KSmRMOL-g4qmgZA";
+    private const string DefaultNxapiAuthClientId = "JGN1is1KSmRMOL-g4qmgZA";
     private const string NxapiClientVersion = "w8zSLBsxR7rVoGJA";
     private const string UserAgent = "nso-album-sync/1.0 (+https://github.com/dycool/nso-album-sync)";
 
     private readonly HttpClient _http;
+    private readonly ConfigManager? _configManager;
     private string? _cachedNsoVersion;
     private DateTime _nsoVersionExpiresAt = DateTime.MinValue;
 
     private string? _cachedNxapiToken;
     private DateTime _nxapiTokenExpiresAt = DateTime.MinValue;
 
-    public NxapiClient()
+    public NxapiClient(ConfigManager? configManager = null)
     {
+        _configManager = configManager;
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     }
+
+    private string EffectiveClientId =>
+        !string.IsNullOrWhiteSpace(_configManager?.Config.NxapiAuthClientId)
+            ? _configManager.Config.NxapiAuthClientId
+            : DefaultNxapiAuthClientId;
 
     /// <summary>
     /// Discovers NSO app version dynamically from /config and caches for 6 hours (rule #7 in guidelines)
@@ -994,7 +1001,7 @@ public class NxapiClient
             var form = new Dictionary<string, string>
             {
                 ["grant_type"] = "client_credentials",
-                ["client_id"] = NxapiAuthClientId,
+                ["client_id"] = EffectiveClientId,
                 ["scope"] = "ca:gf ca:er ca:dr"
             };
 
@@ -1296,6 +1303,7 @@ public class AppConfig
     public string DestinationFolder { get; set; } = "";
     public bool AutoSyncEnabled { get; set; } = true;
     public int SyncIntervalMinutes { get; set; } = 60;
+    public string NxapiAuthClientId { get; set; } = "JGN1is1KSmRMOL-g4qmgZA";
     public DateTime? LastSyncTime { get; set; }
 }
 
