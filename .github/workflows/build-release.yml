@@ -29,12 +29,12 @@ jobs:
 
       - name: Build & Publish Windows x64
         run: |
-          dotnet publish NsoAlbumSync.csproj -f net8.0-windows -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./dist/win-x64
+          dotnet publish NsoAlbumSync.csproj -f net8.0-windows -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./dist/win-x64
           Compress-Archive -Path ./dist/win-x64/nso-album-sync.exe -DestinationPath ./dist/nso-album-sync-windows-x64.zip
 
       - name: Build & Publish Windows ARM64
         run: |
-          dotnet publish NsoAlbumSync.csproj -f net8.0-windows -c Release -r win-arm64 --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./dist/win-arm64
+          dotnet publish NsoAlbumSync.csproj -f net8.0-windows -c Release -r win-arm64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./dist/win-arm64
           Compress-Archive -Path ./dist/win-arm64/nso-album-sync.exe -DestinationPath ./dist/nso-album-sync-windows-arm64.zip
 
       - name: Upload Windows Artifacts
@@ -62,7 +62,7 @@ jobs:
 
       - name: Build & Publish macOS ARM64 (Apple Silicon)
         run: |
-          dotnet publish NsoAlbumSync.csproj -f net8.0 -c Release -r osx-arm64 --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o ./dist/osx-arm64
+          dotnet publish NsoAlbumSync.csproj -f net8.0 -c Release -r osx-arm64 --self-contained false -p:PublishSingleFile=true -o ./dist/osx-arm64
           chmod +x ./dist/osx-arm64/nso-album-sync
           echo "Ad-hoc codesigning macOS ARM64 binary..."
           codesign --force --deep --sign - ./dist/osx-arm64/nso-album-sync
@@ -70,7 +70,7 @@ jobs:
 
       - name: Build & Publish macOS x64 (Intel)
         run: |
-          dotnet publish NsoAlbumSync.csproj -f net8.0 -c Release -r osx-x64 --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o ./dist/osx-x64
+          dotnet publish NsoAlbumSync.csproj -f net8.0 -c Release -r osx-x64 --self-contained false -p:PublishSingleFile=true -o ./dist/osx-x64
           chmod +x ./dist/osx-x64/nso-album-sync
           echo "Ad-hoc codesigning macOS x64 binary..."
           codesign --force --deep --sign - ./dist/osx-x64/nso-album-sync
@@ -100,13 +100,13 @@ jobs:
 
       - name: Build & Publish Linux x64
         run: |
-          dotnet publish NsoAlbumSync.csproj -f net8.0 -c Release -r linux-x64 --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o ./dist/linux-x64
+          dotnet publish NsoAlbumSync.csproj -f net8.0 -c Release -r linux-x64 --self-contained false -p:PublishSingleFile=true -o ./dist/linux-x64
           chmod +x ./dist/linux-x64/nso-album-sync
           tar -czvf ./dist/nso-album-sync-linux-x64.tar.gz -C ./dist/linux-x64 nso-album-sync
 
       - name: Build & Publish Linux ARM64
         run: |
-          dotnet publish NsoAlbumSync.csproj -f net8.0 -c Release -r linux-arm64 --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o ./dist/linux-arm64
+          dotnet publish NsoAlbumSync.csproj -f net8.0 -c Release -r linux-arm64 --self-contained false -p:PublishSingleFile=true -o ./dist/linux-arm64
           chmod +x ./dist/linux-arm64/nso-album-sync
           tar -czvf ./dist/nso-album-sync-linux-arm64.tar.gz -C ./dist/linux-arm64 nso-album-sync
 

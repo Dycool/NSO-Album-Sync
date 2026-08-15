@@ -15,12 +15,10 @@
     <FileVersion>1.0.0.0</FileVersion>
     <ApplicationIcon>app.ico</ApplicationIcon>
     
-    <!-- Single-file release packaging options -->
+    <!-- Single-file framework-dependent packaging (lightweight ~290 KB) -->
     <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
+    <SelfContained>false</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
