@@ -759,10 +759,35 @@ public class SyncEngine
             string relativePath = GetSwitchUsbPath(item);
             string fullPath = Path.Combine(destinationRoot, relativePath);
 
-            // Check if already downloaded and valid file exists on disk
-            // If the user deleted the file and it is still in the cloud album, it will automatically re-download it!
-            if (ledger.Contains(mediaKey) && File.Exists(fullPath) && new FileInfo(fullPath).Length > 0)
+            // 1. Check if exact file already exists and is non-empty
+            bool fileExistsOnDisk = File.Exists(fullPath) && new FileInfo(fullPath).Length > 0;
+
+            // 2. Check alternate official Switch USB variants (e.g. without _c or with -00)
+            if (!fileExistsOnDisk)
             {
+                string? dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                {
+                    string ext = Path.GetExtension(fullPath);
+                    string baseName = Path.GetFileNameWithoutExtension(fullPath);
+                    string prefix = baseName.EndsWith("_c") ? baseName.Substring(0, baseName.Length - 2) : baseName;
+
+                    string altPath1 = Path.Combine(dir, $"{prefix}{ext}");
+                    string altPath2 = Path.Combine(dir, $"{prefix}-00{ext}");
+
+                    if ((File.Exists(altPath1) && new FileInfo(altPath1).Length > 0) ||
+                        (File.Exists(altPath2) && new FileInfo(altPath2).Length > 0))
+                    {
+                        fileExistsOnDisk = true;
+                    }
+                }
+            }
+
+            // If file already exists on disk (whether from direct Switch USB copy or prior sync),
+            // automatically record in ledger and SKIP downloading!
+            if (fileExistsOnDisk)
+            {
+                ledger.Add(mediaKey);
                 continue;
             }
 
