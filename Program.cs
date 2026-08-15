@@ -748,14 +748,10 @@ public class SyncEngine
         }
 
         Directory.CreateDirectory(destinationRoot);
-
-        // 2. Load sync ledger
-        var ledger = _config.LoadSyncLedger();
         int newDownloaded = 0;
 
         foreach (var item in mediaItems)
         {
-            string mediaKey = string.IsNullOrEmpty(item.Id) ? item.ContentUri : item.Id;
             string relativePath = GetSwitchUsbPath(item);
             string fullPath = Path.Combine(destinationRoot, relativePath);
 
@@ -783,11 +779,9 @@ public class SyncEngine
                 }
             }
 
-            // If file already exists on disk (whether from direct Switch USB copy or prior sync),
-            // automatically record in ledger and SKIP downloading!
+            // If file already exists on disk (from previous sync or manual Switch USB copy), SKIP!
             if (fileExistsOnDisk)
             {
-                ledger.Add(mediaKey);
                 continue;
             }
 
@@ -820,11 +814,9 @@ public class SyncEngine
                 catch { }
             }
 
-            ledger.Add(mediaKey);
             newDownloaded++;
         }
 
-        _config.SaveSyncLedger(ledger);
         return new SyncResult { TotalFound = mediaItems.Count, NewDownloads = newDownloaded };
     }
 
@@ -1544,7 +1536,6 @@ public class ConfigManager
 {
     private readonly string _configDir;
     private readonly string _configPath;
-    private readonly string _ledgerPath;
 
     public AppConfig Config { get; private set; }
 
@@ -1554,7 +1545,6 @@ public class ConfigManager
         Directory.CreateDirectory(_configDir);
 
         _configPath = Path.Combine(_configDir, "config.json");
-        _ledgerPath = Path.Combine(_configDir, "sync_ledger.json");
 
         Config = LoadConfig();
     }
@@ -1619,31 +1609,6 @@ public class ConfigManager
                 }
                 catch { }
             }
-        }
-        catch { }
-    }
-
-    public HashSet<string> LoadSyncLedger()
-    {
-        if (File.Exists(_ledgerPath))
-        {
-            try
-            {
-                string json = File.ReadAllText(_ledgerPath);
-                var list = JsonSerializer.Deserialize<List<string>>(json);
-                if (list != null) return new HashSet<string>(list);
-            }
-            catch { }
-        }
-        return new HashSet<string>();
-    }
-
-    public void SaveSyncLedger(HashSet<string> ledger)
-    {
-        try
-        {
-            string json = JsonSerializer.Serialize(ledger.ToList(), new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_ledgerPath, json);
         }
         catch { }
     }
