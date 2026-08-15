@@ -1,149 +1,82 @@
-# NSO Album Sync 📸🎮
+# Nintendo Switch Online (NSO) Album Sync
 
-> **Automatic Nintendo Switch Online Album Synchronizer**
-> A lightweight background application that lives in your System Tray and automatically downloads your Nintendo Switch Online screenshots and videos directly to your PC, following the **official Nintendo Switch USB folder structure**.
+A lightweight, zero-UI background application for Windows, macOS, and Linux that automatically syncs your uploaded Nintendo Switch screenshots and videos directly to your PC, matching the official Switch USB transfer folder hierarchy.
 
-[![Build and Release](https://github.com/dycool/nso-album-sync/actions/workflows/build-release.yml/badge.svg)](https://github.com/dycool/nso-album-sync/actions/workflows/build-release.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange.svg)](#)
+[![Release](https://img.shields.io/github/v/release/Dycool/nso-album-sync?color=blue&style=flat-square)](https://github.com/Dycool/nso-album-sync/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange.svg?style=flat-square)](#)
 
 ---
 
-## ✨ Features
+## 🌟 Features
 
-- 🔄 **Hourly Background Auto-Sync**: Silently checks your Nintendo Switch Online album every hour and downloads newly uploaded screenshots and videos.
-- 📁 **Official Nintendo Switch USB Structure**: Saves captures matching the exact file hierarchy used by the Switch USB PC transfer:
+- **🔄 Hourly Background Auto-Sync**: Runs quietly in the system tray and checks your Nintendo Switch Online album every hour, automatically downloading new screenshots and gameplay videos.
+- **📁 Official Nintendo Switch USB Structure**: Saves captures matching the exact directory hierarchy created by the Nintendo Switch during USB PC transfers:
   ```text
   <Your Chosen Folder>/
   └── Album/
       ├── Super Smash Bros. Ultimate/
       │   ├── 2026081514300000_c.jpg
       │   └── 2026081515000000_c.mp4
-      ├── The Legend of Zelda Tears of the Kingdom/
+      ├── The Legend of Zelda Breath of the Wild/
       │   └── 2026081512100000_c.jpg
       └── Mario Kart 8 Deluxe/
           └── 2026081511050000_c.jpg
   ```
-- 🕒 **Preserves Original Timestamps**: Automatically sets the local file creation and last modified timestamps to match the exact moment the screenshot/video was captured on your console.
-- 🖥️ **Zero-UI System Tray App**: No console windows, no complex menus. Sits quietly in your system tray (bottom-right on Windows taskbar) with a native context menu:
-  - 🔄 **Sync Now** — Trigger an immediate album sync on demand.
-  - ⏱ **Auto-Sync (Hourly)** — Enable or disable automatic hourly checks.
-  - 📁 **Select Folder...** — Change where your album captures are saved.
+- **💾 Pre-Existing USB Transfer Recognition**: Point the app to your existing Switch album folder and it will immediately detect every photo and video you already backed up, downloading 0 redundant files.
+- **🆔 Dynamic Title ID ⟷ Local Folder Learning**: Automatically pairs universal Nintendo Title IDs with your existing local folder names (e.g. Portuguese, Japanese, or custom folder names) so new captures always route into your existing directories without creating duplicate folders.
+- **🕒 Original Timestamp Preservation**: Sets filesystem creation and last-modified timestamps to match the exact moment the media was captured on the console RTC hardware.
+- **🔄 Local File Restoration**: If you delete a local capture that is still present in your online cloud album (within the recent 100 captures), the next sync will automatically restore and re-download it.
+- **🔒 Encrypted Credential Storage**: Session tokens are encrypted on disk using **Windows DPAPI** (`ProtectedData` with `DataProtectionScope.CurrentUser`) on Windows, and locked to `0600` user permissions on macOS and Linux.
+- **🖥️ Zero-UI System Tray App**: Silent taskbar notification icon with native context menu:
+  - 🔄 **Sync Now** — Trigger an immediate sync on demand.
+  - ⏱ **Auto-Sync (Hourly)** — Toggle automatic 60-minute background sync.
+  - 📁 **Select Folder...** — Change where your album is stored.
   - 📂 **Open Album Folder** — Open Windows Explorer directly to your album.
-  - 🚀 **Start on Boot** — Toggle automatic launch on Windows startup.
-  - 🔑 **Sign In / Sign Out** — Switch or manage your Nintendo Account.
+  - 🚀 **Start on Boot** — Toggle launch on Windows startup.
+  - 🔑 **Sign In / Sign Out** — Manage or switch Nintendo Accounts.
   - ❌ **Exit** — Close the background application.
-- 🔔 **Native Balloon Notifications**: Pops a subtle tray notification whenever new captures are synced.
-- ⚡ **Zero Dependencies**: Standalone single-file `.exe` compiled with .NET 8 self-contained runtime. Requires no installation, no .NET runtime, and no Node.js.
-- 🛡️ **`nxapi-znca-api` Compliant**: Strictly follows all open-source community guidelines, including 2-hour session caching, dynamic version discovery, combined `/f` attestation, and rate-limit backoff.
+- **🪶 Ultra-Lightweight**: Single-file executable (~290 KB) with minimal memory footprint (~25 MB RAM).
+- **🛡️ `nxapi-znca-api` Compliant**: Strictly follows open-source maintainer guidelines with 2-hour Coral session caching, dynamic version discovery, combined `/f` attestation, and proper rate-limiting.
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Download & Installation
 
-### 1. Download
-Grab the latest `nso-album-sync.exe` from the [**Releases**](https://github.com/dycool/nso-album-sync/releases) page.
+### Windows
+1. Download the latest **`nso-album-sync.exe`** from the [**Releases**](https://github.com/Dycool/nso-album-sync/releases) page.
+2. Double-click the executable to launch it into your System Tray (bottom-right of the taskbar).
+3. *(Optional)* Click **"🚀 Start on Boot"** in the tray menu to keep it running automatically on startup.
 
-### 2. First Run (Sign-In Once)
-1. Double-click `nso-album-sync.exe`.
-2. A one-time sign-in dialog will appear:
+*(Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). Windows will automatically prompt to download it if not already installed.)*
+
+### macOS & Linux
+Standalone single-file binaries are available under [**Releases**](https://github.com/Dycool/nso-album-sync/releases) (macOS binaries are ad-hoc codesigned).
+
+---
+
+## 🔑 Authentication & First-Time Setup
+
+1. Launch **NSO Album Sync**.
+2. If not signed in, a one-time setup dialog will appear:
    - Click **"🌐 1. Open Nintendo Sign-In Page"** to open Nintendo's official login page in your default browser.
    - Sign in to your Nintendo Account.
    - Right-click (or copy link) on the **"Select this person"** button (or copy the callback URL from your browser's address bar).
    - Paste the link into the app and click **"✅ Sign In & Connect"**.
-3. That's it! Your session is stored securely in `%APPDATA%\NSOAlbumSync\config.json`.
-
-### 3. Background Syncing
-- The app will minimize to your System Tray and perform an immediate sync.
-- It will automatically refresh every hour in the background.
-- To sync manually at any time, right-click the tray icon and click **"Sync Now"**.
+3. The app is now connected! It will sit quietly in your system tray and automatically sync new captures.
 
 ---
 
-## 🛠️ System Tray Menu
+## ⚙️ How nxapi Attestation Works
 
-| Menu Item | Action |
-|---|---|
-| **● Connected (Nickname)** | Displays current connection state and Nintendo account name |
-| **Last sync: HH:mm** | Displays timestamp of the last successful sync cycle |
-| **🔄 Sync Now** | Manually triggers an immediate scan and download |
-| **⏱ Auto-Sync (Hourly)** | Toggles the 60-minute automatic background sync timer |
-| **📁 Select Folder...** | Opens a folder picker to choose your album save directory |
-| **📂 Open Album Folder** | Launches Windows Explorer directly inside your `Album` directory |
-| **🚀 Start on Boot** | Adds/removes the app from Windows startup registry |
-| **🔑 Sign In / Sign Out** | Re-authenticate or switch Nintendo accounts |
-| **❌ Exit** | Completely exits the background application |
+NSO Album Sync uses the public [**nxapi-znca-api**](https://nxapi-znca-api.fancy.org.uk) service with a registered public client ID (`eJ8TDme0c-Z4czx5SvZabA`) with OAuth scopes `ca:gf ca:er ca:dr`.
+
+- **Zero Emulators / Rooting Needed**: All Coral `f` token generation and encryption/decryption are handled through the public API.
+- **Session Caching**: Authenticated Coral tokens are cached for 2 hours in memory, skipping attestation requests on alternating sync intervals.
+- **Dynamic Versioning**: NSO client versions are dynamically discovered from `/config` and cached for 6 hours.
 
 ---
 
-## 🏗️ Architecture & Network Flow
+## 📄 License
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant App as NSO Album Sync (.exe)
-    participant NA as accounts.nintendo.com
-    participant NX as nxapi-znca-api (Attestation)
-    participant Coral as api-lp1.znc.srv.nintendo.net (Coral)
-    participant CDN as Nintendo Media CDN (S3/CloudFront)
-    participant Disk as Local Drive (Album/)
-
-    Note over App: 1. Start / Hourly Timer
-    App->>NA: Exchange session_token -> id_token & access_token
-    App->>NX: /f (with encrypt_token_request for Login)
-    NX-->>App: Encrypted /v4/Account/Login payload
-    App->>Coral: POST /v4/Account/Login
-    Coral-->>App: Coral WebApiServerCredential (Cached for 2 hours)
-    
-    App->>NX: /encrypt-request for /v4/Media/List
-    NX-->>App: Encrypted /v4/Media/List payload
-    App->>Coral: POST /v4/Media/List
-    Coral-->>App: Encrypted Media List
-    App->>NX: /decrypt-response
-    NX-->>App: Decrypted JSON (Media Items)
-
-    loop For each new capture
-        App->>CDN: GET item.contentUri (Direct Stream)
-        CDN-->>App: Image / MP4 Video bytes
-        App->>Disk: Write Album/<Game>/<YYYYMMDDHHMMSS00_c>.<jpg|mp4>
-        App->>Disk: Apply original capture timestamps (Creation & LastWriteTime)
-    end
-
-    Note over App: 2. Show Tray Balloon Notification
-```
-
----
-
-## 💻 Building from Source
-
-### Prerequisites
-- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) or higher.
-
-### Build & Run
-```bash
-# Clone repository
-git clone https://github.com/dycool/nso-album-sync.git
-cd nso-album-sync
-
-# Build debug version
-dotnet build
-
-# Publish single-file self-contained Windows executable
-dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o ./publish
-```
-
-The resulting `nso-album-sync.exe` in `./publish` is a standalone binary with zero external dependencies.
-
----
-
-## 🔒 Privacy & Security
-
-- **Direct Connections**: All account tokens, media lists, and files are transferred directly between your machine and Nintendo's official endpoints over HTTPS.
-- **Local Storage**: All credentials and sync histories are stored exclusively on your local machine (`%APPDATA%\NSOAlbumSync\`).
-- **No Third-Party Tracking**: No telemetry, analytics, or user data is collected.
-
----
-
-## 📜 Disclaimer
-
-This application is an independent, open-source project and is not affiliated with, endorsed by, or associated with Nintendo Co., Ltd. or Nintendo of America Inc. Nintendo Switch and Nintendo Switch Online are trademarks of Nintendo.
+This project is licensed under the [MIT License](LICENSE).
