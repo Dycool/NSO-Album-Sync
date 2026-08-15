@@ -1434,9 +1434,28 @@ public static class IconGenerator
     {
         if (_cachedAlbumIcon != null) return _cachedAlbumIcon;
 
-        // 1. Try to load from application executable's embedded icon or app.ico if available
+        // 1. Try to load from Embedded Assembly Resource
         try
         {
+            var asm = typeof(Program).Assembly;
+            using var stream = asm.GetManifestResourceStream("NsoAlbumSync.app.ico") 
+                             ?? asm.GetManifestResourceStream("app.ico");
+            if (stream != null)
+            {
+                _cachedAlbumIcon = new Icon(stream);
+                return _cachedAlbumIcon;
+            }
+        }
+        catch { }
+
+        // 2. Try to load from app.ico on disk or executable's embedded icon
+        try
+        {
+            if (File.Exists("app.ico"))
+            {
+                _cachedAlbumIcon = new Icon("app.ico");
+                return _cachedAlbumIcon;
+            }
             string? exePath = Environment.ProcessPath;
             if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
             {
@@ -1450,17 +1469,7 @@ public static class IconGenerator
         }
         catch { }
 
-        try
-        {
-            if (File.Exists("app.ico"))
-            {
-                _cachedAlbumIcon = new Icon("app.ico");
-                return _cachedAlbumIcon;
-            }
-        }
-        catch { }
-
-        // 2. Render dynamic high-DPI official Switch Album Icon
+        // 3. Render dynamic high-DPI official Switch Album Icon
         using var bitmap = DrawAlbumBitmap(32);
         IntPtr hIcon = bitmap.GetHicon();
         _cachedAlbumIcon = (Icon)Icon.FromHandle(hIcon).Clone();
@@ -1484,6 +1493,15 @@ public static class IconGenerator
         using var matrix = new Matrix();
         matrix.Scale(scale, scale);
 
+        // 1. Official anti-transparency white plate inside frame (from iOS album_light_on.json BG_透過防止)
+        float innerX = 3.5f * scale;
+        float innerY = 8.0f * scale;
+        float innerW = 25.0f * scale;
+        float innerH = 15.6f * scale;
+        using var whiteBrush = new SolidBrush(Color.FromArgb(252, 252, 252));
+        g.FillRectangle(whiteBrush, innerX, innerY, innerW, innerH);
+
+        // 2. Render official vector paths
         using var path1 = ParseSvgPath(NsoPath1Data);
         using var path2 = ParseSvgPath(NsoPath2Data);
 
@@ -1492,10 +1510,10 @@ public static class IconGenerator
 
         // Official Nintendo color from APK/IPA (#3571E9)
         Color nsoOfficialBlue = Color.FromArgb(53, 113, 233);
-        using var brush = new SolidBrush(nsoOfficialBlue);
+        using var blueBrush = new SolidBrush(nsoOfficialBlue);
 
-        g.FillPath(brush, path2);
-        g.FillPath(brush, path1);
+        g.FillPath(blueBrush, path2);
+        g.FillPath(blueBrush, path1);
 
         return bmp;
     }
