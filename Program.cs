@@ -979,14 +979,19 @@ public class SyncEngine
         return defaultClean;
     }
 
-    private static string NormalizeForMatching(string? input)
+    public static string NormalizeForMatching(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return "";
+        string normalizedString = input.Normalize(NormalizationForm.FormD);
         var sb = new StringBuilder();
-        foreach (char c in input)
+        foreach (char c in normalizedString)
         {
-            if (char.IsLetterOrDigit(c))
-                sb.Append(char.ToLowerInvariant(c));
+            var category = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c);
+            if (category != System.Globalization.UnicodeCategory.NonSpacingMark)
+            {
+                if (char.IsLetterOrDigit(c))
+                    sb.Append(char.ToLowerInvariant(c));
+            }
         }
         return sb.ToString();
     }
@@ -1016,18 +1021,19 @@ public static class GameLocalizationDatabase
     private static readonly List<HashSet<string>> TitleGroups = new()
     {
         // Zelda Series
-        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Breath of the Wild", "The Legend of Zelda: Breath of the Wild", "ゼルダの伝説 ブレス オブ ザ ワイルド", "A Lenda de Zelda Breath of the Wild" },
-        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Tears of the Kingdom", "The Legend of Zelda: Tears of the Kingdom", "ゼルダの伝説 ティアーズ オブ ザ キングダム", "A Lenda de Zelda Tears of the Kingdom" },
-        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Echoes of Wisdom", "The Legend of Zelda: Echoes of Wisdom", "ゼルダの伝説 知恵のかりもの" },
-        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Link's Awakening", "The Legend of Zelda: Link's Awakening", "ゼルダの伝説 夢をみる島" },
-        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Skyward Sword HD", "The Legend of Zelda: Skyward Sword HD", "ゼルダの伝説 スカイウォードソード HD" },
-        new(StringComparer.OrdinalIgnoreCase) { "Hyrule Warriors Age of Calamity", "Hyrule Warriors: Age of Calamity", "ゼルダ無双 厄災の黙示録" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Breath of the Wild", "The Legend of Zelda: Breath of the Wild", "Breath of the Wild", "Breath of the Wild - Nintendo Switch 2 Edition", "ゼルダの伝説 ブレス オブ ザ ワイルド", "A Lenda de Zelda Breath of the Wild" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Tears of the Kingdom", "The Legend of Zelda: Tears of the Kingdom", "Tears of the Kingdom", "Tears of the Kingdom - Nintendo Switch 2 Edition", "ゼルダの伝説 ティアーズ オブ ザ キングダム", "A Lenda de Zelda Tears of the Kingdom" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Echoes of Wisdom", "The Legend of Zelda: Echoes of Wisdom", "Echoes of Wisdom", "ゼルダの伝説 知恵のかりもの" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Link's Awakening", "The Legend of Zelda: Link's Awakening", "Link's Awakening", "ゼルダの伝説 夢をみる島" },
+        new(StringComparer.OrdinalIgnoreCase) { "The Legend of Zelda Skyward Sword HD", "The Legend of Zelda: Skyward Sword HD", "Skyward Sword HD", "ゼルダの伝説 スカイウォードソード HD" },
+        new(StringComparer.OrdinalIgnoreCase) { "Hyrule Warriors Age of Calamity", "Hyrule Warriors: Age of Calamity", "Age of Calamity", "ゼルダ無双 厄災の黙示録" },
         new(StringComparer.OrdinalIgnoreCase) { "Hyrule Warriors Definitive Edition", "Hyrule Warriors: Definitive Edition", "ゼルダ無双 ハイラルオールスターズ DX" },
         
         // Mario Series
         new(StringComparer.OrdinalIgnoreCase) { "Super Mario Bros. Wonder", "Super Mario Bros Wonder", "スーパーマリオブラザーズ ワンダー" },
         new(StringComparer.OrdinalIgnoreCase) { "Super Mario Odyssey", "スーパーマリオ オデッセイ" },
         new(StringComparer.OrdinalIgnoreCase) { "Mario Kart 8 Deluxe", "Mario Kart 8 Deluxe™", "マリオカート8 デラックス", "マリオカート8DX" },
+        new(StringComparer.OrdinalIgnoreCase) { "New Super Mario Bros. U Deluxe", "New Super Mario Bros U Deluxe", "New スーパーマリオブラザーズ U デラックス" },
         new(StringComparer.OrdinalIgnoreCase) { "Super Mario 3D World + Bowser's Fury", "Super Mario 3D World + Bowsers Fury", "スーパーマリオ 3Dワールド ＋ フューリーワールド" },
         new(StringComparer.OrdinalIgnoreCase) { "Super Mario 3D All-Stars", "Super Mario 3D All Stars", "スーパーマリオ 3Dコレクション" },
         new(StringComparer.OrdinalIgnoreCase) { "Super Mario Maker 2", "スーパーマリオメーカー 2" },
@@ -1037,26 +1043,21 @@ public static class GameLocalizationDatabase
         new(StringComparer.OrdinalIgnoreCase) { "Super Mario RPG", "スーパーマリオRPG" },
         new(StringComparer.OrdinalIgnoreCase) { "Paper Mario The Thousand-Year Door", "Paper Mario: The Thousand-Year Door", "ペーパーマリオRPG" },
         new(StringComparer.OrdinalIgnoreCase) { "Paper Mario The Origami King", "Paper Mario: The Origami King", "ペーパーマリオ オリガミキング" },
-        new(StringComparer.OrdinalIgnoreCase) { "Mario + Rabbids Kingdom Battle", "マリオ＋ラビッツ キングダムバトル" },
-        new(StringComparer.OrdinalIgnoreCase) { "Mario + Rabbids Sparks of Hope", "マリオ＋ラビッツ ギャラクシーバトル" },
-        new(StringComparer.OrdinalIgnoreCase) { "Mario Golf Super Rush", "マリオゴルフ スーパーラッシュ" },
-        new(StringComparer.OrdinalIgnoreCase) { "Mario Tennis Aces", "マリオテニス エース" },
-        new(StringComparer.OrdinalIgnoreCase) { "Mario Strikers Battle League", "マリオストライカーズ バトルリーグ" },
+        new(StringComparer.OrdinalIgnoreCase) { "Princess Peach Showtime!", "Princess Peach: Showtime!", "Showtime!", "プリンセスピーチ Showtime!" },
+        new(StringComparer.OrdinalIgnoreCase) { "Mario & Sonic at the Olympic Games Tokyo 2020", "Mario and Sonic at the Olympic Games Tokyo 2020", "MARIO & SONIC NOS JOGOS OLÍMPICOS DE TÓQUIO 2020", "マリオ&ソニック AT 東京2020オリンピック" },
         new(StringComparer.OrdinalIgnoreCase) { "Luigi's Mansion 3", "Luigis Mansion 3", "ルイージマンション3" },
         new(StringComparer.OrdinalIgnoreCase) { "Luigi's Mansion 2 HD", "Luigis Mansion 2 HD", "ルイージマンション2 HD" },
         new(StringComparer.OrdinalIgnoreCase) { "Captain Toad Treasure Tracker", "進め！キノピオ隊長" },
-        new(StringComparer.OrdinalIgnoreCase) { "Princess Peach Showtime!", "Princess Peach: Showtime!", "プリンセスピーチ Showtime!" },
         new(StringComparer.OrdinalIgnoreCase) { "Mario vs. Donkey Kong", "Mario vs Donkey Kong", "マリオvs.ドンキーコング" },
         new(StringComparer.OrdinalIgnoreCase) { "Donkey Kong Country Tropical Freeze", "Donkey Kong Country: Tropical Freeze", "ドンキーコング トロピカルフリーズ" },
         new(StringComparer.OrdinalIgnoreCase) { "Donkey Kong Country Returns HD", "ドンキーコング リターンズ HD" },
-        new(StringComparer.OrdinalIgnoreCase) { "WarioWare Get It Together!", "おすそわける メイド イン ワリオ" },
-        new(StringComparer.OrdinalIgnoreCase) { "WarioWare Move It!", "超おどる メイド イン ワリオ" },
 
-        // Smash / Splatoon / Animal Crossing
+        // Animal Crossing / Smash / Splatoon
+        new(StringComparer.OrdinalIgnoreCase) { "Animal Crossing New Horizons", "Animal Crossing: New Horizons", "New Horizons", "New Horizons - Nintendo Switch 2 Edition", "Animal Crossing New Horizons - Nintendo Switch 2 Edition", "あつまれ どうぶつの森", "あつ森" },
         new(StringComparer.OrdinalIgnoreCase) { "Super Smash Bros. Ultimate", "Super Smash Bros Ultimate", "大乱闘スマッシュブラザーズ SPECIAL", "スマブラSP" },
         new(StringComparer.OrdinalIgnoreCase) { "Splatoon 2", "スプラトゥーン2" },
         new(StringComparer.OrdinalIgnoreCase) { "Splatoon 3", "スプラトゥーン3" },
-        new(StringComparer.OrdinalIgnoreCase) { "Animal Crossing New Horizons", "Animal Crossing: New Horizons", "あつまれ どうぶつの森", "あつ森" },
+        new(StringComparer.OrdinalIgnoreCase) { "1-2-Switch", "1 2 Switch", "ワンツースイッチ" },
 
         // Pokémon Series
         new(StringComparer.OrdinalIgnoreCase) { "Pokémon Scarlet", "Pokemon Scarlet", "ポケットモンスター スカーレット" },
@@ -1122,7 +1123,7 @@ public static class GameLocalizationDatabase
     }
 
     private static string Normalize(string s) =>
-        new(s.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+        SyncEngine.NormalizeForMatching(s);
 }
 
 public class SyncResult
