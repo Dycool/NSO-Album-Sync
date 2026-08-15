@@ -76,6 +76,7 @@ public class NsoTrayAppContext : ApplicationContext
     private ToolStripMenuItem _lastSyncItem = null!;
     private ToolStripMenuItem _syncNowItem = null!;
     private ToolStripMenuItem _autoSyncItem = null!;
+    private ToolStripMenuItem _notificationsItem = null!;
     private ToolStripMenuItem _startOnBootItem = null!;
     private ToolStripMenuItem _accountItem = null!;
 
@@ -128,6 +129,11 @@ public class NsoTrayAppContext : ApplicationContext
             CheckOnClick = true,
             Checked = _configManager.Config.AutoSyncEnabled
         };
+        _notificationsItem = new ToolStripMenuItem("🔔 Notifications", null, (s, e) => ToggleNotifications())
+        {
+            CheckOnClick = true,
+            Checked = _configManager.Config.NotificationsEnabled
+        };
 
         var folderSeparator = new ToolStripSeparator();
 
@@ -155,6 +161,7 @@ public class NsoTrayAppContext : ApplicationContext
             syncSeparator,
             _syncNowItem,
             _autoSyncItem,
+            _notificationsItem,
             folderSeparator,
             selectFolderItem,
             openFolderItem,
@@ -198,19 +205,28 @@ public class NsoTrayAppContext : ApplicationContext
 
         _syncNowItem.Enabled = hasSession && !_isSyncing;
         _autoSyncItem.Checked = _configManager.Config.AutoSyncEnabled;
+        _notificationsItem.Checked = _configManager.Config.NotificationsEnabled;
         _startOnBootItem.Checked = StartupHelper.IsRunAtStartupEnabled();
         _accountItem.Text = hasSession ? "🚪 Sign Out" : "🔑 Sign In to Nintendo Account...";
+    }
+
+    private void ShowNotification(string title, string text, ToolTipIcon icon, int timeoutMs = 3000)
+    {
+        if (!_configManager.Config.NotificationsEnabled)
+            return;
+
+        _trayIcon.ShowBalloonTip(timeoutMs, title, text, icon);
     }
 
     private async Task InitializeAppAsync()
     {
         if (string.IsNullOrEmpty(_configManager.Config.SessionToken))
         {
-            _trayIcon.ShowBalloonTip(
-                4000,
+            ShowNotification(
                 "NSO Album Sync",
                 "Welcome! Please sign in to your Nintendo Account to start auto-syncing your Switch album.",
-                ToolTipIcon.Info);
+                ToolTipIcon.Info,
+                4000);
 
             await PromptSignInDialogAsync();
         }
@@ -248,19 +264,19 @@ public class NsoTrayAppContext : ApplicationContext
 
             if (result.NewDownloads > 0)
             {
-                _trayIcon.ShowBalloonTip(
-                    4000,
+                ShowNotification(
                     "NSO Album Sync",
                     $"Synced {result.NewDownloads} new {(result.NewDownloads == 1 ? "capture" : "captures")} to your album folder!",
-                    ToolTipIcon.Info);
+                    ToolTipIcon.Info,
+                    4000);
             }
             else if (!isBackground)
             {
-                _trayIcon.ShowBalloonTip(
-                    3000,
+                ShowNotification(
                     "NSO Album Sync",
                     "Album is up to date. No new captures found.",
-                    ToolTipIcon.Info);
+                    ToolTipIcon.Info,
+                    3000);
             }
         }
         catch (Exception ex)
@@ -273,11 +289,11 @@ public class NsoTrayAppContext : ApplicationContext
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
-            _trayIcon.ShowBalloonTip(
-                4000,
+            ShowNotification(
                 "NSO Album Sync Error",
                 $"Sync failed: {ex.Message}",
-                ToolTipIcon.Error);
+                ToolTipIcon.Error,
+                4000);
         }
         finally
         {
@@ -294,13 +310,20 @@ public class NsoTrayAppContext : ApplicationContext
         if (_configManager.Config.AutoSyncEnabled)
         {
             _syncTimer.Start();
-            _trayIcon.ShowBalloonTip(2000, "NSO Album Sync", "Auto-sync enabled (refreshes every hour).", ToolTipIcon.Info);
+            ShowNotification("NSO Album Sync", "Auto-sync enabled (refreshes every hour).", ToolTipIcon.Info, 2000);
         }
         else
         {
             _syncTimer.Stop();
-            _trayIcon.ShowBalloonTip(2000, "NSO Album Sync", "Auto-sync disabled.", ToolTipIcon.Info);
+            ShowNotification("NSO Album Sync", "Auto-sync disabled.", ToolTipIcon.Info, 2000);
         }
+        UpdateMenuState();
+    }
+
+    private void ToggleNotifications()
+    {
+        _configManager.Config.NotificationsEnabled = _notificationsItem.Checked;
+        _configManager.Save();
         UpdateMenuState();
     }
 
@@ -325,7 +348,7 @@ public class NsoTrayAppContext : ApplicationContext
         {
             _configManager.Config.DestinationFolder = dialog.SelectedPath;
             _configManager.Save();
-            _trayIcon.ShowBalloonTip(3000, "NSO Album Sync", $"Album save folder updated to:\n{dialog.SelectedPath}", ToolTipIcon.Info);
+            ShowNotification("NSO Album Sync", $"Album save folder updated to:\n{dialog.SelectedPath}", ToolTipIcon.Info, 3000);
         }
     }
 
@@ -371,7 +394,7 @@ public class NsoTrayAppContext : ApplicationContext
                 _configManager.Save();
                 _syncTimer.Stop();
                 UpdateMenuState();
-                _trayIcon.ShowBalloonTip(3000, "NSO Album Sync", "Signed out successfully.", ToolTipIcon.Info);
+                ShowNotification("NSO Album Sync", "Signed out successfully.", ToolTipIcon.Info, 3000);
             }
         }
         else
@@ -395,11 +418,11 @@ public class NsoTrayAppContext : ApplicationContext
                 _syncTimer.Start();
             }
 
-            _trayIcon.ShowBalloonTip(
-                4000,
+            ShowNotification(
                 "NSO Album Sync",
                 $"Signed in as {loginForm.UserNickname}! Starting your first album sync...",
-                ToolTipIcon.Info);
+                ToolTipIcon.Info,
+                4000);
 
             await TriggerSyncAsync();
         }
@@ -1857,6 +1880,7 @@ public class AppConfig
     public string UserNickname { get; set; } = "";
     public string DestinationFolder { get; set; } = "";
     public bool AutoSyncEnabled { get; set; } = true;
+    public bool NotificationsEnabled { get; set; } = false;
     public int SyncIntervalMinutes { get; set; } = 60;
     public string NxapiAuthClientId { get; set; } = "eJ8TDme0c-Z4czx5SvZabA";
     public DateTime? LastSyncTime { get; set; }
