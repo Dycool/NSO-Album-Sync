@@ -1,0 +1,30 @@
+## .NET and Build Artifacts
+bin/
+obj/
+publish/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+_ReSharper*/
+*.dotCover
+
+## IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+## OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.AppleDouble
+.LSOverride
+
+## Local App Data / Logs / Secrets
+*.log
+config.local.json
+sync_ledger.local.json
