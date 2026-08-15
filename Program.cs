@@ -73,7 +73,7 @@ public class NsoTrayAppContext : ApplicationContext
 
         _trayIcon = new NotifyIcon
         {
-            Icon = IconGenerator.CreateSwitchIcon(),
+            Icon = IconGenerator.CreateAlbumIcon(),
             ContextMenuStrip = _contextMenu,
             Text = "NSO Album Sync (Nintendo Switch)",
             Visible = true
@@ -428,6 +428,7 @@ public class SignInForm : Form
     private void InitializeComponents()
     {
         Text = "Nintendo Account Sign-In - NSO Album Sync";
+        Icon = IconGenerator.CreateAlbumIcon();
         Size = new Size(540, 360);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -1424,33 +1425,117 @@ public static class StartupHelper
 
 public static class IconGenerator
 {
+    private static Icon? _cachedAlbumIcon;
+
     /// <summary>
-    /// Generates a clean 32x32 Nintendo Switch Red/Blue Joy-Con icon in memory
+    /// Returns the official Nintendo Switch Album Icon (32x32 / multi-size with rounded blue background and photo emblem)
     /// </summary>
-    public static Icon CreateSwitchIcon()
+    public static Icon CreateAlbumIcon()
     {
-        using var bitmap = new Bitmap(32, 32);
-        using var g = Graphics.FromImage(bitmap);
+        if (_cachedAlbumIcon != null) return _cachedAlbumIcon;
+
+        // 1. Try to load from application executable's embedded icon or app.ico if available
+        try
+        {
+            string? exePath = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+            {
+                var assoc = Icon.ExtractAssociatedIcon(exePath);
+                if (assoc != null)
+                {
+                    _cachedAlbumIcon = assoc;
+                    return _cachedAlbumIcon;
+                }
+            }
+        }
+        catch { }
+
+        try
+        {
+            if (File.Exists("app.ico"))
+            {
+                _cachedAlbumIcon = new Icon("app.ico");
+                return _cachedAlbumIcon;
+            }
+        }
+        catch { }
+
+        // 2. Render dynamic high-DPI official Switch Album Icon
+        using var bitmap = DrawAlbumBitmap(32);
+        IntPtr hIcon = bitmap.GetHicon();
+        _cachedAlbumIcon = (Icon)Icon.FromHandle(hIcon).Clone();
+        return _cachedAlbumIcon;
+    }
+
+    public static Bitmap DrawAlbumBitmap(int size)
+    {
+        var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(bmp);
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         g.Clear(Color.Transparent);
 
-        // Left Joy-Con (Neon Blue)
-        using var blueBrush = new SolidBrush(Color.FromArgb(0, 195, 227));
-        g.FillPie(blueBrush, 4, 4, 14, 24, 90, 180);
-        g.FillRectangle(blueBrush, 11, 4, 3, 24);
+        float scale = size / 24f;
 
-        // Right Joy-Con (Neon Red)
-        using var redBrush = new SolidBrush(Color.FromArgb(255, 60, 40));
-        g.FillPie(redBrush, 14, 4, 14, 24, 270, 180);
-        g.FillRectangle(redBrush, 18, 4, 3, 24);
+        // Official NSO Album Blue rounded card (rx: 3.5, w: 19, h: 16.4)
+        float x = 2.5f * scale;
+        float y = 3.8f * scale;
+        float w = 19.0f * scale;
+        float h = 16.4f * scale;
+        float r = 3.5f * scale;
 
-        // Joy-Con Buttons
-        using var whiteBrush = new SolidBrush(Color.White);
-        g.FillEllipse(whiteBrush, 8, 9, 3, 3);
-        g.FillEllipse(whiteBrush, 21, 19, 3, 3);
+        var cardPath = GetRoundedRectPath(new RectangleF(x, y, w, h), r);
+        Color nsoBlue = Color.FromArgb(46, 150, 234); // Official NSO Album #2e96ea
+        using var blueBrush = new SolidBrush(nsoBlue);
 
-        IntPtr hIcon = bitmap.GetHicon();
-        return (Icon)Icon.FromHandle(hIcon).Clone();
+        // Exact twin-peak cutout path from official NSO app:
+        // M4 21 V16.8 C5.2 13.5 8 13.2 9.8 15.6 C11.2 13.6 13.8 13.6 15.2 16.8 C15.8 18.2 16.2 19 17.5 21 Z
+        var cutoutPath = new GraphicsPath();
+        cutoutPath.StartFigure();
+        cutoutPath.AddLine(4f * scale, 21f * scale, 4f * scale, 16.8f * scale);
+        cutoutPath.AddBezier(
+            4f * scale, 16.8f * scale,
+            5.2f * scale, 13.5f * scale,
+            8.0f * scale, 13.2f * scale,
+            9.8f * scale, 15.6f * scale
+        );
+        cutoutPath.AddBezier(
+            9.8f * scale, 15.6f * scale,
+            11.2f * scale, 13.6f * scale,
+            13.8f * scale, 13.6f * scale,
+            15.2f * scale, 16.8f * scale
+        );
+        cutoutPath.AddBezier(
+            15.2f * scale, 16.8f * scale,
+            15.8f * scale, 18.2f * scale,
+            16.2f * scale, 19.0f * scale,
+            17.5f * scale, 21.0f * scale
+        );
+        cutoutPath.CloseFigure();
+
+        using var region = new Region(cardPath);
+        region.Exclude(cutoutPath);
+        g.FillRegion(blueBrush, region);
+
+        return bmp;
+    }
+
+    private static GraphicsPath GetRoundedRectPath(RectangleF rect, float radius)
+    {
+        var path = new GraphicsPath();
+        float diameter = radius * 2;
+        var arc = new RectangleF(rect.X, rect.Y, diameter, diameter);
+
+        path.AddArc(arc, 180, 90);
+        arc.X = rect.Right - diameter;
+        path.AddArc(arc, 270, 90);
+        arc.Y = rect.Bottom - diameter;
+        path.AddArc(arc, 0, 90);
+        arc.X = rect.Left;
+        path.AddArc(arc, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 }
 #endregion
