@@ -43,7 +43,18 @@ jobs:
       - name: Install OpenSSL with vcpkg
         shell: pwsh
         run: |
-          & "$env:VCPKG_ROOT\vcpkg.exe" install "openssl:${{ matrix.vcpkg_triplet }}"
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+            throw "VCPKG_INSTALLATION_ROOT is not set on this runner."
+          }
+
+          $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
+          if (-not (Test-Path $vcpkgExe)) {
+            throw "vcpkg.exe was not found at $vcpkgExe"
+          }
+
+          & $vcpkgExe install "openssl:${{ matrix.vcpkg_triplet }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Configure CMake
         shell: pwsh
@@ -51,7 +62,7 @@ jobs:
           cmake -S . -B build `
             -A "${{ matrix.cmake_arch }}" `
             -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET="${{ matrix.vcpkg_triplet }}" `
             -DNSO_STATIC_RUNTIME=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
