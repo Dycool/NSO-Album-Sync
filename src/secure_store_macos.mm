@@ -5,12 +5,18 @@
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 
-#include <cstring>
-
 namespace nso {
 namespace {
 
-constexpr char kKeychainService[] = "org.nsoalbumsync.session-token";
+NSString* const kKeychainService = @"org.nsoalbumsync.session-token";
+
+NSDictionary* keychain_query(NSString* account) {
+    return @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrService : kKeychainService,
+        (id)kSecAttrAccount : account,
+    };
+}
 
 }  // namespace
 
@@ -21,62 +27,60 @@ bool SecureStore::available() {
 bool SecureStore::put(
     const std::string& account,
     const std::string& secret) {
-    // SecKeychainAddGenericPassword does not update an existing item.
-    erase(account);
+    @autoreleasepool {
+        NSString* account_string = [NSString stringWithUTF8String:account.c_str()];
+        NSData* secret_data = [NSData
+            dataWithBytes:secret.data()
+                   length:secret.size()];
 
-    return SecKeychainAddGenericPassword(
-               nullptr,
-               static_cast<UInt32>(std::strlen(kKeychainService)),
-               kKeychainService,
-               static_cast<UInt32>(account.size()),
-               account.data(),
-               static_cast<UInt32>(secret.size()),
-               secret.data(),
-               nullptr) == errSecSuccess;
+        // Delete the previous value first so SecItemAdd has simple, predictable
+        // semantics and we never leave more than one token for this account.
+        SecItemDelete((CFDictionaryRef)keychain_query(account_string));
+
+        NSMutableDictionary* item = [NSMutableDictionary
+            dictionaryWithDictionary:keychain_query(account_string)];
+        item[(id)kSecValueData] = secret_data;
+
+        return SecItemAdd(
+                   (CFDictionaryRef)item,
+                   nullptr) == errSecSuccess;
+    }
 }
 
 std::optional<std::string> SecureStore::get(const std::string& account) {
-    UInt32 secret_length = 0;
-    void* secret_data = nullptr;
+    @autoreleasepool {
+        NSString* account_string = [NSString stringWithUTF8String:account.c_str()];
+        NSMutableDictionary* query = [NSMutableDictionary
+            dictionaryWithDictionary:keychain_query(account_string)];
 
-    const OSStatus status = SecKeychainFindGenericPassword(
-        nullptr,
-        static_cast<UInt32>(std::strlen(kKeychainService)),
-        kKeychainService,
-        static_cast<UInt32>(account.size()),
-        account.data(),
-        &secret_length,
-        &secret_data,
-        nullptr);
+        query[(id)kSecReturnData] = @YES;
+        query[(id)kSecMatchLimit] = (id)kSecMatchLimitOne;
 
-    if (status != errSecSuccess) {
-        return std::nullopt;
+        CFTypeRef result = nullptr;
+        const OSStatus status = SecItemCopyMatching(
+            (CFDictionaryRef)query,
+            &result);
+
+        if (status != errSecSuccess || result == nullptr) {
+            if (result != nullptr) {
+                CFRelease(result);
+            }
+            return std::nullopt;
+        }
+
+        NSData* data = (NSData*)result;
+        std::string secret(
+            static_cast<const char*>(data.bytes),
+            static_cast<const char*>(data.bytes) + data.length);
+        CFRelease(result);
+        return secret;
     }
-
-    std::string secret(
-        static_cast<char*>(secret_data),
-        static_cast<char*>(secret_data) + secret_length);
-
-    SecKeychainItemFreeContent(nullptr, secret_data);
-    return secret;
 }
 
 void SecureStore::erase(const std::string& account) {
-    SecKeychainItemRef item = nullptr;
-
-    const OSStatus status = SecKeychainFindGenericPassword(
-        nullptr,
-        static_cast<UInt32>(std::strlen(kKeychainService)),
-        kKeychainService,
-        static_cast<UInt32>(account.size()),
-        account.data(),
-        nullptr,
-        nullptr,
-        &item);
-
-    if (status == errSecSuccess) {
-        SecKeychainItemDelete(item);
-        CFRelease(item);
+    @autoreleasepool {
+        NSString* account_string = [NSString stringWithUTF8String:account.c_str()];
+        SecItemDelete((CFDictionaryRef)keychain_query(account_string));
     }
 }
 

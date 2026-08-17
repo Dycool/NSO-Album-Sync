@@ -37,20 +37,21 @@ std::wstring utf8_to_wide(const std::string& text) {
         return {};
     }
 
+    const int input_length = static_cast<int>(text.size());
     const int required = MultiByteToWideChar(
         CP_UTF8,
         0,
-        text.c_str(),
-        -1,
+        text.data(),
+        input_length,
         nullptr,
         0);
 
-    std::wstring result(static_cast<std::size_t>(required - 1), L'\0');
+    std::wstring result(static_cast<std::size_t>(required), L'\0');
     MultiByteToWideChar(
         CP_UTF8,
         0,
-        text.c_str(),
-        -1,
+        text.data(),
+        input_length,
         result.data(),
         required);
 

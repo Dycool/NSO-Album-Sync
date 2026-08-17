@@ -44,6 +44,52 @@ NSString* ns_string(const std::string& text) {
 
 }  // namespace
 
+// Objective-C declarations must live at global scope, so the Objective-C menu
+// target forwards into this small C++ dispatcher instead of containing the
+// application logic itself.
+void dispatch_menu_action(PlatformUi::Impl* impl, NSInteger command) {
+    if (impl == nullptr) {
+        return;
+    }
+
+    const auto& callbacks = impl->callbacks;
+
+    switch (static_cast<MenuCommand>(command)) {
+        case SyncNow:
+            callbacks.sync_now();
+            break;
+        case ToggleAutoSync:
+            callbacks.toggle_auto();
+            break;
+        case ToggleNotifications:
+            callbacks.toggle_notifications();
+            break;
+        case ToggleDiscord:
+            callbacks.toggle_discord();
+            break;
+        case SelectFolder:
+            callbacks.select_folder();
+            break;
+        case OpenFolder:
+            callbacks.open_folder();
+            break;
+        case ToggleStartOnBoot:
+            callbacks.toggle_start();
+            break;
+        case ConfigureProxy:
+            callbacks.proxy();
+            break;
+        case SignInOrOut:
+            callbacks.sign_in_out();
+            break;
+        case Exit:
+            callbacks.exit();
+            break;
+    }
+}
+
+}  // namespace nso
+
 @interface NsoMenuTarget : NSObject {
 @public
     nso::PlatformUi::Impl* impl;
@@ -54,46 +100,12 @@ NSString* ns_string(const std::string& text) {
 @implementation NsoMenuTarget
 
 - (void)action:(id)sender {
-    const NSInteger command = [sender tag];
-    const auto& callbacks = impl->callbacks;
-
-    switch (command) {
-        case nso::SyncNow:
-            callbacks.sync_now();
-            break;
-        case nso::ToggleAutoSync:
-            callbacks.toggle_auto();
-            break;
-        case nso::ToggleNotifications:
-            callbacks.toggle_notifications();
-            break;
-        case nso::ToggleDiscord:
-            callbacks.toggle_discord();
-            break;
-        case nso::SelectFolder:
-            callbacks.select_folder();
-            break;
-        case nso::OpenFolder:
-            callbacks.open_folder();
-            break;
-        case nso::ToggleStartOnBoot:
-            callbacks.toggle_start();
-            break;
-        case nso::ConfigureProxy:
-            callbacks.proxy();
-            break;
-        case nso::SignInOrOut:
-            callbacks.sign_in_out();
-            break;
-        case nso::Exit:
-            callbacks.exit();
-            break;
-        default:
-            break;
-    }
+    nso::dispatch_menu_action(impl, [sender tag]);
 }
 
 @end
+
+namespace nso {
 
 namespace {
 
