@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 
-#include <windows.h>
+#include "nso_album_sync/windows_compat.hpp"
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -383,7 +383,7 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
     impl_->tray_icon.uID = 1;
     impl_->tray_icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     impl_->tray_icon.uCallbackMessage = kTrayMessage;
-    impl_->tray_icon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    impl_->tray_icon.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
     wcscpy_s(impl_->tray_icon.szTip, L"NSO Album Sync");
 
     Shell_NotifyIconW(NIM_ADD, &impl_->tray_icon);

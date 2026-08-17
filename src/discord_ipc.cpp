@@ -6,7 +6,7 @@
 #include <string>
 
 #ifdef _WIN32
-#include <windows.h>
+#include "nso_album_sync/windows_compat.hpp"
 #else
 #include <unistd.h>
 #endif
@@ -124,7 +124,7 @@ bool DiscordIpcClient::send_frame_locked(
         return false;
     }
 
-    if (payload.size() > std::numeric_limits<std::uint32_t>::max()) {
+    if (payload.size() > (std::numeric_limits<std::uint32_t>::max)()) {
         return false;
     }
 

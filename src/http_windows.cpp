@@ -3,7 +3,7 @@
 
 #ifdef _WIN32
 
-#include <windows.h>
+#include "nso_album_sync/windows_compat.hpp"
 #include <winhttp.h>
 
 #include <algorithm>
@@ -71,7 +71,7 @@ std::wstring utf8_to_wide(const std::string& text) {
         return {};
     }
 
-    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    if (text.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
         throw std::runtime_error("UTF-8 string is too large");
     }
 
@@ -107,7 +107,7 @@ std::string wide_to_utf8(const std::wstring& text) {
         return {};
     }
 
-    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    if (text.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
         throw std::runtime_error("Wide string is too large");
     }
 
@@ -362,9 +362,9 @@ HttpResponse HttpClient::request(
         throw_winhttp_error("WinHttpOpen");
     }
 
-    const long safe_timeout = std::max(1L, timeout_seconds);
-    const long max_seconds = std::numeric_limits<int>::max() / 1000L;
-    const int timeout_ms = static_cast<int>(std::min(safe_timeout, max_seconds) * 1000L);
+    const long safe_timeout = (std::max)(1L, timeout_seconds);
+    const long max_seconds = (std::numeric_limits<int>::max)() / 1000L;
+    const int timeout_ms = static_cast<int>((std::min)(safe_timeout, max_seconds) * 1000L);
     if (!WinHttpSetTimeouts(
             session.get(),
             timeout_ms,
@@ -399,7 +399,7 @@ HttpResponse HttpClient::request(
 
     const auto additional_headers = build_headers(headers, content_type);
 
-    if (body.size() > std::numeric_limits<DWORD>::max()) {
+    if (body.size() > (std::numeric_limits<DWORD>::max)()) {
         throw std::runtime_error("HTTP request body is too large");
     }
 

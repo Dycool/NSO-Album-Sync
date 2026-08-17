@@ -11,8 +11,7 @@
 #ifndef _WIN32
 #include <sys/stat.h>
 #else
-#define NOMINMAX
-#include <windows.h>
+#include "nso_album_sync/windows_compat.hpp"
 #include <wincrypt.h>
 #endif
 

@@ -11,7 +11,7 @@
 #include <thread>
 
 #ifdef _WIN32
-#include <windows.h>
+#include "nso_album_sync/windows_compat.hpp"
 #include <bcrypt.h>
 #include <shellapi.h>
 #include <wincrypt.h>
@@ -34,7 +34,7 @@ namespace {
 #ifdef _WIN32
 
 void ensure_dword_size(std::size_t size, const char* operation) {
-    if (size > std::numeric_limits<DWORD>::max()) {
+    if (size > (std::numeric_limits<DWORD>::max)()) {
         throw std::runtime_error(std::string(operation) + " input is too large");
     }
 }
@@ -186,7 +186,7 @@ std::vector<unsigned char> base64_decode(std::string text) {
         text.pop_back();
     }
 
-    decoded.resize(static_cast<std::size_t>(std::max(0, length)));
+    decoded.resize(static_cast<std::size_t>((std::max)(0, length)));
     return decoded;
 #endif
 }

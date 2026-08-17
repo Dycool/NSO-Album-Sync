@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 
-#include <windows.h>
+#include "nso_album_sync/windows_compat.hpp"
 
 #include <algorithm>
 #include <array>
