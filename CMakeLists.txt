@@ -66,7 +66,9 @@ if(NSO_STATIC_RUNTIME)
     endif()
 endif()
 
-find_package(OpenSSL REQUIRED)
+if(NOT WIN32)
+    find_package(OpenSSL REQUIRED)
+endif()
 find_package(PkgConfig QUIET)
 
 # -----------------------------------------------------------------------------
@@ -80,7 +82,6 @@ set(NSO_SOURCES
     src/coral.cpp
     src/discord.cpp
     src/discord_ipc.cpp
-    src/http.cpp
     src/json.cpp
     src/nintendo_auth.cpp
     src/nxapi.cpp
@@ -107,6 +108,7 @@ set(NSO_HEADERS
 
 if(WIN32)
     list(APPEND NSO_SOURCES
+        src/http_windows.cpp
         src/platform_windows.cpp
         src/secure_store_windows.cpp
         src/discord_ipc_windows.cpp
@@ -114,12 +116,14 @@ if(WIN32)
 elseif(APPLE)
     enable_language(OBJCXX)
     list(APPEND NSO_SOURCES
+        src/http_openssl.cpp
         src/platform_macos.mm
         src/secure_store_macos.mm
         src/discord_ipc_unix.cpp
     )
 else()
     list(APPEND NSO_SOURCES
+        src/http_openssl.cpp
         src/platform_linux.cpp
         src/secure_store_linux.cpp
         src/discord_ipc_unix.cpp
@@ -150,12 +154,14 @@ target_include_directories(
     PRIVATE "${CMAKE_SOURCE_DIR}/include"
 )
 
-target_link_libraries(
-    nso-album-sync
-    PRIVATE
-        OpenSSL::SSL
-        OpenSSL::Crypto
-)
+if(NOT WIN32)
+    target_link_libraries(
+        nso-album-sync
+        PRIVATE
+            OpenSSL::SSL
+            OpenSSL::Crypto
+    )
+endif()
 
 # Compact Linux builds can carry the C++ runtime and OpenSSL statically while
 # still using the host libc. This keeps the distributed binary small and simple.
@@ -185,7 +191,9 @@ if(WIN32)
         nso-album-sync
         PRIVATE
             advapi32
+            bcrypt
             crypt32
+            winhttp
             shell32
             ole32
             comdlg32
