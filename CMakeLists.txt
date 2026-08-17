@@ -20,6 +20,12 @@ option(
     "Use GTK/AppIndicator tray on Linux when available"
     ON
 )
+set(
+    NSO_MACOS_CODESIGN_IDENTITY
+    "-"
+    CACHE STRING
+    "macOS code-signing identity; '-' performs a local ad-hoc signature"
+)
 
 # -----------------------------------------------------------------------------
 # Compiler and linker defaults
@@ -99,19 +105,32 @@ set(NSO_HEADERS
 )
 
 if(WIN32)
+    enable_language(RC)
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/resources/windows/app.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/nso-album-sync.rc"
+        @ONLY
+    )
     list(APPEND NSO_SOURCES
         src/http_windows.cpp
         src/platform_windows.cpp
         src/secure_store_windows.cpp
         src/discord_ipc_windows.cpp
+        "${CMAKE_CURRENT_BINARY_DIR}/nso-album-sync.rc"
     )
 elseif(APPLE)
     enable_language(OBJCXX)
+    set(NSO_MACOS_ICON "${CMAKE_SOURCE_DIR}/app.icns")
+    set_source_files_properties(
+        "${NSO_MACOS_ICON}"
+        PROPERTIES MACOSX_PACKAGE_LOCATION "Resources"
+    )
     list(APPEND NSO_SOURCES
         src/http_openssl.cpp
         src/platform_macos.mm
         src/secure_store_macos.mm
         src/discord_ipc_unix.cpp
+        "${NSO_MACOS_ICON}"
     )
 else()
     list(APPEND NSO_SOURCES
@@ -135,6 +154,7 @@ elseif(APPLE)
         PROPERTIES
             MACOSX_BUNDLE_BUNDLE_NAME "NSO Album Sync"
             MACOSX_BUNDLE_GUI_IDENTIFIER "org.dycool.nso-album-sync"
+            MACOSX_BUNDLE_ICON_FILE "app.icns"
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/Info.plist.in"
     )
 else()
@@ -219,6 +239,29 @@ elseif(APPLE)
             ${NSO_COCOA_FRAMEWORK}
             ${NSO_SECURITY_FRAMEWORK}
             ${NSO_USER_NOTIFICATIONS_FRAMEWORK}
+    )
+
+    # Sign every locally built .app, not only release artifacts.  The default
+    # identity '-' is Apple's ad-hoc/local signature, so this requires no
+    # developer certificate and also makes CI fail immediately if signing does.
+    find_program(NSO_CODESIGN_EXECUTABLE codesign REQUIRED)
+    add_custom_command(
+        TARGET nso-album-sync
+        POST_BUILD
+        COMMAND
+            "${NSO_CODESIGN_EXECUTABLE}"
+            --force
+            --sign "${NSO_MACOS_CODESIGN_IDENTITY}"
+            --timestamp=none
+            "$<TARGET_BUNDLE_DIR:nso-album-sync>"
+        COMMAND
+            "${NSO_CODESIGN_EXECUTABLE}"
+            --verify
+            --strict
+            --verbose=2
+            "$<TARGET_BUNDLE_DIR:nso-album-sync>"
+        COMMENT "Locally code-signing NSO Album Sync.app"
+        VERBATIM
     )
 else()
     if(PkgConfig_FOUND)

@@ -109,7 +109,7 @@ jobs:
         shell: bash
         run: cmake --build build --parallel
 
-      - name: Ad-hoc sign and package app
+      - name: Verify local signature and package app
         shell: bash
         run: |
           set -euo pipefail
@@ -124,7 +124,10 @@ jobs:
           size="$(stat -f%z "$binary")"
           python3 -c 'import sys; s=int(sys.argv[1]); print(f"Application executable size: {s/1024/1024:.2f} MB"); print("::warning::Application executable is above the 10 MB target.") if s > 10*1024*1024 else None' "$size"
 
-          codesign --force --deep --sign - "$app"
+          # CMake ad-hoc signs every local macOS build. Verify that signature
+          # before packaging so CI cannot publish an unsigned .app by accident.
+          codesign --verify --strict --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent "$app" \
             "dist/nso-album-sync-macos-${{ matrix.arch }}.zip"

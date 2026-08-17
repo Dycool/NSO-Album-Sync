@@ -13,6 +13,7 @@ namespace nso {
 namespace {
 
 constexpr UINT kTrayMessage = WM_APP + 42;
+constexpr int kAppIconResourceId = 101;
 constexpr wchar_t kTrayWindowClass[] = L"NsoAlbumSyncTray";
 constexpr wchar_t kRunRegistryPath[] =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -55,6 +56,17 @@ std::wstring utf8_to_wide(const std::string& text) {
         required);
 
     return result;
+}
+
+HICON load_app_icon() {
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    HICON icon = LoadIconW(
+        instance,
+        MAKEINTRESOURCEW(kAppIconResourceId));
+    if (icon == nullptr) {
+        icon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
+    return icon;
 }
 
 std::string wide_to_utf8(const std::wstring& text) {
@@ -238,6 +250,7 @@ std::string input_box(
     WNDCLASSW window_class{};
     window_class.lpfnWndProc = DefWindowProcW;
     window_class.hInstance = instance;
+    window_class.hIcon = load_app_icon();
     window_class.lpszClassName = kInputWindowClass;
     window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     RegisterClassW(&window_class);
@@ -358,9 +371,13 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
     impl_->callbacks = callbacks;
     g_platform = impl_;
 
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    HICON app_icon = load_app_icon();
+
     WNDCLASSW window_class{};
     window_class.lpfnWndProc = tray_window_proc;
-    window_class.hInstance = GetModuleHandleW(nullptr);
+    window_class.hInstance = instance;
+    window_class.hIcon = app_icon;
     window_class.lpszClassName = kTrayWindowClass;
     RegisterClassW(&window_class);
 
@@ -383,7 +400,7 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
     impl_->tray_icon.uID = 1;
     impl_->tray_icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     impl_->tray_icon.uCallbackMessage = kTrayMessage;
-    impl_->tray_icon.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+    impl_->tray_icon.hIcon = app_icon;
     wcscpy_s(impl_->tray_icon.szTip, L"NSO Album Sync");
 
     Shell_NotifyIconW(NIM_ADD, &impl_->tray_icon);

@@ -286,7 +286,27 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
 
         impl_->status_item = [[NSStatusBar systemStatusBar]
             statusItemWithLength:NSSquareStatusItemLength];
-        impl_->status_item.button.title = @"NSO";
+
+        // Use the same bundled artwork as the Finder/app icon for the menu-bar
+        // item.  Marking it as a template lets macOS render it correctly in
+        // light/dark menu bars instead of showing a hard-coded blue glyph.
+        NSString* icon_path = [[NSBundle mainBundle]
+            pathForResource:@"app"
+                     ofType:@"icns"];
+        NSImage* status_icon = icon_path != nil
+            ? [[NSImage alloc] initWithContentsOfFile:icon_path]
+            : nil;
+        if (status_icon != nil) {
+            [status_icon setTemplate:YES];
+            [status_icon setSize:NSMakeSize(18.0, 18.0)];
+            impl_->status_item.button.image = status_icon;
+            impl_->status_item.button.imagePosition = NSImageOnly;
+        } else {
+            // Keep a usable fallback if a developer deliberately strips bundle
+            // resources from a local build.
+            impl_->status_item.button.title = @"NSO";
+        }
+        impl_->status_item.button.toolTip = @"NSO Album Sync";
 
         impl_->menu = [NSMenu new];
         rebuild_menu(impl_);
