@@ -51,14 +51,14 @@ jobs:
         shell: pwsh
         run: cmake --build build --config $env:BUILD_TYPE --parallel
 
-      - name: Package Windows build
+      - name: Stage Windows build
         shell: pwsh
         run: |
           $out = "dist/windows-${{ matrix.arch }}"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
 
           $exe = "build/$env:BUILD_TYPE/nso-album-sync.exe"
-          Copy-Item $exe $out
+          Copy-Item $exe "$out/nso-album-sync.exe"
 
           $size = (Get-Item $exe).Length
           Write-Host ("Application executable size: {0:N2} MB" -f ($size / 1MB))
@@ -66,13 +66,14 @@ jobs:
             Write-Warning "Application executable is above the 10 MB target."
           }
 
-          Compress-Archive -Path "$out/*" -DestinationPath "dist/nso-album-sync-windows-${{ matrix.arch }}.zip"
-
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v7
         with:
+          # GitHub Actions artifacts are already downloaded as .zip files.
+          # Upload the raw executable so users get one zip containing the .exe,
+          # rather than an outer artifact zip containing another zip.
           name: nso-album-sync-windows-${{ matrix.arch }}
-          path: dist/nso-album-sync-windows-${{ matrix.arch }}.zip
+          path: dist/windows-${{ matrix.arch }}/nso-album-sync.exe
           if-no-files-found: error
 
   build-macos:
@@ -211,19 +212,67 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           path: release-artifacts
-          merge-multiple: true
+
+      - name: Assemble release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+
+          # Windows workflow artifacts contain the raw executable so the
+          # Actions UI does not produce zip-in-zip downloads. Create the actual
+          # release archives here, once, with a clean executable name inside.
+          for arch in x64 arm64; do
+            artifact="release-artifacts/nso-album-sync-windows-${arch}"
+            exe="$artifact/nso-album-sync.exe"
+            if [[ ! -f "$exe" ]]; then
+              echo "Missing Windows ${arch} executable: $exe" >&2
+              exit 1
+            fi
+            (cd "$artifact" && zip -9 -j \
+              "$GITHUB_WORKSPACE/release-files/nso-album-sync-windows-${arch}.zip" \
+              nso-album-sync.exe)
+          done
+
+          # macOS and Linux jobs already create their platform-safe archives.
+          for arch in arm64 x64; do
+            cp \
+              "release-artifacts/nso-album-sync-macos-${arch}/nso-album-sync-macos-${arch}.zip" \
+              "release-files/"
+            cp \
+              "release-artifacts/nso-album-sync-linux-${arch}/nso-album-sync-linux-${arch}.tar.gz" \
+              "release-files/"
+          done
+
+      - name: Verify release archive layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for archive in release-files/nso-album-sync-windows-*.zip; do
+            echo "Contents of $archive:"
+            unzip -l "$archive"
+            count="$(unzip -Z1 "$archive" | wc -l | tr -d ' ')"
+            if [[ "$count" != "1" ]]; then
+              echo "Expected exactly one file in $archive, found $count" >&2
+              exit 1
+            fi
+            if [[ "$(unzip -Z1 "$archive")" != "nso-album-sync.exe" ]]; then
+              echo "Unexpected Windows archive contents in $archive" >&2
+              exit 1
+            fi
+          done
 
       - name: Generate SHA-256 checksums
         shell: bash
         run: |
-          cd release-artifacts
+          cd release-files
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          files: release-artifacts/*
+          files: release-files/*
           generate_release_notes: true
           draft: false
           prerelease: false

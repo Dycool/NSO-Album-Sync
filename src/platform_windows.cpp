@@ -227,9 +227,15 @@ LRESULT CALLBACK tray_window_proc(
     LPARAM l_param) {
     (void)w_param;
 
-    if (message == kTrayMessage && l_param == WM_RBUTTONUP) {
-        show_tray_menu(g_platform);
-        return 0;
+    if (message == kTrayMessage) {
+        // NOTIFYICON_VERSION_4 packs the notification code into LOWORD(lParam)
+        // and the icon ID into HIWORD(lParam).  Handle both mouse and keyboard
+        // context-menu activation without relying on the legacy lParam layout.
+        const UINT tray_event = LOWORD(l_param);
+        if (tray_event == WM_RBUTTONUP || tray_event == WM_CONTEXTMENU) {
+            show_tray_menu(g_platform);
+            return 0;
+        }
     }
 
     if (message == WM_DESTROY) {
@@ -403,7 +409,23 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
     impl_->tray_icon.hIcon = app_icon;
     wcscpy_s(impl_->tray_icon.szTip, L"NSO Album Sync");
 
-    Shell_NotifyIconW(NIM_ADD, &impl_->tray_icon);
+    if (!Shell_NotifyIconW(NIM_ADD, &impl_->tray_icon)) {
+        MessageBoxW(
+            nullptr,
+            L"NSO Album Sync could not create its notification-area icon.",
+            L"NSO Album Sync",
+            MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    // Use the current shell behavior for notification-area callbacks and make
+    // startup sequencing explicit before any worker can send notifications.
+    impl_->tray_icon.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &impl_->tray_icon);
+
+    if (impl_->callbacks.ready) {
+        impl_->callbacks.ready();
+    }
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -442,8 +464,14 @@ void PlatformUi::notify(
         _TRUNCATE);
     impl_->tray_icon.dwInfoFlags = NIIF_INFO;
 
-    Shell_NotifyIconW(NIM_MODIFY, &impl_->tray_icon);
+    const BOOL delivered = Shell_NotifyIconW(NIM_MODIFY, &impl_->tray_icon);
     impl_->tray_icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+
+    if (!delivered) {
+        // Shell_NotifyIcon is intentionally best-effort, but don't fail
+        // silently when the shell rejected the notification request.
+        OutputDebugStringW(L"NSO Album Sync: Shell_NotifyIcon notification failed.\n");
+    }
 }
 
 std::string PlatformUi::prompt(

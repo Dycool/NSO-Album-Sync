@@ -219,9 +219,10 @@ void App::stop_workers() {
 
 int App::run() {
     update_menu();
-    start_workers();
 
     PlatformCallbacks callbacks;
+
+    callbacks.ready = [this] { start_workers(); };
 
     callbacks.sync_now = [this] {
         // Keep the platform UI responsive while the network sync runs.
@@ -241,6 +242,16 @@ int App::run() {
         config.notifications = !config.notifications;
         config_.save();
         update_menu();
+
+        // This is both confirmation for the user and a real end-to-end test of
+        // the native notification path.  On macOS it also triggers the system
+        // permission request at the moment the user opts in, rather than much
+        // later when a sync finishes in the background.
+        if (config.notifications) {
+            ui_.notify(
+                "NSO Album Sync",
+                "Notifications are enabled and working.");
+        }
     };
 
     callbacks.toggle_discord = [this] {

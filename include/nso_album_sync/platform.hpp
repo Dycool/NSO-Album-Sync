@@ -18,6 +18,10 @@ struct MenuState {
 };
 
 struct PlatformCallbacks {
+    // Called by the platform backend only after its tray/menu and native
+    // notification infrastructure are ready.  Background workers must not
+    // start before this or startup notifications can be dropped.
+    std::function<void()> ready;
     std::function<void()> sync_now;
     std::function<void()> toggle_auto;
     std::function<void()> toggle_notifications;

@@ -106,11 +106,33 @@ void dispatch_menu_action(PlatformUi::Impl* impl, NSInteger command) {
 
 @end
 
+@interface NsoNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+@implementation NsoNotificationDelegate
+
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+       willPresentNotification:(UNNotification*)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
+    (void)center;
+    (void)notification;
+
+    // Menu-bar apps spend almost all of their lifetime running.  Explicitly
+    // request presentation while the process is active so notifications are
+    // never silently suppressed as foreground deliveries.
+    completionHandler(
+        UNNotificationPresentationOptionAlert |
+        UNNotificationPresentationOptionSound);
+}
+
+@end
+
 namespace nso {
 
 namespace {
 
 NsoMenuTarget* g_menu_target = nil;
+NsoNotificationDelegate* g_notification_delegate = nil;
 
 NSMenuItem* add_menu_item(
     NSMenu* menu,
@@ -281,6 +303,13 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
+        // Install the notification delegate before the application finishes
+        // launching.  This guarantees banners/sounds even when macOS considers
+        // the menu-bar app foreground-active.
+        g_notification_delegate = [NsoNotificationDelegate new];
+        [UNUserNotificationCenter currentNotificationCenter].delegate =
+            g_notification_delegate;
+
         g_menu_target = [NsoMenuTarget new];
         g_menu_target->impl = impl_;
 
@@ -311,6 +340,10 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
         impl_->menu = [NSMenu new];
         rebuild_menu(impl_);
         impl_->status_item.menu = impl_->menu;
+
+        if (impl_->callbacks.ready) {
+            impl_->callbacks.ready();
+        }
 
         [NSApp run];
     }

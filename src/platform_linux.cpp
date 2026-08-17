@@ -192,11 +192,19 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
         << "GTK build has no AppIndicator support; menu is unavailable.\n";
 #endif
 
+    if (impl_->callbacks.ready) {
+        impl_->callbacks.ready();
+    }
+
     gtk_main();
 #else
     std::cout
         << "NSO Album Sync running. This build has no GTK/AppIndicator; "
            "use Ctrl+C to stop.\n";
+
+    if (impl_->callbacks.ready) {
+        impl_->callbacks.ready();
+    }
 
     while (impl_->running) {
         std::this_thread::sleep_for(std::chrono::seconds(1));

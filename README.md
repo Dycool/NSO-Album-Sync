@@ -23,7 +23,7 @@
 🖥️ **Zero-UI System Tray App** - Runs silently in your taskbar notification area with a native context menu:
 * **Sync Now** - Trigger an immediate album sync on demand.
 * **Auto-Sync (Hourly)** - Toggle automatic background sync.
-* **Notifications** - Toggle notifications (disabled by default for 100% silent background syncing).
+* **Notifications** - Toggle notifications (disabled by default for 100% silent background syncing). Enabling them immediately sends a test notification so native permission/delivery can be confirmed.
 * **Select Folder...** - Change your album destination.
 * **Open Album Folder** - Shortcut directly to your album in Windows Explorer / Finder.
 * **Start on Boot** - Automatically launch on computer startup.
