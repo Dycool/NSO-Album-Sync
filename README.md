@@ -4,7 +4,7 @@
 
 # NSO Album Sync
 
-**Silently and automatically sync your Nintendo Switch & Switch 2 album screenshots and videos directly to your PC in the background.**
+**Silently and automatically sync your Nintendo Switch 2 album screenshots and videos directly to your PC in the background.**
 
 🔄 **Hourly Background Auto-Sync** - Silently checks your Nintendo Switch Online album every hour and downloads new screenshots and gameplay videos without interrupting you.
 
