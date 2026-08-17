@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -78,6 +79,7 @@ public class NsoTrayAppContext : ApplicationContext
     private ToolStripMenuItem _autoSyncItem = null!;
     private ToolStripMenuItem _notificationsItem = null!;
     private ToolStripMenuItem _startOnBootItem = null!;
+    private ToolStripMenuItem _proxyItem = null!;
     private ToolStripMenuItem _accountItem = null!;
 
     private bool _isSyncing = false;
@@ -85,7 +87,7 @@ public class NsoTrayAppContext : ApplicationContext
     public NsoTrayAppContext()
     {
         _configManager = new ConfigManager();
-        _authManager = new NintendoAuthManager();
+        _authManager = new NintendoAuthManager(_configManager);
         _syncEngine = new SyncEngine(_configManager, _authManager);
 
         _contextMenu = new ContextMenuStrip();
@@ -148,6 +150,7 @@ public class NsoTrayAppContext : ApplicationContext
             Checked = StartupHelper.IsRunAtStartupEnabled()
         };
 
+        _proxyItem = new ToolStripMenuItem("🌐 HTTP Proxy...", null, (s, e) => OpenProxySettings());
         _accountItem = new ToolStripMenuItem("🔑 Sign In...", null, async (s, e) => await HandleAccountActionAsync());
 
         var exitSeparator = new ToolStripSeparator();
@@ -167,6 +170,7 @@ public class NsoTrayAppContext : ApplicationContext
             openFolderItem,
             systemSeparator,
             _startOnBootItem,
+            _proxyItem,
             _accountItem,
             exitSeparator,
             exitItem
@@ -334,6 +338,18 @@ public class NsoTrayAppContext : ApplicationContext
         UpdateMenuState();
     }
 
+    private void OpenProxySettings()
+    {
+        using var dialog = new ProxySettingsForm(_configManager);
+        if (dialog.ShowDialog() == DialogResult.OK)
+        {
+            string message = string.IsNullOrEmpty(_configManager.Config.ProxyUrl)
+                ? "HTTP proxy disabled."
+                : "HTTP proxy updated.";
+            ShowNotification("NSO Album Sync", message, ToolTipIcon.Info, 2500);
+        }
+    }
+
     private void ChooseFolder()
     {
         using var dialog = new FolderBrowserDialog
@@ -405,7 +421,7 @@ public class NsoTrayAppContext : ApplicationContext
 
     private async Task PromptSignInDialogAsync()
     {
-        using var loginForm = new SignInForm(_authManager);
+        using var loginForm = new SignInForm(_authManager, _configManager);
         if (loginForm.ShowDialog() == DialogResult.OK && !string.IsNullOrEmpty(loginForm.SessionToken))
         {
             _configManager.Config.SessionToken = loginForm.SessionToken;
@@ -453,6 +469,8 @@ public class NsoTrayAppContext : ApplicationContext
 public class SignInForm : Form
 {
     private readonly NintendoAuthManager _authManager;
+    private readonly ConfigManager _configManager;
+    private TextBox _proxyInput = null!;
     private TextBox _linkInput = null!;
     private Button _openBrowserBtn = null!;
     private Button _signInBtn = null!;
@@ -461,9 +479,10 @@ public class SignInForm : Form
     public string SessionToken { get; private set; } = "";
     public string UserNickname { get; private set; } = "";
 
-    public SignInForm(NintendoAuthManager authManager)
+    public SignInForm(NintendoAuthManager authManager, ConfigManager configManager)
     {
         _authManager = authManager;
+        _configManager = configManager;
         InitializeComponents();
     }
 
@@ -471,7 +490,7 @@ public class SignInForm : Form
     {
         Text = "Nintendo Account Sign-In - NSO Album Sync";
         Icon = IconGenerator.CreateAlbumIcon();
-        ClientSize = new Size(620, 485);
+        ClientSize = new Size(620, 570);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -519,12 +538,38 @@ public class SignInForm : Form
         disclosurePanel.Controls.Add(disclosureLabel);
         disclosurePanel.Controls.Add(acknowledgeCheck);
 
+        var proxyLabel = new Label
+        {
+            Text = "Optional HTTP proxy:",
+            Location = new Point(24, 194),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(60, 60, 60),
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+        };
+
+        _proxyInput = new TextBox
+        {
+            Location = new Point(24, 216),
+            Size = new Size(570, 26),
+            PlaceholderText = "http://127.0.0.1:7890",
+            Text = _configManager.Config.ProxyUrl
+        };
+
+        var proxyHelp = new Label
+        {
+            Text = "Used for Nintendo, nxapi and media requests made by this app. Your web browser uses its own proxy settings.",
+            Location = new Point(24, 247),
+            Size = new Size(570, 32),
+            ForeColor = Color.FromArgb(100, 100, 100),
+            Font = new Font("Segoe UI", 8.25f, FontStyle.Regular)
+        };
+
         var instructions = new Label
         {
             Text = "1. Click the button below to open Nintendo's official sign-in page in your browser.\n" +
                    "2. Log in and right-click / copy the link on 'Select this person' (or copy redirect URL).\n" +
                    "3. Paste the copied link in the box below and click 'Sign In && Connect'.",
-            Location = new Point(24, 194),
+            Location = new Point(24, 285),
             Size = new Size(570, 60),
             ForeColor = Color.FromArgb(40, 40, 40)
         };
@@ -532,7 +577,7 @@ public class SignInForm : Form
         _openBrowserBtn = new Button
         {
             Text = "🌐 1. Open Nintendo Sign-In Page",
-            Location = new Point(24, 262),
+            Location = new Point(24, 353),
             Size = new Size(570, 40),
             BackColor = Color.FromArgb(200, 200, 200),
             ForeColor = Color.White,
@@ -554,7 +599,7 @@ public class SignInForm : Form
         var inputLabel = new Label
         {
             Text = "2. Paste redirect link or code here:",
-            Location = new Point(24, 314),
+            Location = new Point(24, 405),
             AutoSize = true,
             ForeColor = Color.FromArgb(60, 60, 60),
             Font = new Font("Segoe UI", 9f, FontStyle.Bold)
@@ -562,7 +607,7 @@ public class SignInForm : Form
 
         _linkInput = new TextBox
         {
-            Location = new Point(24, 338),
+            Location = new Point(24, 429),
             Size = new Size(570, 26),
             PlaceholderText = "npf71b963c1b7b6d119://auth#session_token_code=..."
         };
@@ -571,7 +616,7 @@ public class SignInForm : Form
         _statusLabel = new Label
         {
             Text = "",
-            Location = new Point(24, 372),
+            Location = new Point(24, 463),
             Size = new Size(570, 20),
             ForeColor = Color.FromArgb(100, 100, 100)
         };
@@ -579,7 +624,7 @@ public class SignInForm : Form
         _signInBtn = new Button
         {
             Text = "✅ Sign In && Connect",
-            Location = new Point(24, 398),
+            Location = new Point(24, 489),
             Size = new Size(570, 44),
             BackColor = Color.FromArgb(46, 150, 234),
             ForeColor = Color.White,
@@ -595,6 +640,9 @@ public class SignInForm : Form
         {
             header,
             disclosurePanel,
+            proxyLabel,
+            _proxyInput,
+            proxyHelp,
             instructions,
             _openBrowserBtn,
             inputLabel,
@@ -604,10 +652,28 @@ public class SignInForm : Form
         });
     }
 
+    private bool ApplyProxySetting()
+    {
+        if (!ProxySupport.TryNormalize(_proxyInput.Text, out string normalized, out string error))
+        {
+            MessageBox.Show(error, "Invalid HTTP Proxy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _proxyInput.Focus();
+            return false;
+        }
+
+        _proxyInput.Text = normalized;
+        _configManager.Config.ProxyUrl = normalized;
+        _configManager.Save();
+        return true;
+    }
+
     private void OpenBrowserOAuth()
     {
         try
         {
+            if (!ApplyProxySetting())
+                return;
+
             string url = _authManager.GetAuthorizeUrl();
             Process.Start(new ProcessStartInfo
             {
@@ -630,8 +696,12 @@ public class SignInForm : Form
         if (string.IsNullOrEmpty(input))
             return;
 
+        if (!ApplyProxySetting())
+            return;
+
         _signInBtn.Enabled = false;
         _openBrowserBtn.Enabled = false;
+        _proxyInput.Enabled = false;
         _linkInput.Enabled = false;
         _statusLabel.Text = "Authenticating with Nintendo...";
         _statusLabel.ForeColor = Color.FromArgb(0, 120, 215);
@@ -659,6 +729,7 @@ public class SignInForm : Form
         {
             _signInBtn.Enabled = true;
             _openBrowserBtn.Enabled = true;
+            _proxyInput.Enabled = true;
             _linkInput.Enabled = true;
         }
     }
@@ -675,7 +746,7 @@ public class NsoDaemonRunner
     public NsoDaemonRunner()
     {
         _configManager = new ConfigManager();
-        _authManager = new NintendoAuthManager();
+        _authManager = new NintendoAuthManager(_configManager);
         _syncEngine = new SyncEngine(_configManager, _authManager);
     }
 
@@ -762,6 +833,20 @@ public class NsoDaemonRunner
             return;
         }
 
+        Console.Write("\nHTTP proxy (optional, e.g. http://127.0.0.1:7890; leave blank for the normal system connection): ");
+        string? proxyInput = Console.ReadLine()?.Trim();
+        while (!ProxySupport.TryNormalize(proxyInput, out string normalizedProxy, out string proxyError))
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine(proxyError);
+            Console.ResetColor();
+            Console.Write("HTTP proxy: ");
+            proxyInput = Console.ReadLine()?.Trim();
+        }
+        ProxySupport.TryNormalize(proxyInput, out string proxyUrl, out _);
+        _configManager.Config.ProxyUrl = proxyUrl;
+        _configManager.Save();
+
         string url = _authManager.GetAuthorizeUrl();
 
         Console.WriteLine("\n1. Opening browser to official Nintendo login page...");
@@ -812,8 +897,8 @@ public class SyncEngine
         _config = config;
         _auth = auth;
         _nxapi = new NxapiClient(_config);
-        _coral = new CoralClient(_auth, _nxapi);
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        _coral = new CoralClient(_auth, _nxapi, _config);
+        _http = ProxySupport.CreateHttpClient(_config, TimeSpan.FromSeconds(60));
     }
 
     public async Task<SyncResult> SyncAlbumAsync()
@@ -1227,9 +1312,9 @@ public class NintendoAuthManager
     private readonly HttpClient _http;
     private string? _currentVerifier;
 
-    public NintendoAuthManager()
+    public NintendoAuthManager(ConfigManager? configManager = null)
     {
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _http = ProxySupport.CreateHttpClient(configManager, TimeSpan.FromSeconds(30));
     }
 
     public string GetAuthorizeUrl()
@@ -1465,7 +1550,7 @@ public class NxapiClient
     public NxapiClient(ConfigManager? configManager = null)
     {
         _configManager = configManager;
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _http = ProxySupport.CreateHttpClient(_configManager, TimeSpan.FromSeconds(30));
     }
 
     private string EffectiveClientId =>
@@ -1699,11 +1784,11 @@ public class CoralClient
     private string? _cachedCoralAccessToken;
     private DateTime _coralTokenExpiresAt = DateTime.MinValue;
 
-    public CoralClient(NintendoAuthManager auth, NxapiClient nxapi)
+    public CoralClient(NintendoAuthManager auth, NxapiClient nxapi, ConfigManager? configManager = null)
     {
         _auth = auth;
         _nxapi = nxapi;
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _http = ProxySupport.CreateHttpClient(configManager, TimeSpan.FromSeconds(30));
     }
 
     public async Task<string> EnsureCoralSessionAsync(string sessionToken)
@@ -1873,6 +1958,200 @@ public static class SecretStore
 }
 #endregion
 
+#region HTTP Proxy Support
+public static class ProxySupport
+{
+    public static HttpClient CreateHttpClient(ConfigManager? configManager, TimeSpan timeout)
+    {
+        if (configManager == null)
+        {
+            return new HttpClient { Timeout = timeout };
+        }
+
+        var handler = new HttpClientHandler
+        {
+            Proxy = new ConfiguredProxy(configManager),
+            UseProxy = true
+        };
+
+        return new HttpClient(handler)
+        {
+            Timeout = timeout
+        };
+    }
+
+    public static bool TryNormalize(string? value, out string normalized, out string error)
+    {
+        normalized = "";
+        error = "";
+
+        string input = value?.Trim() ?? "";
+        if (string.IsNullOrEmpty(input))
+        {
+            return true;
+        }
+
+        if (!input.Contains("://", StringComparison.Ordinal))
+        {
+            input = "http://" + input;
+        }
+
+        if (!Uri.TryCreate(input, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+            string.IsNullOrWhiteSpace(uri.Host))
+        {
+            error = "Enter a valid HTTP proxy, for example http://127.0.0.1:7890.";
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+        {
+            error = "Proxy URLs containing a username or password are not supported.";
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(uri.Query) ||
+            !string.IsNullOrEmpty(uri.Fragment) ||
+            (uri.AbsolutePath != "/" && !string.IsNullOrEmpty(uri.AbsolutePath)))
+        {
+            error = "The proxy address must only contain a scheme, host and optional port.";
+            return false;
+        }
+
+        normalized = uri.GetLeftPart(UriPartial.Authority);
+        return true;
+    }
+
+    private sealed class ConfiguredProxy : IWebProxy
+    {
+        private readonly ConfigManager _configManager;
+
+        public ConfiguredProxy(ConfigManager configManager)
+        {
+            _configManager = configManager;
+        }
+
+        public ICredentials? Credentials
+        {
+            get => GetConfiguredProxy() == null ? HttpClient.DefaultProxy.Credentials : null;
+            set { }
+        }
+
+        public Uri GetProxy(Uri destination)
+        {
+            return GetConfiguredProxy() ?? HttpClient.DefaultProxy.GetProxy(destination);
+        }
+
+        public bool IsBypassed(Uri host)
+        {
+            return GetConfiguredProxy() == null && HttpClient.DefaultProxy.IsBypassed(host);
+        }
+
+        private Uri? GetConfiguredProxy()
+        {
+            if (!TryNormalize(_configManager.Config.ProxyUrl, out string normalized, out _) ||
+                string.IsNullOrEmpty(normalized))
+            {
+                return null;
+            }
+
+            return new Uri(normalized, UriKind.Absolute);
+        }
+    }
+}
+
+#if WINDOWS
+public sealed class ProxySettingsForm : Form
+{
+    private readonly ConfigManager _configManager;
+    private readonly TextBox _proxyInput;
+
+    public ProxySettingsForm(ConfigManager configManager)
+    {
+        _configManager = configManager;
+
+        Text = "HTTP Proxy - NSO Album Sync";
+        Icon = IconGenerator.CreateAlbumIcon();
+        ClientSize = new Size(500, 190);
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = Color.FromArgb(246, 248, 250);
+        Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+
+        var label = new Label
+        {
+            Text = "HTTP proxy (optional):",
+            Location = new Point(20, 18),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+        };
+
+        _proxyInput = new TextBox
+        {
+            Location = new Point(20, 43),
+            Size = new Size(460, 26),
+            PlaceholderText = "http://127.0.0.1:7890",
+            Text = _configManager.Config.ProxyUrl
+        };
+
+        var help = new Label
+        {
+            Text = "Applies to Nintendo, nxapi and media requests made by NSO Album Sync. Leave blank to use the normal system connection.",
+            Location = new Point(20, 78),
+            Size = new Size(460, 42),
+            ForeColor = Color.FromArgb(90, 90, 90)
+        };
+
+        var saveButton = new Button
+        {
+            Text = "Save",
+            Location = new Point(300, 136),
+            Size = new Size(85, 34),
+            DialogResult = DialogResult.None
+        };
+        saveButton.Click += (s, e) => SaveProxy();
+
+        var cancelButton = new Button
+        {
+            Text = "Cancel",
+            Location = new Point(395, 136),
+            Size = new Size(85, 34),
+            DialogResult = DialogResult.Cancel
+        };
+
+        AcceptButton = saveButton;
+        CancelButton = cancelButton;
+
+        Controls.AddRange(new Control[]
+        {
+            label,
+            _proxyInput,
+            help,
+            saveButton,
+            cancelButton
+        });
+    }
+
+    private void SaveProxy()
+    {
+        if (!ProxySupport.TryNormalize(_proxyInput.Text, out string normalized, out string error))
+        {
+            MessageBox.Show(error, "Invalid HTTP Proxy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _proxyInput.Focus();
+            return;
+        }
+
+        _configManager.Config.ProxyUrl = normalized;
+        _configManager.Save();
+        DialogResult = DialogResult.OK;
+        Close();
+    }
+}
+#endif
+#endregion
+
 #region Configuration & State Persistence
 public class AppConfig
 {
@@ -1883,6 +2162,7 @@ public class AppConfig
     public bool NotificationsEnabled { get; set; } = false;
     public int SyncIntervalMinutes { get; set; } = 60;
     public string NxapiAuthClientId { get; set; } = "eJ8TDme0c-Z4czx5SvZabA";
+    public string ProxyUrl { get; set; } = "";
     public DateTime? LastSyncTime { get; set; }
 }
 
@@ -1948,6 +2228,7 @@ public class ConfigManager
                 AutoSyncEnabled = Config.AutoSyncEnabled,
                 SyncIntervalMinutes = Config.SyncIntervalMinutes,
                 NxapiAuthClientId = Config.NxapiAuthClientId,
+                ProxyUrl = Config.ProxyUrl,
                 LastSyncTime = Config.LastSyncTime
             };
 
