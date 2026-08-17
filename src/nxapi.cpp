@@ -53,7 +53,7 @@ void NxapiClient::apply_rate_limit_response(const HttpResponse& response) {
         return;
     }
 
-    long retry_after_seconds =
+    auto retry_after_seconds =
         std::chrono::duration_cast<std::chrono::seconds>(
             kDefaultRateLimitBackoff)
             .count();
@@ -61,7 +61,9 @@ void NxapiClient::apply_rate_limit_response(const HttpResponse& response) {
     const auto header = response.headers.find("retry-after");
     if (header != response.headers.end()) {
         try {
-            retry_after_seconds = std::max(1L, std::stol(header->second));
+            retry_after_seconds = std::max<decltype(retry_after_seconds)>(
+                1,
+                std::stoll(header->second));
         } catch (...) {
             // Keep the conservative default when Retry-After is malformed.
         }

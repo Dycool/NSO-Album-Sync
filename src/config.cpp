@@ -25,32 +25,50 @@ constexpr char kMacKeychainMarker[] = "keychain:v1";
 constexpr char kLinuxSecretServiceMarker[] = "secret-service:v1";
 constexpr char kVolatileMarker[] = "volatile:v1";
 
+std::string environment_variable(const char* name) {
+#ifdef _WIN32
+    char* value = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
+        return {};
+    }
+
+    std::string result(value);
+    std::free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    return value != nullptr ? std::string(value) : std::string{};
+#endif
+}
+
 std::filesystem::path config_directory() {
 #ifdef _WIN32
-    const char* app_data = std::getenv("APPDATA");
-    return std::filesystem::path(app_data ? app_data : ".") / "NSOAlbumSync";
+    const auto app_data = environment_variable("APPDATA");
+    return std::filesystem::path(app_data.empty() ? "." : app_data) /
+           "NSOAlbumSync";
 #elif __APPLE__
-    const char* home = std::getenv("HOME");
-    return std::filesystem::path(home ? home : ".") /
+    const auto home = environment_variable("HOME");
+    return std::filesystem::path(home.empty() ? "." : home) /
            "Library" /
            "Application Support" /
            "NSOAlbumSync";
 #else
-    const char* xdg_config_home = std::getenv("XDG_CONFIG_HOME");
-    if (xdg_config_home != nullptr && *xdg_config_home != '\0') {
+    const auto xdg_config_home = environment_variable("XDG_CONFIG_HOME");
+    if (!xdg_config_home.empty()) {
         return std::filesystem::path(xdg_config_home) / "NSOAlbumSync";
     }
 
-    const char* home = std::getenv("HOME");
-    return std::filesystem::path(home ? home : ".") /
+    const auto home = environment_variable("HOME");
+    return std::filesystem::path(home.empty() ? "." : home) /
            ".config" /
            "NSOAlbumSync";
 #endif
 }
 
 std::string default_album_folder() {
-    const char* home = std::getenv("HOME");
-    return (std::filesystem::path(home ? home : ".") /
+    const auto home = environment_variable("HOME");
+    return (std::filesystem::path(home.empty() ? "." : home) /
             "Pictures" /
             "Nintendo Switch Album")
         .string();

@@ -2,11 +2,10 @@
 
 #ifdef _WIN32
 
-#define NOMINMAX
+#include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
-#include <windows.h>
 
 #include <string>
 

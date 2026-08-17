@@ -11,10 +11,9 @@
 #include <thread>
 
 #ifdef _WIN32
-#define NOMINMAX
+#include <windows.h>
 #include <bcrypt.h>
 #include <shellapi.h>
-#include <windows.h>
 #include <wincrypt.h>
 #else
 #include <openssl/evp.h>
