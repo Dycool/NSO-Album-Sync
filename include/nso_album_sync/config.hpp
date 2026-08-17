@@ -19,7 +19,7 @@ struct AppConfig {
 
     std::string proxy_url;
     std::string nxapi_auth_client_id = "eJ8TDme0c-Z4czx5SvZabA";
-    std::uint64_t discord_application_id = 1472620322746536068ULL;
+    std::uint64_t discord_application_id = 637692124539650048ULL;
 };
 
 class ConfigManager {

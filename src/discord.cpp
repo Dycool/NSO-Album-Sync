@@ -1,58 +1,80 @@
 #include "nso_album_sync/discord.hpp"
 
+#include "nso_album_sync/discord_ipc.hpp"
+#include "nso_album_sync/json.hpp"
+
+#include <memory>
 #include <string>
 
-#ifdef NSO_DISCORD_SOCIAL_SDK
-#define DISCORDPP_IMPLEMENTATION
-#include <discordpp.h>
-#endif
-
 namespace nso {
+namespace {
+
+Json activity_from_presence(const NintendoPresence& presence) {
+    Json::object activity{
+        {"type", 0},
+        {"details", presence.game_name},
+        {"instance", false},
+    };
+
+    std::string state = presence.console_name();
+    const auto play_time = presence.discord_state();
+    if (!play_time.empty()) {
+        if (!state.empty()) {
+            state += " · ";
+        }
+        state += play_time;
+    }
+
+    if (!state.empty()) {
+        activity.emplace("state", std::move(state));
+    }
+
+    Json::object assets;
+    if (!presence.image_uri.empty()) {
+        assets.emplace("large_image", presence.image_uri);
+        assets.emplace("large_text", presence.game_name);
+    }
+    if (!presence.shop_uri.empty()) {
+        assets.emplace("large_url", presence.shop_uri);
+    }
+
+    if (!assets.empty()) {
+        activity.emplace("assets", std::move(assets));
+    }
+
+    return Json(std::move(activity));
+}
+
+}  // namespace
 
 struct DiscordPresence::Impl {
-#ifdef NSO_DISCORD_SOCIAL_SDK
-    std::shared_ptr<discordpp::Client> client;
-#endif
-    bool ready = false;
+    explicit Impl(std::uint64_t application_id)
+        : ipc(application_id) {}
+
+    DiscordIpcClient ipc;
 };
 
 DiscordPresence::DiscordPresence(std::uint64_t application_id)
-    : impl_(std::make_unique<Impl>()) {
-#ifdef NSO_DISCORD_SOCIAL_SDK
-    try {
-        impl_->client = std::make_shared<discordpp::Client>();
-        impl_->client->SetApplicationId(application_id);
-        impl_->ready = true;
-    } catch (...) {
-        impl_->ready = false;
-    }
-#else
-    (void)application_id;
-#endif
-}
+    : impl_(std::make_unique<Impl>(application_id)) {}
 
 DiscordPresence::~DiscordPresence() {
     clear();
 }
 
 bool DiscordPresence::available() const {
-    return impl_->ready;
+    // Raw Discord IPC is built into the application. Discord itself does not
+    // need to be running for the feature to be available in the tray menu.
+    return true;
 }
 
 void DiscordPresence::clear() {
-#ifdef NSO_DISCORD_SOCIAL_SDK
-    if (!impl_->ready || !impl_->client) {
-        return;
+    if (impl_) {
+        impl_->ipc.clear_activity();
     }
-
-    impl_->client->ClearRichPresence();
-    discordpp::RunCallbacks();
-#endif
 }
 
 void DiscordPresence::update(const NintendoPresence& presence) {
-#ifdef NSO_DISCORD_SOCIAL_SDK
-    if (!impl_->ready || !impl_->client) {
+    if (!impl_) {
         return;
     }
 
@@ -61,36 +83,9 @@ void DiscordPresence::update(const NintendoPresence& presence) {
         return;
     }
 
-    discordpp::Activity activity;
-    activity.SetType(discordpp::ActivityTypes::Playing);
-    activity.SetDetails(presence.game_name);
-
-    std::string state = presence.console_name();
-    const auto play_time = presence.discord_state();
-    if (!play_time.empty()) {
-        state += " · " + play_time;
-    }
-    activity.SetState(state);
-
-    discordpp::ActivityAssets assets;
-    if (!presence.image_uri.empty()) {
-        assets.SetLargeImage(presence.image_uri);
-    }
-    assets.SetLargeText(presence.game_name);
-    if (!presence.shop_uri.empty()) {
-        assets.SetLargeUrl(presence.shop_uri);
-    }
-    activity.SetAssets(assets);
-
-    impl_->client->UpdateRichPresence(
-        activity,
-        [](discordpp::ClientResult) {
-            // Presence failures are intentionally non-fatal to album sync.
-        });
-    discordpp::RunCallbacks();
-#else
-    (void)presence;
-#endif
+    // Presence is optional: failure simply means Discord is not running or the
+    // local IPC request was rejected. Nintendo album synchronization continues.
+    impl_->ipc.set_activity(activity_from_presence(presence));
 }
 
 }  // namespace nso

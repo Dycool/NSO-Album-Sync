@@ -18,8 +18,6 @@ concurrency:
 
 env:
   BUILD_TYPE: Release
-  DISCORD_SDK_URL: ${{ secrets.DISCORD_SOCIAL_SDK_URL }}
-  DISCORD_SDK_AUTH_HEADER: ${{ secrets.DISCORD_SOCIAL_SDK_AUTH_HEADER }}
 
 jobs:
   build-windows:
@@ -42,66 +40,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Require Discord SDK for tagged releases
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:DISCORD_SDK_URL)) {
-            throw "DISCORD_SOCIAL_SDK_URL must be configured for tagged releases."
-          }
-
       - name: Install OpenSSL with vcpkg
         shell: pwsh
         run: |
           & "$env:VCPKG_ROOT\vcpkg.exe" install "openssl:${{ matrix.vcpkg_triplet }}"
 
-      - name: Download Discord Social SDK
-        if: env.DISCORD_SDK_URL != '' && github.event_name != 'pull_request'
-        shell: pwsh
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP "discord-social-sdk.zip"
-          $extract = Join-Path $env:RUNNER_TEMP "discord-social-sdk"
-
-          $curlArgs = @("-fL", "--retry", "3", "--retry-delay", "2")
-          if (-not [string]::IsNullOrWhiteSpace($env:DISCORD_SDK_AUTH_HEADER)) {
-            $curlArgs += @("-H", $env:DISCORD_SDK_AUTH_HEADER)
-          }
-          $curlArgs += @($env:DISCORD_SDK_URL, "-o", $archive)
-
-          & curl.exe @curlArgs
-          if ($LASTEXITCODE -ne 0) { throw "Discord Social SDK download failed." }
-
-          New-Item -ItemType Directory -Force -Path $extract | Out-Null
-          tar -xf $archive -C $extract
-          if ($LASTEXITCODE -ne 0) { throw "Discord Social SDK extraction failed." }
-
-          $header = Get-ChildItem -Path $extract -Recurse -File -Filter discordpp.h |
-            Where-Object { $_.Directory.Name -eq "include" } |
-            Select-Object -First 1
-          if (-not $header) { throw "discordpp.h was not found in the SDK archive." }
-
-          $sdkRoot = Split-Path -Parent $header.Directory.FullName
-          "DISCORD_SOCIAL_SDK_DIR=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       - name: Configure CMake
         shell: pwsh
         run: |
-          $discordArgs = @("-DNSO_ENABLE_DISCORD=OFF")
-          if (-not [string]::IsNullOrWhiteSpace($env:DISCORD_SOCIAL_SDK_DIR)) {
-            $discordArgs = @(
-              "-DNSO_ENABLE_DISCORD=ON",
-              "-DNSO_REQUIRE_DISCORD=ON",
-              "-DDISCORD_SOCIAL_SDK_DIR=$env:DISCORD_SOCIAL_SDK_DIR"
-            )
-          }
-
           cmake -S . -B build `
             -A "${{ matrix.cmake_arch }}" `
             -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET="${{ matrix.vcpkg_triplet }}" `
-            -DNSO_STATIC_RUNTIME=ON `
-            @discordArgs
+            -DNSO_STATIC_RUNTIME=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build
@@ -116,11 +68,6 @@ jobs:
 
           $exe = "build/$env:BUILD_TYPE/nso-album-sync.exe"
           Copy-Item $exe $out
-
-          $discordDll = "build/$env:BUILD_TYPE/discord_partner_sdk.dll"
-          if (Test-Path $discordDll) {
-            Copy-Item $discordDll $out
-          }
 
           $size = (Get-Item $exe).Length
           Write-Host ("Application executable size: {0:N2} MB" -f ($size / 1MB))
@@ -153,63 +100,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Require Discord SDK for tagged releases
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          if [[ -z "${DISCORD_SDK_URL}" ]]; then
-            echo "DISCORD_SOCIAL_SDK_URL must be configured for tagged releases." >&2
-            exit 1
-          fi
-
       - name: Install build dependencies
         shell: bash
         run: brew install cmake ninja openssl@3
-
-      - name: Download Discord Social SDK
-        if: env.DISCORD_SDK_URL != '' && github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/discord-social-sdk.zip"
-          extract="$RUNNER_TEMP/discord-social-sdk"
-          mkdir -p "$extract"
-
-          args=(-fL --retry 3 --retry-delay 2)
-          if [[ -n "${DISCORD_SDK_AUTH_HEADER:-}" ]]; then
-            args+=(-H "$DISCORD_SDK_AUTH_HEADER")
-          fi
-          curl "${args[@]}" "$DISCORD_SDK_URL" -o "$archive"
-          ditto -x -k "$archive" "$extract"
-
-          header="$(find "$extract" -type f -path '*/include/discordpp.h' -print -quit)"
-          if [[ -z "$header" ]]; then
-            echo "discordpp.h was not found in the SDK archive." >&2
-            exit 1
-          fi
-
-          sdk_root="$(dirname "$(dirname "$header")")"
-          echo "DISCORD_SOCIAL_SDK_DIR=$sdk_root" >> "$GITHUB_ENV"
 
       - name: Configure CMake
         shell: bash
         run: |
           set -euo pipefail
-          discord_args=(-DNSO_ENABLE_DISCORD=OFF)
-          if [[ -n "${DISCORD_SOCIAL_SDK_DIR:-}" ]]; then
-            discord_args=(
-              -DNSO_ENABLE_DISCORD=ON
-              -DNSO_REQUIRE_DISCORD=ON
-              "-DDISCORD_SOCIAL_SDK_DIR=${DISCORD_SOCIAL_SDK_DIR}"
-            )
-          fi
-
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
             -DOPENSSL_USE_STATIC_LIBS=TRUE \
-            -DNSO_STATIC_RUNTIME=ON \
-            "${discord_args[@]}"
+            -DNSO_STATIC_RUNTIME=ON
 
       - name: Build
         shell: bash
@@ -258,15 +161,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Require Discord SDK for tagged releases
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          if [[ -z "${DISCORD_SDK_URL}" ]]; then
-            echo "DISCORD_SOCIAL_SDK_URL must be configured for tagged releases." >&2
-            exit 1
-          fi
-
       - name: Install build dependencies
         shell: bash
         run: |
@@ -275,49 +169,14 @@ jobs:
             cmake ninja-build libssl-dev libsecret-1-dev \
             libgtk-3-dev libayatana-appindicator3-dev
 
-      - name: Download Discord Social SDK
-        if: env.DISCORD_SDK_URL != '' && github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/discord-social-sdk.zip"
-          extract="$RUNNER_TEMP/discord-social-sdk"
-          mkdir -p "$extract"
-
-          args=(-fL --retry 3 --retry-delay 2)
-          if [[ -n "${DISCORD_SDK_AUTH_HEADER:-}" ]]; then
-            args+=(-H "$DISCORD_SDK_AUTH_HEADER")
-          fi
-          curl "${args[@]}" "$DISCORD_SDK_URL" -o "$archive"
-          unzip -q "$archive" -d "$extract"
-
-          header="$(find "$extract" -type f -path '*/include/discordpp.h' -print -quit)"
-          if [[ -z "$header" ]]; then
-            echo "discordpp.h was not found in the SDK archive." >&2
-            exit 1
-          fi
-
-          sdk_root="$(dirname "$(dirname "$header")")"
-          echo "DISCORD_SOCIAL_SDK_DIR=$sdk_root" >> "$GITHUB_ENV"
-
       - name: Configure CMake
         shell: bash
         run: |
           set -euo pipefail
-          discord_args=(-DNSO_ENABLE_DISCORD=OFF)
-          if [[ -n "${DISCORD_SOCIAL_SDK_DIR:-}" ]]; then
-            discord_args=(
-              -DNSO_ENABLE_DISCORD=ON
-              -DNSO_REQUIRE_DISCORD=ON
-              "-DDISCORD_SOCIAL_SDK_DIR=${DISCORD_SOCIAL_SDK_DIR}"
-            )
-          fi
-
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DNSO_STATIC_RUNTIME=ON \
-            -DNSO_ENABLE_LINUX_TRAY=ON \
-            "${discord_args[@]}"
+            -DNSO_ENABLE_LINUX_TRAY=ON
 
       - name: Build
         shell: bash
@@ -332,10 +191,6 @@ jobs:
 
           cp build/nso-album-sync "$out/"
           strip "$out/nso-album-sync"
-
-          if [[ -f build/libdiscord_partner_sdk.so ]]; then
-            cp build/libdiscord_partner_sdk.so "$out/"
-          fi
 
           size="$(stat -c%s "$out/nso-album-sync")"
           python3 -c 'import sys; s=int(sys.argv[1]); print(f"Application executable size: {s/1024/1024:.2f} MB"); print("::warning::Application executable is above the 10 MB target.") if s > 10*1024*1024 else None' "$size"

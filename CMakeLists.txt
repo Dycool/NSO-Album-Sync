@@ -11,13 +11,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(
-    NSO_ENABLE_DISCORD
-    "Build Discord Social SDK Rich Presence"
-    ON
-)
-option(
     NSO_STATIC_RUNTIME
-    "Statically link C++ runtime and OpenSSL on Linux compact releases"
+    "Prefer static language/TLS runtimes for compact standalone releases"
     OFF
 )
 option(
@@ -36,6 +31,17 @@ if(MSVC)
         $<$<CONFIG:Release>:/OPT:REF>
         $<$<CONFIG:Release>:/OPT:ICF>
     )
+elseif(APPLE)
+    add_compile_options(-Wall -Wextra -Wpedantic)
+    add_compile_options(
+        $<$<CONFIG:Release>:-ffunction-sections>
+        $<$<CONFIG:Release>:-fdata-sections>
+        $<$<CONFIG:Release>:-flto>
+    )
+    add_link_options(
+        $<$<CONFIG:Release>:-Wl,-dead_strip>
+        $<$<CONFIG:Release>:-flto>
+    )
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
     add_compile_options(
@@ -49,8 +55,15 @@ else()
     )
 endif()
 
-if(NSO_STATIC_RUNTIME AND UNIX AND NOT APPLE)
+if(NSO_STATIC_RUNTIME)
     set(OPENSSL_USE_STATIC_LIBS TRUE)
+
+    if(MSVC)
+        set(
+            CMAKE_MSVC_RUNTIME_LIBRARY
+            "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        )
+    endif()
 endif()
 
 find_package(OpenSSL REQUIRED)
@@ -66,6 +79,7 @@ set(NSO_SOURCES
     src/config.cpp
     src/coral.cpp
     src/discord.cpp
+    src/discord_ipc.cpp
     src/http.cpp
     src/json.cpp
     src/nintendo_auth.cpp
@@ -79,6 +93,7 @@ set(NSO_HEADERS
     include/nso_album_sync/config.hpp
     include/nso_album_sync/coral.hpp
     include/nso_album_sync/discord.hpp
+    include/nso_album_sync/discord_ipc.hpp
     include/nso_album_sync/game_aliases.hpp
     include/nso_album_sync/http.hpp
     include/nso_album_sync/json.hpp
@@ -94,17 +109,20 @@ if(WIN32)
     list(APPEND NSO_SOURCES
         src/platform_windows.cpp
         src/secure_store_windows.cpp
+        src/discord_ipc_windows.cpp
     )
 elseif(APPLE)
     enable_language(OBJCXX)
     list(APPEND NSO_SOURCES
         src/platform_macos.mm
         src/secure_store_macos.mm
+        src/discord_ipc_unix.cpp
     )
 else()
     list(APPEND NSO_SOURCES
         src/platform_linux.cpp
         src/secure_store_linux.cpp
+        src/discord_ipc_unix.cpp
     )
 endif()
 
@@ -235,59 +253,12 @@ else()
 endif()
 
 # -----------------------------------------------------------------------------
-# Discord Social SDK
+# Discord Rich Presence
 # -----------------------------------------------------------------------------
 
-if(NSO_ENABLE_DISCORD)
-    if(DEFINED ENV{DISCORD_SOCIAL_SDK_DIR})
-        set(DISCORD_SOCIAL_SDK_DIR "$ENV{DISCORD_SOCIAL_SDK_DIR}")
-    endif()
-
-    if(DISCORD_SOCIAL_SDK_DIR AND
-       EXISTS "${DISCORD_SOCIAL_SDK_DIR}/include/discordpp.h")
-        target_compile_definitions(
-            nso-album-sync
-            PRIVATE NSO_DISCORD_SOCIAL_SDK=1
-        )
-        target_include_directories(
-            nso-album-sync
-            PRIVATE "${DISCORD_SOCIAL_SDK_DIR}/include"
-        )
-        target_link_directories(
-            nso-album-sync
-            PRIVATE "${DISCORD_SOCIAL_SDK_DIR}/lib/release"
-        )
-        target_link_libraries(
-            nso-album-sync
-            PRIVATE discord_partner_sdk
-        )
-
-        if(WIN32)
-            add_custom_command(
-                TARGET nso-album-sync
-                POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${DISCORD_SOCIAL_SDK_DIR}/bin/release/discord_partner_sdk.dll"
-                    "$<TARGET_FILE_DIR:nso-album-sync>"
-            )
-        elseif(APPLE)
-            set_target_properties(
-                nso-album-sync
-                PROPERTIES BUILD_RPATH "@executable_path/../Frameworks"
-            )
-        else()
-            set_target_properties(
-                nso-album-sync
-                PROPERTIES BUILD_RPATH "$ORIGIN"
-            )
-        endif()
-    else()
-        message(
-            WARNING
-            "Discord Social SDK not found. Set DISCORD_SOCIAL_SDK_DIR to build Rich Presence."
-        )
-    endif()
-endif()
+# Discord Rich Presence uses the desktop client's documented local RPC/IPC
+# transport directly. No Discord SDK, extra library, secret, or download is
+# required at build or runtime.
 
 install(
     TARGETS nso-album-sync
