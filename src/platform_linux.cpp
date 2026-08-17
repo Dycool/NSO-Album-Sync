@@ -243,9 +243,30 @@ void PlatformUi::notify(
     std::cerr << title << ": " << message << '\n';
 
 #ifdef NSO_HAVE_GTK
-    const std::string command =
-        "notify-send '" + title + "' '" + message + "' >/dev/null 2>&1 &";
-    std::system(command.c_str());
+    char* arguments[] = {
+        const_cast<char*>("notify-send"),
+        const_cast<char*>(title.c_str()),
+        const_cast<char*>(message.c_str()),
+        nullptr,
+    };
+
+    GError* error = nullptr;
+    const gboolean launched = g_spawn_async(
+        nullptr,
+        arguments,
+        nullptr,
+        static_cast<GSpawnFlags>(G_SPAWN_SEARCH_PATH |
+                                 G_SPAWN_STDOUT_TO_DEV_NULL |
+                                 G_SPAWN_STDERR_TO_DEV_NULL),
+        nullptr,
+        nullptr,
+        nullptr,
+        &error);
+
+    if (!launched && error != nullptr) {
+        std::cerr << "Notification launch failed: " << error->message << '\n';
+        g_error_free(error);
+    }
 #endif
 }
 

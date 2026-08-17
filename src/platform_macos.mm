@@ -3,6 +3,7 @@
 #ifdef __APPLE__
 
 #import <Cocoa/Cocoa.h>
+#import <UserNotifications/UserNotifications.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -213,6 +214,58 @@ std::string executable_path() {
     return path;
 }
 
+void enqueue_notification(NSString* title, NSString* message) {
+    auto* content = [UNMutableNotificationContent new];
+    content.title = title;
+    content.body = message;
+    content.sound = [UNNotificationSound defaultSound];
+
+    auto* request = [UNNotificationRequest
+        requestWithIdentifier:[NSUUID UUID].UUIDString
+                      content:content
+                      trigger:nil];
+
+    [[UNUserNotificationCenter currentNotificationCenter]
+        addNotificationRequest:request
+        withCompletionHandler:^(NSError* error) {
+            if (error != nil) {
+                NSLog(@"NSO Album Sync notification failed: %@", error);
+            }
+        }];
+}
+
+void deliver_notification(NSString* title, NSString* message) {
+    auto* center = [UNUserNotificationCenter currentNotificationCenter];
+
+    [center getNotificationSettingsWithCompletionHandler:^(
+        UNNotificationSettings* settings) {
+        const auto status = settings.authorizationStatus;
+        if (status == UNAuthorizationStatusAuthorized ||
+            status == UNAuthorizationStatusProvisional) {
+            enqueue_notification(title, message);
+            return;
+        }
+
+        if (status != UNAuthorizationStatusNotDetermined) {
+            return;
+        }
+
+        [center
+            requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
+                                             UNAuthorizationOptionSound)
+            completionHandler:^(BOOL granted, NSError* error) {
+                if (error != nil) {
+                    NSLog(@"NSO Album Sync notification permission failed: %@", error);
+                    return;
+                }
+
+                if (granted) {
+                    enqueue_notification(title, message);
+                }
+            }];
+    }];
+}
+
 }  // namespace
 
 PlatformUi::PlatformUi() : impl_(new Impl) {}
@@ -265,14 +318,10 @@ void PlatformUi::update(const MenuState& state) {
 void PlatformUi::notify(
     const std::string& title,
     const std::string& message) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        auto* notification = [NSUserNotification new];
-        notification.title = ns_string(title);
-        notification.informativeText = ns_string(message);
+    NSString* notification_title = ns_string(title);
+    NSString* notification_message = ns_string(message);
 
-        [[NSUserNotificationCenter defaultUserNotificationCenter]
-            deliverNotification:notification];
-    });
+    deliver_notification(notification_title, notification_message);
 }
 
 std::string PlatformUi::prompt(

@@ -30,31 +30,13 @@ jobs:
           - arch: x64
             runner: windows-latest
             cmake_arch: x64
-            vcpkg_triplet: x64-windows-static
           - arch: arm64
             runner: windows-11-arm
             cmake_arch: ARM64
-            vcpkg_triplet: arm64-windows-static
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Install OpenSSL with vcpkg
-        shell: pwsh
-        run: |
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
-            throw "VCPKG_INSTALLATION_ROOT is not set on this runner."
-          }
-
-          $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
-          if (-not (Test-Path $vcpkgExe)) {
-            throw "vcpkg.exe was not found at $vcpkgExe"
-          }
-
-          & $vcpkgExe install "openssl:${{ matrix.vcpkg_triplet }}"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Configure CMake
         shell: pwsh
@@ -62,8 +44,6 @@ jobs:
           cmake -S . -B build `
             -A "${{ matrix.cmake_arch }}" `
             -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET="${{ matrix.vcpkg_triplet }}" `
             -DNSO_STATIC_RUNTIME=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

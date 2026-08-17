@@ -1,28 +1,128 @@
 #include "nso_album_sync/util.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cstdlib>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <thread>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <bcrypt.h>
+#include <shellapi.h>
+#include <windows.h>
+#include <wincrypt.h>
+#else
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 
-#include <algorithm>
-#include <cctype>
-#include <cstdlib>
-#include <iomanip>
-#include <sstream>
-#include <stdexcept>
+#include <cerrno>
+#include <spawn.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
-#ifdef _WIN32
-#include <shellapi.h>
-#include <windows.h>
+extern char** environ;
 #endif
 
 namespace nso {
+namespace {
+
+#ifdef _WIN32
+
+void ensure_dword_size(std::size_t size, const char* operation) {
+    if (size > std::numeric_limits<DWORD>::max()) {
+        throw std::runtime_error(std::string(operation) + " input is too large");
+    }
+}
+
+bool nt_success(NTSTATUS status) {
+    return status >= 0;
+}
+
+#endif
+
+#ifndef _WIN32
+
+bool spawn_detached(
+    const std::string& executable,
+    const std::vector<std::string>& arguments) {
+    std::vector<std::string> storage;
+    storage.reserve(arguments.size() + 1);
+    storage.push_back(executable);
+    storage.insert(storage.end(), arguments.begin(), arguments.end());
+
+    std::vector<char*> argv;
+    argv.reserve(storage.size() + 1);
+    for (auto& value : storage) {
+        argv.push_back(value.data());
+    }
+    argv.push_back(nullptr);
+
+    pid_t child = 0;
+    const int result = posix_spawnp(
+        &child,
+        executable.c_str(),
+        nullptr,
+        nullptr,
+        argv.data(),
+        environ);
+
+    if (result != 0) {
+        return false;
+    }
+
+    // Reap the short-lived launcher without blocking the UI thread.
+    std::thread([child] {
+        int status = 0;
+        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+        }
+    }).detach();
+
+    return true;
+}
+
+#endif
+
+}  // namespace
 
 std::string base64_encode(const std::vector<unsigned char>& data) {
     if (data.empty()) {
         return {};
     }
 
+#ifdef _WIN32
+    ensure_dword_size(data.size(), "Base64 encode");
+
+    DWORD required = 0;
+    if (!CryptBinaryToStringA(
+            data.data(),
+            static_cast<DWORD>(data.size()),
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            nullptr,
+            &required)) {
+        throw std::runtime_error("CryptBinaryToStringA size query failed");
+    }
+
+    std::string encoded(required, '\0');
+    if (!CryptBinaryToStringA(
+            data.data(),
+            static_cast<DWORD>(data.size()),
+            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+            encoded.data(),
+            &required)) {
+        throw std::runtime_error("CryptBinaryToStringA failed");
+    }
+
+    if (!encoded.empty() && encoded.back() == '\0') {
+        encoded.pop_back();
+    }
+    return encoded;
+#else
     std::string encoded(4 * ((data.size() + 2) / 3), '\0');
     const int length = EVP_EncodeBlock(
         reinterpret_cast<unsigned char*>(encoded.data()),
@@ -31,6 +131,7 @@ std::string base64_encode(const std::vector<unsigned char>& data) {
 
     encoded.resize(length);
     return encoded;
+#endif
 }
 
 std::vector<unsigned char> base64_decode(std::string text) {
@@ -41,6 +142,36 @@ std::vector<unsigned char> base64_decode(std::string text) {
         text.push_back('=');
     }
 
+#ifdef _WIN32
+    ensure_dword_size(text.size(), "Base64 decode");
+
+    DWORD required = 0;
+    if (!CryptStringToBinaryA(
+            text.c_str(),
+            static_cast<DWORD>(text.size()),
+            CRYPT_STRING_BASE64,
+            nullptr,
+            &required,
+            nullptr,
+            nullptr)) {
+        return {};
+    }
+
+    std::vector<unsigned char> decoded(required);
+    if (!CryptStringToBinaryA(
+            text.c_str(),
+            static_cast<DWORD>(text.size()),
+            CRYPT_STRING_BASE64,
+            decoded.data(),
+            &required,
+            nullptr,
+            nullptr)) {
+        return {};
+    }
+
+    decoded.resize(required);
+    return decoded;
+#else
     std::vector<unsigned char> decoded((text.size() / 4) * 3 + 3);
     int length = EVP_DecodeBlock(
         decoded.data(),
@@ -58,6 +189,7 @@ std::vector<unsigned char> base64_decode(std::string text) {
 
     decoded.resize(static_cast<std::size_t>(std::max(0, length)));
     return decoded;
+#endif
 }
 
 std::string base64url(const std::vector<unsigned char>& data) {
@@ -75,15 +207,97 @@ std::string base64url(const std::vector<unsigned char>& data) {
 
 std::vector<unsigned char> random_bytes(std::size_t count) {
     std::vector<unsigned char> bytes(count);
+    if (bytes.empty()) {
+        return bytes;
+    }
 
+#ifdef _WIN32
+    ensure_dword_size(count, "Random byte generation");
+    if (!nt_success(BCryptGenRandom(
+            nullptr,
+            bytes.data(),
+            static_cast<ULONG>(count),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+        throw std::runtime_error("BCryptGenRandom failed");
+    }
+#else
     if (RAND_bytes(bytes.data(), static_cast<int>(count)) != 1) {
         throw std::runtime_error("RAND_bytes failed");
     }
+#endif
 
     return bytes;
 }
 
 std::vector<unsigned char> sha256(const std::string& text) {
+#ifdef _WIN32
+    ensure_dword_size(text.size(), "SHA-256");
+
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+
+    if (!nt_success(BCryptOpenAlgorithmProvider(
+            &algorithm,
+            BCRYPT_SHA256_ALGORITHM,
+            nullptr,
+            0))) {
+        throw std::runtime_error("BCryptOpenAlgorithmProvider failed");
+    }
+
+    DWORD hash_length = 0;
+    DWORD bytes_returned = 0;
+    if (!nt_success(BCryptGetProperty(
+            algorithm,
+            BCRYPT_HASH_LENGTH,
+            reinterpret_cast<PUCHAR>(&hash_length),
+            sizeof(hash_length),
+            &bytes_returned,
+            0))) {
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error("BCryptGetProperty failed");
+    }
+
+    std::vector<unsigned char> digest(hash_length);
+
+    const auto fail = [&](const char* message) -> void {
+        if (hash != nullptr) {
+            BCryptDestroyHash(hash);
+        }
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error(message);
+    };
+
+    if (!nt_success(BCryptCreateHash(
+            algorithm,
+            &hash,
+            nullptr,
+            0,
+            nullptr,
+            0,
+            0))) {
+        fail("BCryptCreateHash failed");
+    }
+
+    if (!text.empty() && !nt_success(BCryptHashData(
+            hash,
+            reinterpret_cast<PUCHAR>(const_cast<char*>(text.data())),
+            static_cast<ULONG>(text.size()),
+            0))) {
+        fail("BCryptHashData failed");
+    }
+
+    if (!nt_success(BCryptFinishHash(
+            hash,
+            digest.data(),
+            static_cast<ULONG>(digest.size()),
+            0))) {
+        fail("BCryptFinishHash failed");
+    }
+
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    return digest;
+#else
     std::vector<unsigned char> digest(SHA256_DIGEST_LENGTH);
 
     SHA256(
@@ -92,6 +306,7 @@ std::vector<unsigned char> sha256(const std::string& text) {
         digest.data());
 
     return digest;
+#endif
 }
 
 std::string url_encode(const std::string& text) {
@@ -203,11 +418,13 @@ void open_url(const std::string& url) {
         nullptr,
         SW_SHOWNORMAL);
 #elif __APPLE__
-    const std::string command = "open '" + url + "' >/dev/null 2>&1 &";
-    std::system(command.c_str());
+    if (!spawn_detached("open", {url})) {
+        throw std::runtime_error("Failed to launch the default browser");
+    }
 #else
-    const std::string command = "xdg-open '" + url + "' >/dev/null 2>&1 &";
-    std::system(command.c_str());
+    if (!spawn_detached("xdg-open", {url})) {
+        throw std::runtime_error("Failed to launch the default browser");
+    }
 #endif
 }
 

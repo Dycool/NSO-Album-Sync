@@ -8,15 +8,20 @@
 namespace nso {
 namespace {
 
-const SecretSchema kSessionTokenSchema = {
-    "org.nsoalbumsync.session-token",
-    SECRET_SCHEMA_NONE,
-    {
-        {"application", SECRET_SCHEMA_ATTRIBUTE_STRING},
-        {"key", SECRET_SCHEMA_ATTRIBUTE_STRING},
-        {nullptr, static_cast<SecretSchemaAttributeType>(0)},
-    },
-};
+const SecretSchema kSessionTokenSchema = [] {
+    SecretSchema schema{};
+    schema.name = "org.nsoalbumsync.session-token";
+    schema.flags = SECRET_SCHEMA_NONE;
+    schema.attributes[0] = {
+        "application",
+        SECRET_SCHEMA_ATTRIBUTE_STRING,
+    };
+    schema.attributes[1] = {
+        "key",
+        SECRET_SCHEMA_ATTRIBUTE_STRING,
+    };
+    return schema;
+}();
 
 constexpr char kApplicationAttribute[] = "NsoAlbumSync";
 constexpr char kLegacyKeyAttribute[] = "session_token";
