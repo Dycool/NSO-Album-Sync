@@ -1,0 +1,380 @@
+name: Build and Release NSO Album Sync
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - "v*"
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nso-album-sync-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  BUILD_TYPE: Release
+  DISCORD_SDK_URL: ${{ secrets.DISCORD_SOCIAL_SDK_URL }}
+  DISCORD_SDK_AUTH_HEADER: ${{ secrets.DISCORD_SOCIAL_SDK_AUTH_HEADER }}
+
+jobs:
+  build-windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            cmake_arch: x64
+            vcpkg_triplet: x64-windows-static
+          - arch: arm64
+            runner: windows-11-arm
+            cmake_arch: ARM64
+            vcpkg_triplet: arm64-windows-static
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Require Discord SDK for tagged releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:DISCORD_SDK_URL)) {
+            throw "DISCORD_SOCIAL_SDK_URL must be configured for tagged releases."
+          }
+
+      - name: Install OpenSSL with vcpkg
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_ROOT\vcpkg.exe" install "openssl:${{ matrix.vcpkg_triplet }}"
+
+      - name: Download Discord Social SDK
+        if: env.DISCORD_SDK_URL != '' && github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "discord-social-sdk.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "discord-social-sdk"
+
+          $curlArgs = @("-fL", "--retry", "3", "--retry-delay", "2")
+          if (-not [string]::IsNullOrWhiteSpace($env:DISCORD_SDK_AUTH_HEADER)) {
+            $curlArgs += @("-H", $env:DISCORD_SDK_AUTH_HEADER)
+          }
+          $curlArgs += @($env:DISCORD_SDK_URL, "-o", $archive)
+
+          & curl.exe @curlArgs
+          if ($LASTEXITCODE -ne 0) { throw "Discord Social SDK download failed." }
+
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          tar -xf $archive -C $extract
+          if ($LASTEXITCODE -ne 0) { throw "Discord Social SDK extraction failed." }
+
+          $header = Get-ChildItem -Path $extract -Recurse -File -Filter discordpp.h |
+            Where-Object { $_.Directory.Name -eq "include" } |
+            Select-Object -First 1
+          if (-not $header) { throw "discordpp.h was not found in the SDK archive." }
+
+          $sdkRoot = Split-Path -Parent $header.Directory.FullName
+          "DISCORD_SOCIAL_SDK_DIR=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $discordArgs = @("-DNSO_ENABLE_DISCORD=OFF")
+          if (-not [string]::IsNullOrWhiteSpace($env:DISCORD_SOCIAL_SDK_DIR)) {
+            $discordArgs = @(
+              "-DNSO_ENABLE_DISCORD=ON",
+              "-DNSO_REQUIRE_DISCORD=ON",
+              "-DDISCORD_SOCIAL_SDK_DIR=$env:DISCORD_SOCIAL_SDK_DIR"
+            )
+          }
+
+          cmake -S . -B build `
+            -A "${{ matrix.cmake_arch }}" `
+            -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET="${{ matrix.vcpkg_triplet }}" `
+            -DNSO_STATIC_RUNTIME=ON `
+            @discordArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config $env:BUILD_TYPE --parallel
+
+      - name: Package Windows build
+        shell: pwsh
+        run: |
+          $out = "dist/windows-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          $exe = "build/$env:BUILD_TYPE/nso-album-sync.exe"
+          Copy-Item $exe $out
+
+          $discordDll = "build/$env:BUILD_TYPE/discord_partner_sdk.dll"
+          if (Test-Path $discordDll) {
+            Copy-Item $discordDll $out
+          }
+
+          $size = (Get-Item $exe).Length
+          Write-Host ("Application executable size: {0:N2} MB" -f ($size / 1MB))
+          if ($size -gt 10MB) {
+            Write-Warning "Application executable is above the 10 MB target."
+          }
+
+          Compress-Archive -Path "$out/*" -DestinationPath "dist/nso-album-sync-windows-${{ matrix.arch }}.zip"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nso-album-sync-windows-${{ matrix.arch }}
+          path: dist/nso-album-sync-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  build-macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Require Discord SDK for tagged releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          if [[ -z "${DISCORD_SDK_URL}" ]]; then
+            echo "DISCORD_SOCIAL_SDK_URL must be configured for tagged releases." >&2
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        shell: bash
+        run: brew install cmake ninja openssl@3
+
+      - name: Download Discord Social SDK
+        if: env.DISCORD_SDK_URL != '' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/discord-social-sdk.zip"
+          extract="$RUNNER_TEMP/discord-social-sdk"
+          mkdir -p "$extract"
+
+          args=(-fL --retry 3 --retry-delay 2)
+          if [[ -n "${DISCORD_SDK_AUTH_HEADER:-}" ]]; then
+            args+=(-H "$DISCORD_SDK_AUTH_HEADER")
+          fi
+          curl "${args[@]}" "$DISCORD_SDK_URL" -o "$archive"
+          ditto -x -k "$archive" "$extract"
+
+          header="$(find "$extract" -type f -path '*/include/discordpp.h' -print -quit)"
+          if [[ -z "$header" ]]; then
+            echo "discordpp.h was not found in the SDK archive." >&2
+            exit 1
+          fi
+
+          sdk_root="$(dirname "$(dirname "$header")")"
+          echo "DISCORD_SOCIAL_SDK_DIR=$sdk_root" >> "$GITHUB_ENV"
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          discord_args=(-DNSO_ENABLE_DISCORD=OFF)
+          if [[ -n "${DISCORD_SOCIAL_SDK_DIR:-}" ]]; then
+            discord_args=(
+              -DNSO_ENABLE_DISCORD=ON
+              -DNSO_REQUIRE_DISCORD=ON
+              "-DDISCORD_SOCIAL_SDK_DIR=${DISCORD_SOCIAL_SDK_DIR}"
+            )
+          fi
+
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DNSO_STATIC_RUNTIME=ON \
+            "${discord_args[@]}"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --parallel
+
+      - name: Ad-hoc sign and package app
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="build/nso-album-sync.app"
+          binary="$app/Contents/MacOS/nso-album-sync"
+
+          if [[ ! -d "$app" ]]; then
+            echo "macOS app bundle was not produced." >&2
+            exit 1
+          fi
+
+          size="$(stat -f%z "$binary")"
+          python3 -c 'import sys; s=int(sys.argv[1]); print(f"Application executable size: {s/1024/1024:.2f} MB"); print("::warning::Application executable is above the 10 MB target.") if s > 10*1024*1024 else None' "$size"
+
+          codesign --force --deep --sign - "$app"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "dist/nso-album-sync-macos-${{ matrix.arch }}.zip"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nso-album-sync-macos-${{ matrix.arch }}
+          path: dist/nso-album-sync-macos-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  build-linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Require Discord SDK for tagged releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          if [[ -z "${DISCORD_SDK_URL}" ]]; then
+            echo "DISCORD_SOCIAL_SDK_URL must be configured for tagged releases." >&2
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build libssl-dev libsecret-1-dev \
+            libgtk-3-dev libayatana-appindicator3-dev
+
+      - name: Download Discord Social SDK
+        if: env.DISCORD_SDK_URL != '' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/discord-social-sdk.zip"
+          extract="$RUNNER_TEMP/discord-social-sdk"
+          mkdir -p "$extract"
+
+          args=(-fL --retry 3 --retry-delay 2)
+          if [[ -n "${DISCORD_SDK_AUTH_HEADER:-}" ]]; then
+            args+=(-H "$DISCORD_SDK_AUTH_HEADER")
+          fi
+          curl "${args[@]}" "$DISCORD_SDK_URL" -o "$archive"
+          unzip -q "$archive" -d "$extract"
+
+          header="$(find "$extract" -type f -path '*/include/discordpp.h' -print -quit)"
+          if [[ -z "$header" ]]; then
+            echo "discordpp.h was not found in the SDK archive." >&2
+            exit 1
+          fi
+
+          sdk_root="$(dirname "$(dirname "$header")")"
+          echo "DISCORD_SOCIAL_SDK_DIR=$sdk_root" >> "$GITHUB_ENV"
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          discord_args=(-DNSO_ENABLE_DISCORD=OFF)
+          if [[ -n "${DISCORD_SOCIAL_SDK_DIR:-}" ]]; then
+            discord_args=(
+              -DNSO_ENABLE_DISCORD=ON
+              -DNSO_REQUIRE_DISCORD=ON
+              "-DDISCORD_SOCIAL_SDK_DIR=${DISCORD_SOCIAL_SDK_DIR}"
+            )
+          fi
+
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DNSO_STATIC_RUNTIME=ON \
+            -DNSO_ENABLE_LINUX_TRAY=ON \
+            "${discord_args[@]}"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --parallel
+
+      - name: Strip and package Linux build
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="dist/linux-${{ matrix.arch }}"
+          mkdir -p "$out"
+
+          cp build/nso-album-sync "$out/"
+          strip "$out/nso-album-sync"
+
+          if [[ -f build/libdiscord_partner_sdk.so ]]; then
+            cp build/libdiscord_partner_sdk.so "$out/"
+          fi
+
+          size="$(stat -c%s "$out/nso-album-sync")"
+          python3 -c 'import sys; s=int(sys.argv[1]); print(f"Application executable size: {s/1024/1024:.2f} MB"); print("::warning::Application executable is above the 10 MB target.") if s > 10*1024*1024 else None' "$size"
+
+          tar -C "$out" -czf "dist/nso-album-sync-linux-${{ matrix.arch }}.tar.gz" .
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nso-album-sync-linux-${{ matrix.arch }}
+          path: dist/nso-album-sync-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [build-windows, build-macos, build-linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          cd release-artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
