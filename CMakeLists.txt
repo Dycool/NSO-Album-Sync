@@ -36,23 +36,15 @@ elseif(APPLE)
     add_compile_options(
         $<$<CONFIG:Release>:-ffunction-sections>
         $<$<CONFIG:Release>:-fdata-sections>
-        $<$<CONFIG:Release>:-flto>
     )
-    add_link_options(
-        $<$<CONFIG:Release>:-Wl,-dead_strip>
-        $<$<CONFIG:Release>:-flto>
-    )
+    add_link_options($<$<CONFIG:Release>:-Wl,-dead_strip>)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
     add_compile_options(
         $<$<CONFIG:Release>:-ffunction-sections>
         $<$<CONFIG:Release>:-fdata-sections>
-        $<$<CONFIG:Release>:-flto>
     )
-    add_link_options(
-        $<$<CONFIG:Release>:-Wl,--gc-sections>
-        $<$<CONFIG:Release>:-flto>
-    )
+    add_link_options($<$<CONFIG:Release>:-Wl,--gc-sections>)
 endif()
 
 if(NSO_STATIC_RUNTIME)
@@ -154,6 +146,20 @@ target_include_directories(
     PRIVATE "${CMAKE_SOURCE_DIR}/include"
 )
 
+# Let CMake enable link-time optimization only when the active compiler/linker
+# toolchain can actually support it.  Forcing -flto breaks Clang installations
+# that do not ship an LLVMgold linker plugin.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT NSO_IPO_SUPPORTED OUTPUT NSO_IPO_ERROR LANGUAGES CXX)
+if(NSO_IPO_SUPPORTED)
+    set_property(
+        TARGET nso-album-sync
+        PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+    )
+else()
+    message(STATUS "IPO/LTO disabled: ${NSO_IPO_ERROR}")
+endif()
+
 if(NOT WIN32)
     target_link_libraries(
         nso-album-sync
@@ -199,11 +205,20 @@ if(WIN32)
             comdlg32
     )
 elseif(APPLE)
+    # platform_macos.mm uses AppKit/Cocoa for the menu-bar UI, Security for
+    # Keychain storage, and UserNotifications for native notifications.  Resolve
+    # the frameworks explicitly so the final Objective-C++ link step contains
+    # every framework whose classes are referenced.
+    find_library(NSO_COCOA_FRAMEWORK Cocoa REQUIRED)
+    find_library(NSO_SECURITY_FRAMEWORK Security REQUIRED)
+    find_library(NSO_USER_NOTIFICATIONS_FRAMEWORK UserNotifications REQUIRED)
+
     target_link_libraries(
         nso-album-sync
         PRIVATE
-            "-framework Cocoa"
-            "-framework Security"
+            ${NSO_COCOA_FRAMEWORK}
+            ${NSO_SECURITY_FRAMEWORK}
+            ${NSO_USER_NOTIFICATIONS_FRAMEWORK}
     )
 else()
     if(PkgConfig_FOUND)
