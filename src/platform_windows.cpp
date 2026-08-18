@@ -13,10 +13,15 @@ namespace nso {
 namespace {
 constexpr UINT kTrayMessage = WM_APP + 42;
 constexpr int kIconId = 101;
+constexpr int kDisclosureSourceButton = 1101;
 constexpr wchar_t kTrayClass[] = L"NSOAlbumSyncTray";
 constexpr wchar_t kPromptClass[] = L"NSOAlbumSyncPrompt";
+constexpr wchar_t kDisclosureClass[] = L"NSOAlbumSyncDisclosure";
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValue[] = L"NSO Album Sync";
+constexpr char kNxapiDisclosureTitle[] = "Third-Party Service Disclosure";
+constexpr char kNxapiSourceUrl[] =
+    "https://github.com/samuelthomas2774/nxapi-znca-api";
 
 enum Command : UINT {
     CmdSync = 1001, CmdAuto, CmdNotifications, CmdDiscord, CmdFolder,
@@ -74,6 +79,11 @@ struct PromptState {
     bool accepted = false;
 };
 
+struct DisclosureState {
+    bool done = false;
+    bool accepted = false;
+};
+
 LRESULT CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* state = reinterpret_cast<PromptState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (msg == WM_NCCREATE) {
@@ -89,6 +99,38 @@ LRESULT CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+LRESULT CALLBACK disclosure_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<DisclosureState*>(
+        GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        state = static_cast<DisclosureState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+    }
+    if (state && msg == WM_COMMAND) {
+        const auto command = LOWORD(wp);
+        if (command == IDOK) {
+            state->accepted = true;
+            state->done = true;
+            return 0;
+        }
+        if (command == IDCANCEL) {
+            state->done = true;
+            return 0;
+        }
+        if (command == kDisclosureSourceButton) {
+            const auto url = wide(kNxapiSourceUrl);
+            ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            return 0;
+        }
+    }
+    if (state && msg == WM_CLOSE) {
+        state->done = true;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
 std::string prompt_box(const std::string& title, const std::string& text,
                        const std::string& initial) {
     const HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -100,8 +142,10 @@ std::string prompt_box(const std::string& title, const std::string& text,
     wc.lpszClassName = kPromptClass;
     RegisterClassW(&wc);
 
+    const bool is_proxy = title == "HTTP Proxy";
     PromptState state;
-    const int width = 680, height = 310;
+    const int width = 680;
+    const int height = is_proxy ? 245 : 310;
     const int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
     const int y = (GetSystemMetrics(SM_CYSCREEN) - height) / 2;
     HWND window = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
@@ -120,12 +164,23 @@ std::string prompt_box(const std::string& title, const std::string& text,
         return control;
     };
 
+    const int message_height = is_proxy ? 48 : 108;
+    const int edit_y = is_proxy ? 104 : 168;
+    const int button_y = is_proxy ? 154 : 218;
     make(L"STATIC", L"Nintendo Switch Online  ·  Album Sync", 0, 20, 16, 630, 22, 0);
-    make(L"STATIC", wide(text), SS_LEFT, 20, 48, 630, 108, 0);
+    make(L"STATIC", wide(text), SS_LEFT, 20, 48, 630, message_height, 0);
     state.edit = make(L"EDIT", wide(initial), WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
-        20, 168, 630, 28, 10);
-    make(L"BUTTON", L"Continue", WS_TABSTOP | BS_DEFPUSHBUTTON, 470, 218, 86, 30, IDOK);
-    make(L"BUTTON", L"Cancel", WS_TABSTOP, 564, 218, 86, 30, IDCANCEL);
+        20, edit_y, 630, 28, 10);
+    make(
+        L"BUTTON",
+        is_proxy ? L"Save" : L"Continue",
+        WS_TABSTOP | BS_DEFPUSHBUTTON,
+        470,
+        button_y,
+        86,
+        30,
+        IDOK);
+    make(L"BUTTON", L"Cancel", WS_TABSTOP, 564, button_y, 86, 30, IDCANCEL);
 
     ShowWindow(window, SW_SHOW);
     SetFocus(state.edit);
@@ -152,6 +207,71 @@ std::string prompt_box(const std::string& title, const std::string& text,
     }
     DestroyWindow(window);
     return result;
+}
+
+bool disclosure_box(const std::string& title, const std::string& text) {
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = disclosure_proc;
+    wc.hInstance = instance;
+    wc.hIcon = app_icon();
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.lpszClassName = kDisclosureClass;
+    RegisterClassW(&wc);
+
+    DisclosureState state;
+    const int width = 760, height = 430;
+    const int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
+    const int y = (GetSystemMetrics(SM_CYSCREEN) - height) / 2;
+    HWND window = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        kDisclosureClass, wide(title).c_str(), WS_CAPTION | WS_SYSMENU,
+        x, y, width, height, nullptr, nullptr, instance, &state);
+    if (!window) return false;
+
+    const auto font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    const auto make = [&](const wchar_t* cls, const std::wstring& caption,
+                          DWORD style, int cx, int cy, int cw, int ch, int id) {
+        HWND control = CreateWindowW(cls, caption.c_str(), WS_CHILD | WS_VISIBLE | style,
+            cx, cy, cw, ch, window,
+            id ? reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)) : nullptr,
+            instance, nullptr);
+        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        return control;
+    };
+
+    make(L"STATIC", L"Nintendo Switch Online  ·  Album Sync", 0, 20, 16, 700, 22, 0);
+    make(L"STATIC", wide(text), SS_LEFT, 20, 50, 700, 275, 0);
+    make(
+        L"BUTTON",
+        L"View Source",
+        WS_TABSTOP,
+        384,
+        340,
+        106,
+        30,
+        kDisclosureSourceButton);
+    make(
+        L"BUTTON",
+        L"Continue",
+        WS_TABSTOP | BS_DEFPUSHBUTTON,
+        500,
+        340,
+        106,
+        30,
+        IDOK);
+    make(L"BUTTON", L"Cancel", WS_TABSTOP, 616, 340, 106, 30, IDCANCEL);
+
+    ShowWindow(window, SW_SHOW);
+    SetForegroundWindow(window);
+    MSG msg{};
+    while (!state.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(window, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    DestroyWindow(window);
+    return state.accepted;
 }
 }  // namespace
 
@@ -271,6 +391,9 @@ std::string PlatformUi::prompt(const std::string& title, const std::string& mess
 }
 
 bool PlatformUi::confirm(const std::string& title, const std::string& message) {
+    if (title == kNxapiDisclosureTitle) {
+        return disclosure_box(title, message);
+    }
     return MessageBoxW(impl_->window, wide(message).c_str(), wide(title).c_str(),
         MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) == IDYES;
 }

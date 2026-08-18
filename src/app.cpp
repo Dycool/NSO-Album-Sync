@@ -282,9 +282,6 @@ void App::sign_in_or_out() {
     const auto current = config_.snapshot();
 
     if (!current.session_token.empty()) {
-        if (!ui_.confirm("Sign Out", "Disconnect the current Nintendo Account?")) {
-            return;
-        }
         account_generation_.fetch_add(1);
         coral_.clear_cached_session();
         nxapi_.clear_user_auth();
@@ -300,6 +297,11 @@ void App::sign_in_or_out() {
         }
         update_menu();
         wake_workers();
+        if (current.notifications) {
+            ui_.notify(
+                "NSO Album Sync",
+                "Signed out of your Nintendo Account.");
+        }
         return;
     }
 
@@ -621,8 +623,7 @@ int App::run() {
         const auto current = config_.snapshot();
         const auto proxy = ui_.prompt(
             "HTTP Proxy",
-            "HTTP proxy URL used for Nintendo, nxapi and media requests "
-            "(leave blank to disable):",
+            "Optional. Enter a proxy URL, or leave this blank to connect directly.",
             current.proxy_url);
         const auto normalized = trim(proxy);
         config_.update([&](AppConfig& value) {

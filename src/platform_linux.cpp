@@ -1,4 +1,5 @@
 #include "nso_album_sync/platform.hpp"
+#include "nso_album_sync/util.hpp"
 
 #if defined(__linux__)
 
@@ -39,6 +40,10 @@ struct PlatformUi::Impl {
 };
 
 namespace {
+
+constexpr char kNxapiDisclosureTitle[] = "Third-Party Service Disclosure";
+constexpr char kNxapiSourceUrl[] =
+    "https://github.com/samuelthomas2774/nxapi-znca-api";
 
 std::filesystem::path autostart_file() {
     const char* home = std::getenv("HOME");
@@ -268,17 +273,21 @@ GtkWidget* create_dialog(
     bool with_entry,
     const std::string& initial,
     GtkWidget** entry_out) {
+    const bool is_proxy = title == "HTTP Proxy";
     auto* dialog = gtk_dialog_new_with_buttons(
         title.c_str(),
         nullptr,
         static_cast<GtkDialogFlags>(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
         "Cancel",
         GTK_RESPONSE_CANCEL,
-        "Continue",
+        is_proxy ? "Save" : "Continue",
         GTK_RESPONSE_OK,
         nullptr);
 
-    gtk_window_set_default_size(GTK_WINDOW(dialog), 580, with_entry ? 240 : 210);
+    gtk_window_set_default_size(
+        GTK_WINDOW(dialog),
+        580,
+        with_entry ? (is_proxy ? 205 : 240) : 210);
     gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
     gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
     gtk_style_context_add_class(
@@ -307,7 +316,9 @@ GtkWidget* create_dialog(
         entry = gtk_entry_new();
         gtk_entry_set_text(GTK_ENTRY(entry), initial.c_str());
         gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
-        gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Optional value");
+        gtk_entry_set_placeholder_text(
+            GTK_ENTRY(entry),
+            is_proxy ? "http://127.0.0.1:8080" : "Optional value");
         gtk_box_pack_start(GTK_BOX(content), entry, FALSE, FALSE, 0);
     }
 
@@ -503,6 +514,9 @@ std::string PlatformUi::prompt(
     std::cout << '\n' << title << '\n' << message << "\n> ";
     std::string value;
     std::getline(std::cin, value);
+    if (title == "HTTP Proxy") {
+        return value;
+    }
     return value.empty() ? initial : value;
 #endif
 }
@@ -510,17 +524,50 @@ std::string PlatformUi::prompt(
 bool PlatformUi::confirm(
     const std::string& title,
     const std::string& message) {
+    const bool is_disclosure = title == kNxapiDisclosureTitle;
 #ifdef NSO_HAVE_GTK
     auto* dialog = create_dialog(title, message, false, {}, nullptr);
-    const bool confirmed =
-        gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK;
+    if (is_disclosure) {
+        gtk_dialog_add_button(
+            GTK_DIALOG(dialog),
+            "View Source",
+            GTK_RESPONSE_APPLY);
+        gtk_widget_show_all(dialog);
+    }
+
+    bool confirmed = false;
+    for (;;) {
+        const int response = gtk_dialog_run(GTK_DIALOG(dialog));
+        if (response == GTK_RESPONSE_APPLY && is_disclosure) {
+            open_url(kNxapiSourceUrl);
+            continue;
+        }
+        confirmed = response == GTK_RESPONSE_OK;
+        break;
+    }
     gtk_widget_destroy(dialog);
     return confirmed;
 #else
-    std::cout << '\n' << title << '\n' << message << " [y/N]\n> ";
-    std::string answer;
-    std::getline(std::cin, answer);
-    return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES";
+    for (;;) {
+        std::cout << '\n' << title << '\n' << message;
+        if (is_disclosure) {
+            std::cout << "\n[c] Continue  [s] View Source  [Enter] Cancel\n> ";
+        } else {
+            std::cout << " [y/N]\n> ";
+        }
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (is_disclosure && (answer == "s" || answer == "S")) {
+            open_url(kNxapiSourceUrl);
+            continue;
+        }
+        if (is_disclosure) {
+            return answer == "c" || answer == "C" ||
+                   answer == "continue" || answer == "CONTINUE";
+        }
+        return answer == "y" || answer == "Y" ||
+               answer == "yes" || answer == "YES";
+    }
 #endif
 }
 

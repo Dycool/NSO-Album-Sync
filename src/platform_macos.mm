@@ -1,4 +1,5 @@
 #include "nso_album_sync/platform.hpp"
+#include "nso_album_sync/util.hpp"
 
 #ifdef __APPLE__
 
@@ -162,6 +163,10 @@ void dispatch_menu_action(PlatformUi::Impl* impl, NSInteger command) {
 
 namespace nso {
 namespace {
+
+constexpr char kNxapiDisclosureTitle[] = "Third-Party Service Disclosure";
+constexpr char kNxapiSourceUrl[] =
+    "https://github.com/samuelthomas2774/nxapi-znca-api";
 
 NsoMenuTarget* g_menu_target = nil;
 NsoNotificationDelegate* g_notification_delegate = nil;
@@ -456,18 +461,21 @@ std::string PlatformUi::prompt(
     __block std::string result;
 
     void (^show_prompt)(void) = ^{
+        const bool is_proxy = title == "HTTP Proxy";
         auto* alert = [NSAlert new];
         alert.alertStyle = NSAlertStyleInformational;
         alert.messageText = ns_string(title);
         alert.informativeText = ns_string(message);
         alert.icon = [NSApp applicationIconImage];
-        [alert addButtonWithTitle:@"Continue"];
+        [alert addButtonWithTitle:is_proxy ? @"Save" : @"Continue"];
         [alert addButtonWithTitle:@"Cancel"];
 
         auto* field = [[NSTextField alloc]
             initWithFrame:NSMakeRect(0, 0, 500, 26)];
         field.stringValue = ns_string(initial);
-        field.placeholderString = @"Optional value";
+        field.placeholderString = is_proxy
+            ? @"http://127.0.0.1:8080"
+            : @"Optional value";
         alert.accessoryView = field;
 
         if ([alert runModal] == NSAlertFirstButtonReturn) {
@@ -490,15 +498,29 @@ bool PlatformUi::confirm(
     __block bool confirmed = false;
 
     void (^show_confirmation)(void) = ^{
-        auto* alert = [NSAlert new];
-        const bool is_disclosure = title == "Third-Party Service Disclosure";
-        alert.alertStyle = is_disclosure ? NSAlertStyleInformational : NSAlertStyleWarning;
-        alert.messageText = ns_string(title);
-        alert.informativeText = ns_string(message);
-        alert.icon = [NSApp applicationIconImage];
-        [alert addButtonWithTitle:is_disclosure ? @"Continue" : @"Confirm"];
-        [alert addButtonWithTitle:@"Cancel"];
-        confirmed = [alert runModal] == NSAlertFirstButtonReturn;
+        const bool is_disclosure = title == kNxapiDisclosureTitle;
+        for (;;) {
+            auto* alert = [NSAlert new];
+            alert.alertStyle = is_disclosure
+                ? NSAlertStyleInformational
+                : NSAlertStyleWarning;
+            alert.messageText = ns_string(title);
+            alert.informativeText = ns_string(message);
+            alert.icon = [NSApp applicationIconImage];
+            [alert addButtonWithTitle:is_disclosure ? @"Continue" : @"Confirm"];
+            [alert addButtonWithTitle:@"Cancel"];
+            if (is_disclosure) {
+                [alert addButtonWithTitle:@"View Source"];
+            }
+
+            const auto response = [alert runModal];
+            if (is_disclosure && response == NSAlertThirdButtonReturn) {
+                open_url(kNxapiSourceUrl);
+                continue;
+            }
+            confirmed = response == NSAlertFirstButtonReturn;
+            break;
+        }
     };
 
     if ([NSThread isMainThread]) {
