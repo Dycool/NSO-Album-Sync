@@ -171,6 +171,15 @@ bool DiscordPresence::available() const {
     return impl_ != nullptr;
 }
 
+bool DiscordPresence::self_test_runtime() {
+    if (!impl_) return false;
+    std::lock_guard sdk_lock(impl_->sdk_mutex);
+    // Constructing the Social SDK client and assigning the public application
+    // ID exercises dynamic runtime loading without requiring Discord OAuth,
+    // Nintendo sign-in, or a running Discord desktop client.
+    return impl_->ensure_client_locked();
+}
+
 void DiscordPresence::clear() {
     if (!impl_) return;
     {
