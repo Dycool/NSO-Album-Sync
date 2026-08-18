@@ -23,6 +23,9 @@ jobs:
   build-windows:
     name: Windows x64
     runs-on: windows-latest
+    env:
+      WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
     steps:
       - name: Checkout repository
@@ -41,13 +44,45 @@ jobs:
         shell: pwsh
         run: cmake --build build --config $env:BUILD_TYPE --parallel
 
-      - name: Stage Windows executable
+      - name: Sign, verify and stage Windows executable
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $exe = "build/$env:BUILD_TYPE/nso-album-sync.exe"
-          Copy-Item $exe "dist/nso-album-sync.exe"
+          $exe = (Resolve-Path "build/$env:BUILD_TYPE/nso-album-sync.exe").Path
+          $isReleaseTag = $env:GITHUB_REF -like "refs/tags/v*"
 
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)) {
+            if ($isReleaseTag) {
+              throw "Tagged releases require WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD so Windows downloads are Authenticode signed."
+            }
+            Write-Warning "Windows CI artifact is unsigned. Configure Authenticode secrets before publishing a tagged release."
+          } else {
+            $certificate = Join-Path $env:RUNNER_TEMP "nso-album-sync-signing.pfx"
+            [IO.File]::WriteAllBytes(
+              $certificate,
+              [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+
+            $signtool = Get-ChildItem `
+              "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+              -ErrorAction Stop | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe was not found" }
+
+            & $signtool.FullName sign `
+              /fd SHA256 `
+              /f $certificate `
+              /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+              /tr "http://timestamp.digicert.com" `
+              /td SHA256 `
+              $exe
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            & $signtool.FullName verify /pa /all /v $exe
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Remove-Item -Force $certificate
+          }
+
+          Copy-Item $exe "dist/nso-album-sync.exe"
           $size = (Get-Item $exe).Length
           Write-Host ("Application executable size: {0:N2} MB" -f ($size / 1MB))
           if ($size -gt 10MB) {
@@ -101,7 +136,6 @@ jobs:
           cmake --build build --parallel
           app="build/nso-album-sync.app"
           binary="$app/Contents/MacOS/nso-album-sync"
-
           codesign --verify --strict --verbose=2 "$app"
           lipo -archs "$binary"
           mkdir -p dist
@@ -119,6 +153,13 @@ jobs:
     name: macOS Universal 2
     needs: build-macos-slice
     runs-on: macos-15
+    env:
+      MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
 
     steps:
       - name: Download ARM64 slice
@@ -133,7 +174,7 @@ jobs:
           name: internal-macos-x64
           path: slices/x64
 
-      - name: Assemble, sign and verify Universal 2 app
+      - name: Assemble, sign, notarize and verify Universal 2 app
         shell: bash
         run: |
           set -euo pipefail
@@ -144,7 +185,6 @@ jobs:
           arm_app="unpack/arm64/nso-album-sync.app"
           x64_app="unpack/x64/nso-album-sync.app"
           app="dist/nso-album-sync.app"
-
           ditto "$arm_app" "$app"
           lipo -create \
             "$arm_app/Contents/MacOS/nso-album-sync" \
@@ -156,10 +196,54 @@ jobs:
           [[ "$archs" == *arm64* ]]
           [[ "$archs" == *x86_64* ]]
 
-          # Re-sign after lipo. This is the final local/ad-hoc signature users receive.
-          codesign --force --deep --sign - --timestamp=none "$app"
+          is_release_tag=0
+          [[ "$GITHUB_REF" == refs/tags/v* ]] && is_release_tag=1
+
+          if [[ -n "${MACOS_CERTIFICATE_BASE64:-}" ]]; then
+            [[ -n "${MACOS_CERTIFICATE_PASSWORD:-}" ]]
+            [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]
+            keychain="$RUNNER_TEMP/nso-signing.keychain-db"
+            keychain_password="$(openssl rand -hex 24)"
+            certificate="$RUNNER_TEMP/nso-signing.p12"
+            printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 -D > "$certificate"
+            security create-keychain -p "$keychain_password" "$keychain"
+            security set-keychain-settings -lut 21600 "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            security import "$certificate" -k "$keychain" \
+              -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+            security set-key-partition-list \
+              -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+            security list-keychains -d user -s "$keychain" \
+              $(security list-keychains -d user | tr -d '"')
+
+            codesign --force --deep --options runtime --timestamp \
+              --keychain "$keychain" --sign "$MACOS_SIGNING_IDENTITY" "$app"
+            rm -f "$certificate"
+          else
+            if [[ "$is_release_tag" == 1 ]]; then
+              echo "Tagged releases require a Developer ID certificate." >&2
+              exit 1
+            fi
+            codesign --force --deep --sign - --timestamp=none "$app"
+          fi
+
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv --verbose=2 "$app" 2>&1
+
+          if [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" && -n "${MACOS_CERTIFICATE_BASE64:-}" ]]; then
+            notarization_zip="$RUNNER_TEMP/nso-album-sync-notarization.zip"
+            ditto -c -k --sequesterRsrc --keepParent "$app" "$notarization_zip"
+            xcrun notarytool submit "$notarization_zip" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --wait
+            xcrun stapler staple "$app"
+            xcrun stapler validate "$app"
+          elif [[ "$is_release_tag" == 1 ]]; then
+            echo "Tagged releases require Apple notarization credentials." >&2
+            exit 1
+          fi
 
           ditto -c -k --sequesterRsrc --keepParent "$app" \
             dist/nso-album-sync-macOS.zip
@@ -219,7 +303,6 @@ jobs:
 
           deploy="tools/linuxdeploy-x86_64.AppImage"
           plugin="tools/linuxdeploy-plugin-appimage-x86_64.AppImage"
-
           curl -fL --retry 3 -o "$deploy" \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
           curl -fL --retry 3 -o "$plugin" \
@@ -229,7 +312,6 @@ jobs:
           export PATH="$PWD/tools:$PATH"
           export APPIMAGE_EXTRACT_AND_RUN=1
           export OUTPUT="$PWD/dist/nso-album-sync.AppImage"
-
           "$deploy" --appimage-extract-and-run \
             --appdir AppDir \
             --executable build/nso-album-sync \
@@ -281,15 +363,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-files
-
-          cp release-input/windows/nso-album-sync.exe \
-            release-files/nso-album-sync.exe
-          cp release-input/macos/nso-album-sync-macOS.zip \
-            release-files/nso-album-sync-macOS.zip
-          cp release-input/linux/nso-album-sync.AppImage \
-            release-files/nso-album-sync.AppImage
+          cp release-input/windows/nso-album-sync.exe release-files/nso-album-sync.exe
+          cp release-input/macos/nso-album-sync-macOS.zip release-files/nso-album-sync-macOS.zip
+          cp release-input/linux/nso-album-sync.AppImage release-files/nso-album-sync.AppImage
           chmod +x release-files/nso-album-sync.AppImage
-
           test "$(find release-files -maxdepth 1 -type f ! -name SHA256SUMS.txt | wc -l | tr -d ' ')" = "3"
           ls -lh release-files
 

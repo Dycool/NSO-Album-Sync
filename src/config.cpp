@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <stdexcept>
 
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -33,7 +34,6 @@ std::string environment_variable(const char* name) {
     if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
         return {};
     }
-
     std::string result(value);
     std::free(value);
     return result;
@@ -46,24 +46,19 @@ std::string environment_variable(const char* name) {
 std::filesystem::path config_directory() {
 #ifdef _WIN32
     const auto app_data = environment_variable("APPDATA");
-    return std::filesystem::path(app_data.empty() ? "." : app_data) /
-           "NSOAlbumSync";
+    return std::filesystem::path(app_data.empty() ? "." : app_data) / "NSOAlbumSync";
 #elif __APPLE__
     const auto home = environment_variable("HOME");
     return std::filesystem::path(home.empty() ? "." : home) /
-           "Library" /
-           "Application Support" /
-           "NSOAlbumSync";
+           "Library" / "Application Support" / "NSOAlbumSync";
 #else
     const auto xdg_config_home = environment_variable("XDG_CONFIG_HOME");
     if (!xdg_config_home.empty()) {
         return std::filesystem::path(xdg_config_home) / "NSOAlbumSync";
     }
-
     const auto home = environment_variable("HOME");
     return std::filesystem::path(home.empty() ? "." : home) /
-           ".config" /
-           "NSOAlbumSync";
+           ".config" / "NSOAlbumSync";
 #endif
 }
 
@@ -71,11 +66,7 @@ std::string default_album_folder() {
 #ifdef _WIN32
     wchar_t pictures[MAX_PATH]{};
     if (SUCCEEDED(SHGetFolderPathW(
-            nullptr,
-            CSIDL_MYPICTURES,
-            nullptr,
-            SHGFP_TYPE_CURRENT,
-            pictures))) {
+            nullptr, CSIDL_MYPICTURES, nullptr, SHGFP_TYPE_CURRENT, pictures))) {
         const std::wstring album =
             (std::filesystem::path(pictures) / L"Nintendo Switch Album").native();
         const int required = WideCharToMultiByte(
@@ -83,30 +74,18 @@ std::string default_album_folder() {
         if (required > 1) {
             std::string utf8(static_cast<std::size_t>(required), '\0');
             WideCharToMultiByte(
-                CP_UTF8,
-                0,
-                album.c_str(),
-                -1,
-                utf8.data(),
-                required,
-                nullptr,
-                nullptr);
+                CP_UTF8, 0, album.c_str(), -1, utf8.data(), required, nullptr, nullptr);
             utf8.resize(static_cast<std::size_t>(required - 1));
             return utf8;
         }
     }
-
     const auto profile = environment_variable("USERPROFILE");
     return (std::filesystem::path(profile.empty() ? "." : profile) /
-            "Pictures" /
-            "Nintendo Switch Album")
-        .string();
+            "Pictures" / "Nintendo Switch Album").string();
 #else
     const auto home = environment_variable("HOME");
     return (std::filesystem::path(home.empty() ? "." : home) /
-            "Pictures" /
-            "Nintendo Switch Album")
-        .string();
+            "Pictures" / "Nintendo Switch Album").string();
 #endif
 }
 
@@ -116,9 +95,7 @@ std::string string_with_legacy_key(
     const char* legacy_key,
     const std::string& fallback = {}) {
     const auto current = json.string(current_key);
-    return current.empty()
-        ? json.string(legacy_key, fallback)
-        : current;
+    return current.empty() ? json.string(legacy_key, fallback) : current;
 }
 
 bool bool_with_legacy_key(
@@ -130,7 +107,6 @@ bool bool_with_legacy_key(
         current != nullptr && current->is_bool()) {
         return current->as_bool();
     }
-
     return json.boolean(legacy_key, fallback);
 }
 
@@ -143,45 +119,32 @@ std::int64_t integer_with_legacy_key(
         current != nullptr && current->is_number()) {
         return current->as_i64();
     }
-
     return json.integer(legacy_key, fallback);
 }
 
 std::string display_last_sync(const std::string& stored) {
-    if (stored.empty()) {
-        return "Never";
-    }
-
-    // v1 persisted DateTime as ISO-8601. Keep backwards compatibility while
-    // presenting it in the same compact menu format used by the native port.
+    if (stored.empty()) return "Never";
     if (stored.size() >= 16 && stored[4] == '-' && stored[7] == '-' &&
         (stored[10] == 'T' || stored[10] == ' ')) {
         return stored.substr(11, 5) + " (" + stored.substr(0, 10) + ")";
     }
-
     return stored;
 }
 
 bool is_secure_store_marker(const std::string& value) {
-    return value == kSecureMarker ||
-           value == kMacKeychainMarker ||
+    return value == kSecureMarker || value == kMacKeychainMarker ||
            value == kLinuxSecretServiceMarker;
 }
 
 #ifdef _WIN32
 std::string decrypt_legacy_dpapi_token(const std::string& value) {
     constexpr char kPrefix[] = "dpapi:";
-    if (value.rfind(kPrefix, 0) != 0) {
-        return {};
-    }
+    if (value.rfind(kPrefix, 0) != 0) return {};
 
     const auto cipher = base64_decode(value.substr(sizeof(kPrefix) - 1));
-    if (cipher.empty()) {
-        return {};
-    }
+    if (cipher.empty()) return {};
 
     static constexpr char kEntropy[] = "NSO_Album_Sync_Salt_9981";
-
     DATA_BLOB input{
         static_cast<DWORD>(cipher.size()),
         const_cast<BYTE*>(cipher.data()),
@@ -193,25 +156,40 @@ std::string decrypt_legacy_dpapi_token(const std::string& value) {
     DATA_BLOB output{};
 
     if (!CryptUnprotectData(
-            &input,
-            nullptr,
-            &entropy,
-            nullptr,
-            nullptr,
-            0,
-            &output)) {
+            &input, nullptr, &entropy, nullptr, nullptr, 0, &output)) {
         return {};
     }
 
     std::string plain(
         reinterpret_cast<char*>(output.pbData),
         reinterpret_cast<char*>(output.pbData) + output.cbData);
-
     SecureZeroMemory(output.pbData, output.cbData);
     LocalFree(output.pbData);
     return plain;
 }
 #endif
+
+void replace_config_file(
+    const std::filesystem::path& temporary,
+    const std::filesystem::path& target) {
+#ifdef _WIN32
+    if (!MoveFileExW(
+            temporary.c_str(),
+            target.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw std::runtime_error("Could not replace config.json");
+    }
+#else
+    std::error_code error;
+    std::filesystem::rename(temporary, target, error);
+    if (error) {
+        std::filesystem::remove(temporary, error);
+        throw std::runtime_error("Could not replace config.json");
+    }
+#endif
+}
 
 }  // namespace
 
@@ -221,149 +199,137 @@ ConfigManager::ConfigManager()
     load();
 }
 
-void ConfigManager::load() {
-    std::unique_lock lock(mutex_);
-    std::filesystem::create_directories(directory_);
+AppConfig ConfigManager::snapshot() const {
+    std::lock_guard lock(mutex_);
+    return config_;
+}
 
+AppConfig ConfigManager::update(const std::function<void(AppConfig&)>& updater) {
+    std::lock_guard lock(mutex_);
+    updater(config_);
+    save_locked();
+    return config_;
+}
+
+void ConfigManager::load() {
+    std::lock_guard lock(mutex_);
+    std::filesystem::create_directories(directory_);
 #ifndef _WIN32
     chmod(directory_.c_str(), 0700);
 #endif
 
-    if (!std::filesystem::exists(config_file_)) {
-        config_.destination_folder = default_album_folder();
-        return;
-    }
+    bool needs_config_rewrite = false;
 
-    bool needs_secure_store_migration = false;
+    if (std::filesystem::exists(config_file_)) {
+        try {
+            std::ifstream file(config_file_);
+            const std::string contents{
+                std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>()};
+            const auto json = Json::parse(contents);
 
-    try {
-        std::ifstream file(config_file_);
-        const std::string contents{
-            std::istreambuf_iterator<char>(file),
-            std::istreambuf_iterator<char>()};
-        const auto json = Json::parse(contents);
-
-        config_.user_nickname = string_with_legacy_key(
-            json,
-            "userNickname",
-            "UserNickname",
-            config_.user_nickname);
-
-        config_.destination_folder = string_with_legacy_key(
-            json,
-            "destinationFolder",
-            "DestinationFolder",
-            config_.destination_folder);
-
-        config_.auto_sync = bool_with_legacy_key(
-            json,
-            "autoSync",
-            "AutoSyncEnabled",
-            true);
-
-        config_.notifications = bool_with_legacy_key(
-            json,
-            "notifications",
-            "NotificationsEnabled",
-            false);
-
-        config_.discord_presence = bool_with_legacy_key(
-            json,
-            "discordPresence",
-            "DiscordPresenceEnabled",
-            true);
-
-        config_.start_on_boot = bool_with_legacy_key(
-            json,
-            "startOnBoot",
-            "StartOnBoot",
-            false);
-
-        config_.sync_interval_minutes = static_cast<int>(std::clamp<std::int64_t>(
-            integer_with_legacy_key(
-                json,
-                "syncIntervalMinutes",
-                "SyncIntervalMinutes",
-                60),
-            1,
-            10'080));
-
-        config_.last_sync = display_last_sync(string_with_legacy_key(
-            json,
-            "lastSync",
-            "LastSyncTime",
-            "Never"));
-
-        config_.proxy_url = string_with_legacy_key(
-            json,
-            "proxyUrl",
-            "ProxyUrl");
-
-        config_.nxapi_auth_client_id = string_with_legacy_key(
-            json,
-            "nxapiAuthClientId",
-            "NxapiAuthClientId",
-            config_.nxapi_auth_client_id);
-
-        config_.discord_application_id = static_cast<std::uint64_t>(
-            json.integer(
-                "discordApplicationId",
-                static_cast<std::int64_t>(config_.discord_application_id)));
-
-        const auto stored_session = string_with_legacy_key(
-            json,
-            "sessionToken",
-            "SessionToken");
-
-        if (is_secure_store_marker(stored_session)) {
-            if (const auto token = SecureStore::get(kSecureStoreAccount)) {
-                config_.session_token = *token;
+            config_.user_nickname = string_with_legacy_key(
+                json, "userNickname", "UserNickname", config_.user_nickname);
+            config_.destination_folder = string_with_legacy_key(
+                json, "destinationFolder", "DestinationFolder", config_.destination_folder);
+            const auto auto_sync_setting_version =
+                json.integer("autoSyncSettingVersion", 0);
+            if (auto_sync_setting_version >= 1) {
+                config_.auto_sync = bool_with_legacy_key(
+                    json, "autoSync", "AutoSyncEnabled", false);
+            } else {
+                // Recurring Nintendo requests require explicit opt-in. Older
+                // builds enabled this by default, so do not treat that saved
+                // default as consent after upgrading.
+                config_.auto_sync = false;
+                needs_config_rewrite = true;
             }
-        } else if (stored_session.empty() || stored_session == kVolatileMarker) {
-            config_.session_token.clear();
+            config_.auto_sync_setting_version = 1;
+            config_.notifications = bool_with_legacy_key(
+                json, "notifications", "NotificationsEnabled", false);
+            const auto discord_setting_version =
+                json.integer("discordPresenceSettingVersion", 0);
+            if (discord_setting_version >= 1) {
+                config_.discord_presence = bool_with_legacy_key(
+                    json, "discordPresence", "DiscordPresenceEnabled", false);
+            } else {
+                // Older v2 builds enabled RPC by default. Treat those saved
+                // defaults as not having explicit consent and require one
+                // deliberate opt-in after upgrading.
+                config_.discord_presence = false;
+                needs_config_rewrite = true;
+            }
+            config_.discord_presence_setting_version = 1;
+            config_.start_on_boot = bool_with_legacy_key(
+                json, "startOnBoot", "StartOnBoot", false);
+            config_.sync_interval_minutes = static_cast<int>(std::clamp<std::int64_t>(
+                integer_with_legacy_key(
+                    json, "syncIntervalMinutes", "SyncIntervalMinutes", 60),
+                15,
+                10'080));
+            config_.last_sync = display_last_sync(string_with_legacy_key(
+                json, "lastSync", "LastSyncTime", "Never"));
+            config_.proxy_url = string_with_legacy_key(
+                json, "proxyUrl", "ProxyUrl");
+            config_.nxapi_auth_client_id = string_with_legacy_key(
+                json, "nxapiAuthClientId", "NxapiAuthClientId",
+                config_.nxapi_auth_client_id);
+            config_.discord_application_id = static_cast<std::uint64_t>(
+                json.integer(
+                    "discordApplicationId",
+                    static_cast<std::int64_t>(config_.discord_application_id)));
+
+            const auto stored_session = string_with_legacy_key(
+                json, "sessionToken", "SessionToken");
+
+            if (is_secure_store_marker(stored_session)) {
+                if (const auto token = SecureStore::get(kSecureStoreAccount)) {
+                    config_.session_token = *token;
+                }
+            } else if (stored_session.empty() || stored_session == kVolatileMarker) {
+                config_.session_token.clear();
 #ifdef _WIN32
-        } else if (stored_session.rfind("dpapi:", 0) == 0) {
-            config_.session_token = decrypt_legacy_dpapi_token(stored_session);
-
-            if (!config_.session_token.empty() &&
-                SecureStore::put(kSecureStoreAccount, config_.session_token)) {
-                needs_secure_store_migration = true;
-            }
+            } else if (stored_session.rfind("dpapi:", 0) == 0) {
+                config_.session_token = decrypt_legacy_dpapi_token(stored_session);
+                if (!config_.session_token.empty() &&
+                    SecureStore::put(kSecureStoreAccount, config_.session_token)) {
+                    needs_config_rewrite = true;
+                }
 #endif
-        } else {
-            // Legacy builds could leave a plaintext session token in config.json.
-            // Load it once, then migrate it into the OS credential store.
-            config_.session_token = stored_session;
-
-            if (SecureStore::available() &&
-                SecureStore::put(kSecureStoreAccount, stored_session)) {
-                needs_secure_store_migration = true;
+            } else {
+                config_.session_token = stored_session;
+                if (SecureStore::available() &&
+                    SecureStore::put(kSecureStoreAccount, stored_session)) {
+                    needs_config_rewrite = true;
+                }
             }
+        } catch (...) {
+            // Keep defaults if the config is corrupt or from an unknown version.
         }
-
-        if (config_.destination_folder.empty()) {
-            config_.destination_folder = default_album_folder();
-        }
-    } catch (...) {
-        // Keep defaults if the config is corrupt or from an unknown version.
     }
 
-    if (needs_secure_store_migration) {
-        lock.unlock();
-        save();
+    // Keep a corrupt/missing config from silently falling back to the process
+    // working directory, which can otherwise scatter an Album folder beside the exe.
+    if (config_.destination_folder.empty()) {
+        config_.destination_folder = default_album_folder();
+    }
+
+    if (needs_config_rewrite) {
+        save_locked();
     }
 }
 
-void ConfigManager::save() {
-    std::lock_guard lock(mutex_);
+void ConfigManager::save_locked() {
     std::filesystem::create_directories(directory_);
+#ifndef _WIN32
+    chmod(directory_.c_str(), 0700);
+#endif
 
     std::string session_marker;
     if (!config_.session_token.empty()) {
         const bool stored_securely =
             SecureStore::available() &&
             SecureStore::put(kSecureStoreAccount, config_.session_token);
-
         session_marker = stored_securely ? kSecureMarker : kVolatileMarker;
     }
 
@@ -372,8 +338,12 @@ void ConfigManager::save() {
         {"userNickname", config_.user_nickname},
         {"destinationFolder", config_.destination_folder},
         {"autoSync", config_.auto_sync},
+        {"autoSyncSettingVersion",
+         static_cast<std::int64_t>(config_.auto_sync_setting_version)},
         {"notifications", config_.notifications},
         {"discordPresence", config_.discord_presence},
+        {"discordPresenceSettingVersion",
+         static_cast<std::int64_t>(config_.discord_presence_setting_version)},
         {"startOnBoot", config_.start_on_boot},
         {"syncIntervalMinutes", config_.sync_interval_minutes},
         {"lastSync", config_.last_sync},
@@ -383,19 +353,34 @@ void ConfigManager::save() {
          static_cast<std::int64_t>(config_.discord_application_id)},
     });
 
-    std::ofstream file(config_file_, std::ios::trunc);
-    file << json.dump();
-    file.close();
-
+    auto temporary = config_file_;
+    temporary += ".tmp";
+    {
+        std::ofstream file(temporary, std::ios::trunc | std::ios::binary);
+        if (!file) throw std::runtime_error("Could not write config.json");
+        file << json.dump();
+        file.flush();
+        if (!file) throw std::runtime_error("Could not write config.json");
+    }
+#ifndef _WIN32
+    chmod(temporary.c_str(), 0600);
+#endif
+    replace_config_file(temporary, config_file_);
 #ifndef _WIN32
     chmod(config_file_.c_str(), 0600);
 #endif
 }
 
+void ConfigManager::save() {
+    std::lock_guard lock(mutex_);
+    save_locked();
+}
+
 void ConfigManager::clear_session() {
+    std::lock_guard lock(mutex_);
     config_.session_token.clear();
     SecureStore::erase(kSecureStoreAccount);
-    save();
+    save_locked();
 }
 
 }  // namespace nso

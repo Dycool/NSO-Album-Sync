@@ -4,6 +4,7 @@
 #include "nso_album_sync/json.hpp"
 #include "nso_album_sync/util.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 
@@ -112,6 +113,9 @@ AuthResult NintendoAuthManager::complete_login(const std::string& redirect_url_o
     pkce_verifier_.clear();
     oauth_state_.clear();
 
+    // Keep the short-lived Nintendo access/id token in memory. Coral login
+    // immediately needs the same values, so exchanging the session token twice
+    // after one sign-in is unnecessary traffic.
     const auto tokens = exchange_session_token(session_token);
 
     std::string nickname = "Nintendo Switch Player";
@@ -149,6 +153,17 @@ std::string NintendoAuthManager::exchange_code(
 }
 
 TokenResponse NintendoAuthManager::exchange_session_token(const std::string& session_token) {
+    {
+        std::lock_guard cache_lock(token_cache_mutex_);
+        const auto now = Clock::now();
+        if (session_token == cached_session_token_ &&
+            !cached_tokens_.access_token.empty() && now < cached_token_expiry_) {
+            return cached_tokens_;
+        }
+    }
+
+    // Never hold the cache mutex while doing network I/O. Sign-out and explicit
+    // exit must be able to clear local state even if Nintendo is slow/unreachable.
     const Json body(Json::object{
         {"client_id", kNintendoClientId},
         {"session_token", session_token},
@@ -166,11 +181,35 @@ TokenResponse NintendoAuthManager::exchange_session_token(const std::string& ses
     }
 
     const auto json = Json::parse(response.text());
-    return {json.string("id_token"), json.string("access_token"),
-        static_cast<int>(json.integer("expires_in", 900))};
+    TokenResponse tokens{
+        json.string("id_token"),
+        json.string("access_token"),
+        static_cast<int>(json.integer("expires_in", 900)),
+    };
+    if (tokens.id_token.empty() || tokens.access_token.empty()) {
+        throw std::runtime_error("Nintendo token exchange returned incomplete credentials");
+    }
+
+    {
+        std::lock_guard cache_lock(token_cache_mutex_);
+        cached_session_token_ = session_token;
+        cached_tokens_ = tokens;
+        const auto usable_seconds = std::max(1, tokens.expires_in - 10);
+        cached_token_expiry_ = Clock::now() + std::chrono::seconds(usable_seconds);
+        cached_profile_access_token_.clear();
+        cached_profile_valid_ = false;
+    }
+    return tokens;
 }
 
 UserProfile NintendoAuthManager::fetch_profile(const std::string& access_token) {
+    {
+        std::lock_guard cache_lock(token_cache_mutex_);
+        if (cached_profile_valid_ && cached_profile_access_token_ == access_token) {
+            return cached_profile_;
+        }
+    }
+
     const auto response = http_.get(kProfileUrl, {
         "Authorization: Bearer " + access_token,
         "Accept: application/json",
@@ -183,13 +222,30 @@ UserProfile NintendoAuthManager::fetch_profile(const std::string& access_token) 
     }
 
     const auto json = Json::parse(response.text());
-    return {
+    UserProfile profile{
         json.string("id"),
         json.string("nickname"),
         json.string("birthday", "1995-01-01"),
         json.string("country", "US"),
         json.string("language", "en-GB"),
     };
+    {
+        std::lock_guard cache_lock(token_cache_mutex_);
+        cached_profile_access_token_ = access_token;
+        cached_profile_ = profile;
+        cached_profile_valid_ = true;
+    }
+    return profile;
+}
+
+void NintendoAuthManager::clear_cached_tokens() {
+    std::lock_guard cache_lock(token_cache_mutex_);
+    cached_session_token_.clear();
+    cached_tokens_ = {};
+    cached_token_expiry_ = {};
+    cached_profile_access_token_.clear();
+    cached_profile_ = {};
+    cached_profile_valid_ = false;
 }
 
 }  // namespace nso

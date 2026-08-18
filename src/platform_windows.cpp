@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace nso {
 namespace {
@@ -49,6 +50,19 @@ HICON app_icon() {
     return icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
 }
 
+std::wstring executable_path_wide() {
+    std::vector<wchar_t> buffer(1024);
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(
+            nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0) return {};
+        if (length < buffer.size() - 1) {
+            return std::wstring(buffer.data(), length);
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+}
+
 std::wstring auto_label(int minutes) {
     if (minutes == 60) return L"Auto-Sync (Hourly)";
     return L"Auto-Sync (Every " + std::to_wstring(std::max(1, minutes)) + L" min)";
@@ -87,7 +101,7 @@ std::string prompt_box(const std::string& title, const std::string& text,
     RegisterClassW(&wc);
 
     PromptState state;
-    const int width = 640, height = 250;
+    const int width = 680, height = 310;
     const int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
     const int y = (GetSystemMetrics(SM_CYSCREEN) - height) / 2;
     HWND window = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
@@ -106,12 +120,12 @@ std::string prompt_box(const std::string& title, const std::string& text,
         return control;
     };
 
-    make(L"STATIC", L"Nintendo Switch Online  ·  Album Sync", 0, 20, 16, 590, 22, 0);
-    make(L"STATIC", wide(text), SS_LEFT, 20, 48, 590, 58, 0);
+    make(L"STATIC", L"Nintendo Switch Online  ·  Album Sync", 0, 20, 16, 630, 22, 0);
+    make(L"STATIC", wide(text), SS_LEFT, 20, 48, 630, 108, 0);
     state.edit = make(L"EDIT", wide(initial), WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
-        20, 116, 590, 28, 10);
-    make(L"BUTTON", L"Continue", WS_TABSTOP | BS_DEFPUSHBUTTON, 430, 164, 86, 30, IDOK);
-    make(L"BUTTON", L"Cancel", WS_TABSTOP, 524, 164, 86, 30, IDCANCEL);
+        20, 168, 630, 28, 10);
+    make(L"BUTTON", L"Continue", WS_TABSTOP | BS_DEFPUSHBUTTON, 470, 218, 86, 30, IDOK);
+    make(L"BUTTON", L"Cancel", WS_TABSTOP, 564, 218, 86, 30, IDCANCEL);
 
     ShowWindow(window, SW_SHOW);
     SetFocus(state.edit);
@@ -203,14 +217,15 @@ void tray_menu(PlatformUi::Impl* ui) {
     invoke(ui, selected);
 }
 
-LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM, LPARAM lp) {
+LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == kTrayMessage) {
         const UINT event = LOWORD(lp);
         if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) { tray_menu(g_ui); return 0; }
         if (event == WM_LBUTTONDBLCLK) { invoke(g_ui, CmdOpen); return 0; }
     }
+    if (msg == WM_CLOSE) { DestroyWindow(hwnd); return 0; }
     if (msg == WM_DESTROY) { PostQuitMessage(0); return 0; }
-    return DefWindowProcW(hwnd, msg, 0, lp);
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 }  // namespace
 
@@ -306,8 +321,9 @@ void set_start_on_boot(bool enabled) {
     if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_WRITE,
                         nullptr, &key, nullptr) != ERROR_SUCCESS) return;
     if (!enabled) { RegDeleteValueW(key, kRunValue); RegCloseKey(key); return; }
-    wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    const std::wstring value = L"\"" + std::wstring(exe) + L"\"";
+    const auto exe = executable_path_wide();
+    if (exe.empty()) { RegCloseKey(key); return; }
+    const std::wstring value = L"\"" + exe + L"\"";
     RegSetValueExW(key, kRunValue, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
                    static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
     RegCloseKey(key);

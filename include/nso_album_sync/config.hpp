@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -12,9 +13,11 @@ struct AppConfig {
     std::string user_nickname = "Nintendo Switch Player";
     std::string destination_folder;
 
-    bool auto_sync = true;
+    bool auto_sync = false;
+    int auto_sync_setting_version = 1;
     bool notifications = false;
-    bool discord_presence = true;
+    bool discord_presence = false;
+    int discord_presence_setting_version = 1;
     bool start_on_boot = false;
 
     int sync_interval_minutes = 60;
@@ -29,8 +32,10 @@ class ConfigManager {
 public:
     ConfigManager();
 
-    AppConfig& config() { return config_; }
-    const AppConfig& config() const { return config_; }
+    // Thread-safe snapshot/update APIs. The application has UI, presence and
+    // sync threads, so callers should not retain references to the live config.
+    AppConfig snapshot() const;
+    AppConfig update(const std::function<void(AppConfig&)>& updater);
 
     void load();
     void save();
@@ -42,7 +47,9 @@ private:
     std::filesystem::path directory_;
     std::filesystem::path config_file_;
     AppConfig config_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
+
+    void save_locked();
 };
 
 }  // namespace nso

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <map>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace nso {
@@ -54,7 +56,34 @@ public:
         const std::map<std::string, std::string>& values);
 
 private:
-    std::string proxy_;
+    class SynchronizedString {
+    public:
+        SynchronizedString() = default;
+        SynchronizedString(const SynchronizedString&) = delete;
+        SynchronizedString& operator=(const SynchronizedString&) = delete;
+
+        SynchronizedString& operator=(std::string value) {
+            std::lock_guard lock(mutex_);
+            value_ = std::move(value);
+            return *this;
+        }
+
+        bool empty() const {
+            std::lock_guard lock(mutex_);
+            return value_.empty();
+        }
+
+        operator std::string() const {
+            std::lock_guard lock(mutex_);
+            return value_;
+        }
+
+    private:
+        mutable std::mutex mutex_;
+        std::string value_;
+    };
+
+    SynchronizedString proxy_;
 };
 
 }  // namespace nso

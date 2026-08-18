@@ -3,7 +3,10 @@
 #include "nso_album_sync/http.hpp"
 #include "nso_album_sync/nintendo_auth.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -12,8 +15,10 @@ namespace nso {
 
 class NxapiClient {
 public:
-    NxapiClient(HttpClient& http, std::string client_id)
-        : http_(http), client_id_(std::move(client_id)) {}
+    NxapiClient(
+        HttpClient& http,
+        std::string client_id,
+        std::filesystem::path cache_file);
 
     std::string nso_version();
 
@@ -28,16 +33,22 @@ public:
 
     std::string decrypt_response(const std::vector<unsigned char>& body);
 
+    // nxapi-auth access/refresh tokens are intentionally memory-only. The
+    // public API terms say these credentials should not be persisted and may
+    // only be used by a single Coral user.
+    void clear_user_auth();
+
 private:
     using Clock = std::chrono::system_clock;
 
     HttpClient& http_;
     std::string client_id_;
+    std::filesystem::path cache_file_;
 
-    // nxapi's automated-use terms require serialized API requests. A recursive
-    // mutex is used because request helpers may need the cached /config value.
     std::recursive_mutex request_mutex_;
-    std::recursive_mutex auth_mutex_;
+    std::mutex auth_mutex_;
+    std::mutex auth_request_mutex_;
+    std::atomic<std::uint64_t> auth_generation_{0};
 
     std::string version_;
     std::string auth_token_;
@@ -50,6 +61,8 @@ private:
     std::string auth_token();
     void throw_if_rate_limited() const;
     void apply_rate_limit_response(const HttpResponse& response);
+    void load_cache();
+    void save_cache() const;
 
     HttpResponse znca_request(
         const std::string& method,

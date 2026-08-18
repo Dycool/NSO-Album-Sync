@@ -11,10 +11,10 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <vector>
 
 namespace nso {
 
@@ -36,18 +36,27 @@ private:
     PlatformUi ui_;
 
     std::atomic<bool> stopping_{false};
+    std::atomic<bool> workers_joined_{false};
+    std::atomic<bool> explicit_exit_{false};
     std::atomic<bool> auth_pending_{false};
     std::atomic<bool> operational_workers_started_{false};
+    std::atomic<std::uint64_t> account_generation_{0};
+
+    std::thread sync_thread_;
     std::thread auto_sync_thread_;
     std::thread presence_thread_;
     std::thread auth_callback_thread_;
 
-    std::mutex manual_workers_mutex_;
-    std::vector<std::thread> manual_workers_;
-    std::mutex sync_mutex_;
+    std::mutex sync_queue_mutex_;
+    std::condition_variable sync_queue_cv_;
+    bool sync_requested_ = false;
+    bool sync_request_background_ = true;
+
     std::mutex auth_flow_mutex_;
     std::mutex sleep_mutex_;
     std::condition_variable sleep_cv_;
+    std::mutex presence_sleep_mutex_;
+    std::condition_variable presence_cv_;
 
     std::mutex state_mutex_;
     std::string last_sync_ = "Never";
@@ -58,10 +67,14 @@ private:
     void queue_sync(bool background);
     void sign_in_or_out();
     void complete_pending_login(const std::string& redirect_url_or_code);
+    void invalidate_session(const std::string& reason);
 
     void start_workers();
     void start_operational_workers();
+    void request_stop();
+    void request_exit();
     void stop_workers();
+    void sync_loop();
     void presence_loop();
     void auto_sync_loop();
     void auth_callback_loop();

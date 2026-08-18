@@ -10,18 +10,15 @@ struct MenuState {
     std::string last_sync;
     std::string status;
 
-    bool auto_sync = true;
+    bool auto_sync = false;
     bool notifications = false;
-    bool discord = true;
+    bool discord = false;
     bool start_on_boot = false;
     bool signed_in = false;
     int sync_interval_minutes = 60;
 };
 
 struct PlatformCallbacks {
-    // Called by the platform backend only after its tray/menu and native
-    // notification infrastructure are ready. Background workers must not
-    // start before this or startup notifications can be dropped.
     std::function<void()> ready;
     std::function<void()> sync_now;
     std::function<void()> toggle_auto;
@@ -53,8 +50,6 @@ public:
     bool confirm(const std::string& title, const std::string& message);
     std::string choose_folder(const std::string& initial);
 
-    // Public only because the platform translation units need to implement the
-    // opaque platform state without exposing platform headers here.
     struct Impl;
 
 private:

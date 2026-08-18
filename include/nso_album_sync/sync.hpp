@@ -5,6 +5,7 @@
 #include "nso_album_sync/http.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace nso {
@@ -19,7 +20,7 @@ public:
     SyncEngine(ConfigManager& config, CoralClient& coral, HttpClient& http)
         : config_(config), coral_(coral), http_(http) {}
 
-    SyncResult sync();
+    SyncResult sync(const std::function<bool()>& cancelled = {});
 
 private:
     ConfigManager& config_;
