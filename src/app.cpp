@@ -180,6 +180,12 @@ void App::queue_sync(bool background) {
     sync_queue_cv_.notify_one();
 }
 
+void App::request_presence_refresh() {
+    if (stopping_) return;
+    presence_refresh_requested_.store(true, std::memory_order_release);
+    presence_cv_.notify_one();
+}
+
 void App::sync_loop() {
     for (;;) {
         bool background = true;
@@ -342,6 +348,13 @@ void App::presence_loop() {
             continue;
         }
 
+        // Reaching this point means one of three things made a presence poll
+        // eligible: Rich Presence became active, the 60-second timer elapsed,
+        // or an explicit refresh was queued by Sync Now. Consume any queued
+        // refresh before polling; a new request arriving during the network
+        // call remains set and causes another immediate pass afterwards.
+        presence_refresh_requested_.store(false, std::memory_order_release);
+
         const auto generation = account_generation_.load();
         const auto session_token = config.session_token;
         try {
@@ -365,7 +378,14 @@ void App::presence_loop() {
         }
 
         std::unique_lock wait_lock(presence_sleep_mutex_);
-        presence_cv_.wait_for(wait_lock, kPresencePollInterval);
+        presence_cv_.wait_for(wait_lock, kPresencePollInterval, [this] {
+            if (stopping_) return true;
+            if (presence_refresh_requested_.load(std::memory_order_acquire)) {
+                return true;
+            }
+            const auto state = config_.snapshot();
+            return !state.discord_presence || state.session_token.empty();
+        });
     }
 }
 
@@ -481,7 +501,7 @@ int App::run() {
         queue_sync(false);
         const auto config = config_.snapshot();
         if (config.discord_presence && !config.session_token.empty()) {
-            presence_cv_.notify_all();
+            request_presence_refresh();
         }
     };
 
@@ -517,7 +537,13 @@ int App::run() {
             value.discord_presence = !value.discord_presence;
             value.discord_presence_setting_version = 1;
         });
-        if (!config.discord_presence) discord_.clear();
+        if (config.discord_presence && !config.session_token.empty()) {
+            request_presence_refresh();
+        } else {
+            presence_refresh_requested_.store(false, std::memory_order_release);
+            discord_.clear();
+            presence_cv_.notify_all();
+        }
         {
             std::lock_guard state_lock(state_mutex_);
             status_ = config.discord_presence
@@ -525,7 +551,6 @@ int App::run() {
                 : "Discord presence disabled";
         }
         update_menu();
-        presence_cv_.notify_all();
         if (config.discord_presence && config.notifications) {
             ui_.notify(
                 "Discord Rich Presence",
