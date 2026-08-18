@@ -15,8 +15,4 @@ bool publish_nintendo_auth_callback(const std::string& url);
 std::optional<std::string> take_nintendo_auth_callback();
 void clear_nintendo_auth_callback();
 
-#ifdef _WIN32
-bool forward_nintendo_auth_callback_to_running_instance(const std::string& url);
-#endif
-
 }  // namespace nso
