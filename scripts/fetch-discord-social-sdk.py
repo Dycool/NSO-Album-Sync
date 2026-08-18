@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
-"""Fetch the official Discord Social SDK archive without credentials."""
+"""Prepare the official Discord Social SDK archive for local/CI builds."""
 
 from __future__ import annotations
 
 import argparse
-import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
 import tempfile
-import urllib.error
 import urllib.request
 import zipfile
-from typing import Optional, Tuple
+from typing import Optional
 
 DEFAULT_VERSION = "1.10.18369"
-API_BASE = "https://discord.com/api/v10/social-sdk/releases"
 USER_AGENT = "nso-album-sync/2.0.0 (+https://github.com/Dycool/NSO-Album-Sync)"
 
 
 def safe_extract(archive: Path, destination: Path) -> None:
     destination = destination.resolve()
     with zipfile.ZipFile(archive) as zf:
+        bad_member = zf.testzip()
+        if bad_member is not None:
+            raise RuntimeError(f"Corrupt Discord SDK archive member: {bad_member}")
         for info in zf.infolist():
             target = (destination / info.filename).resolve()
             if target != destination and destination not in target.parents:
@@ -29,41 +30,35 @@ def safe_extract(archive: Path, destination: Path) -> None:
         zf.extractall(destination)
 
 
-def download(url: str, destination: Path, expected_size: Optional[int]) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as output:
-        shutil.copyfileobj(response, output)
-    if expected_size and destination.stat().st_size != expected_size:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def verify_sha256(path: Path, expected: str) -> None:
+    expected = expected.strip().lower()
+    if not expected:
+        return
+    actual = sha256_file(path)
+    if actual != expected:
         raise RuntimeError(
-            "Discord Social SDK download size did not match release metadata "
-            f"({destination.stat().st_size} != {expected_size})"
+            f"Discord Social SDK SHA-256 mismatch ({actual} != {expected})"
         )
 
 
-def official_artifact(version: str) -> Tuple[str, Optional[int]]:
-    request = urllib.request.Request(
-        f"{API_BASE}/{version}", headers={"User-Agent": USER_AGENT}
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            payload = json.load(response)
-    except (urllib.error.URLError, urllib.error.HTTPError) as error:
-        status = getattr(error, "code", "network error")
-        raise RuntimeError(
-            f"Discord Social SDK metadata request failed ({status}). "
-            "Download the official standalone C++ SDK archive from the Discord "
-            "Developer Portal and set DISCORD_SOCIAL_SDK_ARCHIVE to its path."
-        ) from error
-
-    expected = f"DiscordSocialSdk-{version}.zip"
-    for artifact in payload.get("artifacts", []):
-        if artifact.get("filename") != expected:
-            continue
-        url = artifact.get("download_url", "")
-        size = artifact.get("size_bytes")
-        if url.startswith("https://"):
-            return url, size if isinstance(size, int) and size > 0 else None
-    raise RuntimeError(f"Discord did not publish {expected} in the release metadata")
+def download(url: str, destination: Path) -> None:
+    if not url.lower().startswith("https://"):
+        raise RuntimeError("DISCORD_SOCIAL_SDK_URL must use HTTPS")
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        final_url = response.geturl()
+        if not final_url.lower().startswith("https://"):
+            raise RuntimeError("Discord Social SDK download redirected away from HTTPS")
+        with destination.open("wb") as output:
+            shutil.copyfileobj(response, output)
 
 
 def main() -> int:
@@ -75,20 +70,25 @@ def main() -> int:
     destination = Path(args.destination)
     sdk_root = destination / "discord_social_sdk"
     version_marker = sdk_root / ".nso-sdk-version"
-    required = [sdk_root / "include" / "discordpp.h", sdk_root / "include" / "cdiscord.h"]
+    required = [
+        sdk_root / "include" / "discordpp.h",
+        sdk_root / "include" / "cdiscord.h",
+    ]
 
-    # A manually extracted SDK is accepted as-is. For SDKs fetched by this
-    # helper, the marker prevents a version bump from silently reusing an older
-    # native runtime.
+    # A manually extracted SDK is accepted as-is. SDKs prepared by this helper
+    # get a marker so version bumps cannot silently reuse an older runtime.
     if all(path.is_file() for path in required):
         if not version_marker.exists() or version_marker.read_text().strip() == args.version:
             return 0
 
     destination.mkdir(parents=True, exist_ok=True)
     archive_name = f"DiscordSocialSdk-{args.version}.zip"
-    archive = destination / archive_name
+    local_archive = destination / archive_name
 
-    explicit_archive = os.environ.get("DISCORD_SOCIAL_SDK_ARCHIVE")
+    explicit_archive = os.environ.get("DISCORD_SOCIAL_SDK_ARCHIVE", "").strip()
+    direct_url = os.environ.get("DISCORD_SOCIAL_SDK_URL", "").strip()
+    expected_sha256 = os.environ.get("DISCORD_SOCIAL_SDK_SHA256", "").strip()
+
     source_archive: Optional[Path] = None
     temporary_directory: Optional[tempfile.TemporaryDirectory] = None
     try:
@@ -98,13 +98,24 @@ def main() -> int:
                 raise RuntimeError(
                     f"DISCORD_SOCIAL_SDK_ARCHIVE does not exist: {source_archive}"
                 )
-        elif archive.is_file():
-            source_archive = archive
-        else:
-            url, size = official_artifact(args.version)
-            temporary_directory = tempfile.TemporaryDirectory(prefix="nso-discord-sdk-")
+        elif local_archive.is_file():
+            source_archive = local_archive
+        elif direct_url:
+            temporary_directory = tempfile.TemporaryDirectory(
+                prefix="nso-discord-sdk-"
+            )
             source_archive = Path(temporary_directory.name) / archive_name
-            download(url, source_archive, size)
+            download(direct_url, source_archive)
+        else:
+            raise RuntimeError(
+                "Discord gates Social SDK downloads behind the Developer Portal. "
+                f"Provide the official {archive_name} by placing it in third_party/, "
+                "setting DISCORD_SOCIAL_SDK_ARCHIVE to a local file, or setting "
+                "DISCORD_SOCIAL_SDK_URL to the archive's direct official HTTPS "
+                "download URL. No Discord token/client secret is required."
+            )
+
+        verify_sha256(source_archive, expected_sha256)
 
         if sdk_root.exists():
             shutil.rmtree(sdk_root)

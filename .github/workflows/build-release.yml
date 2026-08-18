@@ -18,6 +18,11 @@ concurrency:
 
 env:
   BUILD_TYPE: Release
+  # These are normal repository variables, not secrets. Discord gates the SDK
+  # download lookup behind the Developer Portal, so CI uses the direct official
+  # archive URL copied from there.
+  DISCORD_SOCIAL_SDK_URL: ${{ vars.DISCORD_SOCIAL_SDK_URL }}
+  DISCORD_SOCIAL_SDK_SHA256: ${{ vars.DISCORD_SOCIAL_SDK_SHA256 }}
 
 jobs:
   build-windows:
