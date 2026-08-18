@@ -194,11 +194,11 @@ void DiscordPresence::update(const NintendoPresence& presence) {
     discordpp::Activity activity;
     activity.SetType(discordpp::ActivityTypes::Playing);
 
-    // Social SDK 1.6+ allows the activity name itself to be customized. This
-    // controls Discord's top line, so the result is literally:
-    //   Playing <game name>
-    //   Nintendo Switch / Nintendo Switch 2
+    // Social SDK 1.6+ allows the activity name itself to be customized. Use
+    // that name as the status display field so Discord renders the game as the
+    // primary activity identity instead of repeating our publisher app name.
     activity.SetName(presence.game_name);
+    activity.SetStatusDisplayType(discordpp::StatusDisplayTypes::Name);
     activity.SetState(presence.console_name());
 
     if (!presence.image_uri.empty()) {
