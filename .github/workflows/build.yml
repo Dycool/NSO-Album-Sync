@@ -244,12 +244,22 @@ jobs:
         with:
           path: release-artifacts
 
-      - uses: softprops/action-gh-release@v3
-        with:
-          files: |
+      - name: Publish Draft Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          files=(
             release-artifacts/nso-album-sync-windows/nso-album-sync-windows.zip
             release-artifacts/nso-album-sync-macos/nso-album-sync-macos.zip
             release-artifacts/nso-album-sync-linux/nso-album-sync-linux.zip
-          draft: true
-          prerelease: false
-          generate_release_notes: true
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --draft
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --draft --generate-notes
+          fi
