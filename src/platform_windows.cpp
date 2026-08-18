@@ -192,9 +192,7 @@ void tray_menu(PlatformUi::Impl* ui) {
     const auto add = [&](UINT id, const std::wstring& label, UINT flags = MF_STRING) {
         AppendMenuW(menu, flags, id, label.c_str());
     };
-    add(0, L"Nintendo Switch Online  ·  Album Sync", MF_GRAYED);
     add(0, s.signed_in ? L"Connected as " + wide(s.nickname) : L"Not signed in", MF_GRAYED);
-    add(0, L"Status: " + wide(s.status.empty() ? "Ready" : s.status), MF_GRAYED);
     add(0, L"Last sync: " + wide(s.last_sync), MF_GRAYED);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     add(CmdSync, L"Sync Album Now", s.signed_in ? MF_STRING : MF_GRAYED);
