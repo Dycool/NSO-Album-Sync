@@ -268,14 +268,33 @@ void write_all(
     }
 }
 
-std::vector<unsigned char> read_all(Connection& connection, bool use_tls) {
+std::vector<unsigned char> read_all(
+    Connection& connection,
+    bool use_tls,
+    std::size_t max_response_bytes) {
     std::vector<unsigned char> response;
     unsigned char buffer[kReadBufferBytes];
+
+    std::size_t total_limit = 0;
+    if (max_response_bytes != 0) {
+        if (max_response_bytes >
+            (std::numeric_limits<std::size_t>::max)() - kMaxHeaderBytes) {
+            total_limit = (std::numeric_limits<std::size_t>::max)();
+        } else {
+            total_limit = max_response_bytes + kMaxHeaderBytes;
+        }
+    }
+
     for (;;) {
         const int bytes_read = use_tls
             ? SSL_read(connection.ssl, buffer, sizeof(buffer))
             : BIO_read(connection.io, buffer, sizeof(buffer));
         if (bytes_read > 0) {
+            const auto count = static_cast<std::size_t>(bytes_read);
+            if (total_limit != 0 &&
+                (response.size() > total_limit || count > total_limit - response.size())) {
+                throw std::runtime_error("HTTP response exceeded configured size limit");
+            }
             response.insert(response.end(), buffer, buffer + bytes_read);
             continue;
         }
@@ -385,9 +404,14 @@ HttpResponse parse_response(const std::vector<unsigned char>& bytes) {
         bytes.begin(), bytes.end(), std::begin(kHeaderSeparator), std::end(kHeaderSeparator));
     if (separator == bytes.end()) throw std::runtime_error("Invalid HTTP response");
 
+    const auto header_size = static_cast<std::size_t>(separator - bytes.begin());
+    if (header_size > kMaxHeaderBytes) {
+        throw std::runtime_error("HTTP headers too large");
+    }
+
     const std::string header_text(
         reinterpret_cast<const char*>(bytes.data()),
-        static_cast<std::size_t>(separator - bytes.begin()));
+        header_size);
     HttpResponse response;
     std::istringstream lines(header_text);
     std::string line;
@@ -459,7 +483,8 @@ HttpResponse HttpClient::request(
     const std::vector<std::string>& headers,
     const std::vector<unsigned char>& body,
     const std::string& content_type,
-    long timeout_seconds) const {
+    long timeout_seconds,
+    std::size_t max_response_bytes) const {
     const auto destination = parse_url(url);
     if (destination.scheme != "https" && destination.scheme != "http") {
         throw std::runtime_error("Only HTTP(S) URLs are supported");
@@ -493,14 +518,19 @@ HttpResponse HttpClient::request(
         reinterpret_cast<const unsigned char*>(request_headers.data()),
         request_headers.size());
     if (!body.empty()) write_all(connection, use_tls, body.data(), body.size());
-    return parse_response(read_all(connection, use_tls));
+    auto response = parse_response(read_all(connection, use_tls, max_response_bytes));
+    if (max_response_bytes != 0 && response.body.size() > max_response_bytes) {
+        throw std::runtime_error("HTTP response exceeded configured size limit");
+    }
+    return response;
 }
 
 HttpResponse HttpClient::get(
     const std::string& url,
     const std::vector<std::string>& headers,
-    long timeout_seconds) const {
-    return request("GET", url, headers, {}, "", timeout_seconds);
+    long timeout_seconds,
+    std::size_t max_response_bytes) const {
+    return request("GET", url, headers, {}, "", timeout_seconds, max_response_bytes);
 }
 
 HttpResponse HttpClient::post(
