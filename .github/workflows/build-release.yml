@@ -322,8 +322,10 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            binutils cmake curl file ninja-build libssl-dev libsecret-1-dev libpulse0 \
-            libgtk-3-dev libayatana-appindicator3-dev
+            binutils build-essential cmake curl file ninja-build \
+            libssl-dev libsecret-1-dev libpulse0 libgtk-3-dev \
+            libayatana-appindicator3-dev
+          g++ --version
           getconf GNU_LIBC_VERSION
           test "$(getconf GNU_LIBC_VERSION | awk '{print $2}')" = "2.35"
 
