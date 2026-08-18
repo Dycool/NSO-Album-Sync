@@ -113,8 +113,8 @@ jobs:
 
           codesign --remove-signature "$binary" 2>/dev/null || true
           codesign --remove-signature "$framework" 2>/dev/null || true
-          strip -S -x "$binary"
-          strip -S -x "$framework"
+          strip -S -x "$binary" 2>/dev/null || true
+          strip -S -x "$framework" 2>/dev/null || true
           codesign --force --deep --sign - --timestamp=none "$app"
           codesign --verify --deep --strict "$app"
           "$binary" --self-test
