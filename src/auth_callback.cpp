@@ -1,9 +1,11 @@
 #include "nso_album_sync/auth_callback.hpp"
 
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #ifndef _WIN32
@@ -30,14 +32,41 @@ std::string strip_space(std::string value) {
     return value.substr(first, last - first + 1);
 }
 
+bool ascii_equal_case_insensitive(
+    std::string_view left,
+    std::string_view right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto l = static_cast<unsigned char>(left[i]);
+        const auto r = static_cast<unsigned char>(right[i]);
+        if (std::tolower(l) != std::tolower(r)) return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool is_nintendo_auth_callback(const std::string& url) {
-    const std::string prefix = kNintendoAuthCallbackPrefix;
-    if (url.rfind(prefix, 0) != 0) return false;
-    if (url.size() == prefix.size()) return true;
-    const char next = url[prefix.size()];
-    return next == '#' || next == '?';
+    const std::string_view prefix = kNintendoAuthCallbackPrefix;
+    if (url.size() < prefix.size() ||
+        !ascii_equal_case_insensitive(
+            std::string_view(url).substr(0, prefix.size()), prefix)) {
+        return false;
+    }
+
+    std::size_t position = prefix.size();
+    if (position == url.size()) return true;
+
+    // Chromium/Windows can canonicalize a custom URI whose authority is
+    // "auth" by inserting the otherwise-empty path slash. Nintendo's
+    // npf...://auth#... callback can therefore arrive as npf...://auth/#...
+    // (or npf...://auth/?...). Treat those forms as the same callback.
+    if (url[position] == '/') {
+        ++position;
+        if (position == url.size()) return true;
+    }
+
+    return url[position] == '#' || url[position] == '?';
 }
 
 bool publish_nintendo_auth_callback(const std::string& url) {
