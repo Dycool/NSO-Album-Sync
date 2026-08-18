@@ -90,6 +90,28 @@ private:
 #endif
 };
 
+int run_self_test() {
+    try {
+        if (nso::application_runtime_directory().empty()) {
+            std::cerr << "Self-test failed: private runtime directory is unavailable\n";
+            return 2;
+        }
+
+        nso::DiscordPresence discord(nso::kDiscordApplicationId);
+        if (!discord.self_test_runtime()) {
+            std::cerr << "Self-test failed: Discord Social SDK runtime did not load\n";
+            return 3;
+        }
+        discord.clear();
+
+        std::cout << "NSO Album Sync self-test passed\n";
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "Self-test failed: " << error.what() << '\n';
+        return 4;
+    }
+}
+
 int run_application(const std::string& auth_callback) {
     try {
         SingleInstanceGuard single_instance;
@@ -137,6 +159,22 @@ std::string wide_to_utf8(const std::wstring& value) {
     WideCharToMultiByte(CP_UTF8, 0, value.data(),
         static_cast<int>(value.size()), result.data(), required, nullptr, nullptr);
     return result;
+}
+
+bool command_line_has_argument(const std::wstring& argument) {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv == nullptr) return false;
+
+    bool found = false;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] != nullptr && argument == argv[i]) {
+            found = true;
+            break;
+        }
+    }
+    LocalFree(argv);
+    return found;
 }
 
 std::size_t find_case_insensitive(
@@ -199,10 +237,17 @@ std::string auth_callback_from_command_line() {
 
 #ifdef _WIN32
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    if (command_line_has_argument(L"--self-test")) return run_self_test();
     return run_application(auth_callback_from_command_line());
 }
 #else
 int main(int argc, char* argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] != nullptr && std::string(argv[i]) == "--self-test") {
+            return run_self_test();
+        }
+    }
+
     std::string callback;
     for (int i = 1; i < argc; ++i) {
         if (argv[i] != nullptr && nso::is_nintendo_auth_callback(argv[i])) {
