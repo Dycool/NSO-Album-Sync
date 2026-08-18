@@ -474,6 +474,13 @@ std::int64_t Json::integer(
     return value != nullptr ? value->as_i64(fallback) : fallback;
 }
 
+double Json::number(
+    const std::string& key,
+    double fallback) const {
+    const auto* value = find(key);
+    return value != nullptr ? value->as_number(fallback) : fallback;
+}
+
 bool Json::boolean(const std::string& key, bool fallback) const {
     const auto* value = find(key);
     return value != nullptr ? value->as_bool(fallback) : fallback;

@@ -233,13 +233,21 @@ void DiscordPresence::update(const NintendoPresence& presence) {
         activity.SetTimestamps(timestamps);
     }
 
-    const auto& image_url = !presence.custom_image_uri.empty()
-        ? presence.custom_image_uri
-        : presence.image_uri;
-
-    if (!image_url.empty()) {
+    if (!presence.custom_image_uri.empty()) {
         discordpp::ActivityAssets assets;
-        assets.SetLargeImage(image_url);
+        assets.SetLargeImage(presence.custom_image_uri);
+        assets.SetLargeText(presence.game_name);
+        if (!presence.image_uri.empty()) {
+            assets.SetSmallImage(presence.image_uri);
+            assets.SetSmallText(presence.console_name().empty()
+                                    ? presence.game_name
+                                    : presence.console_name());
+        }
+        if (!presence.shop_uri.empty()) assets.SetLargeUrl(presence.shop_uri);
+        activity.SetAssets(assets);
+    } else if (!presence.image_uri.empty()) {
+        discordpp::ActivityAssets assets;
+        assets.SetLargeImage(presence.image_uri);
         assets.SetLargeText(presence.game_name);
         if (!presence.shop_uri.empty()) assets.SetLargeUrl(presence.shop_uri);
         activity.SetAssets(assets);

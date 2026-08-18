@@ -45,6 +45,7 @@ public:
     const Json* find(const std::string& key) const;
     std::string string(const std::string& key, const std::string& fallback = "") const;
     int64_t integer(const std::string& key, int64_t fallback = 0) const;
+    double number(const std::string& key, double fallback = 0.0) const;
     bool boolean(const std::string& key, bool fallback = false) const;
 
 private:
