@@ -39,6 +39,7 @@ public:
 private:
     HttpClient& http_;
     std::string pkce_verifier_;
+    std::string oauth_state_;
 
     std::string exchange_code(
         const std::string& session_token_code,

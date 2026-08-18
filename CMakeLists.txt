@@ -27,10 +27,6 @@ set(
     "macOS code-signing identity; '-' performs a local ad-hoc signature"
 )
 
-# -----------------------------------------------------------------------------
-# Compiler and linker defaults
-# -----------------------------------------------------------------------------
-
 if(MSVC)
     add_compile_options(/W4 /EHsc /utf-8)
     add_link_options(
@@ -55,12 +51,8 @@ endif()
 
 if(NSO_STATIC_RUNTIME)
     set(OPENSSL_USE_STATIC_LIBS TRUE)
-
     if(MSVC)
-        set(
-            CMAKE_MSVC_RUNTIME_LIBRARY
-            "MultiThreaded$<$<CONFIG:Debug>:Debug>"
-        )
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     endif()
 endif()
 
@@ -69,13 +61,10 @@ if(NOT WIN32)
 endif()
 find_package(PkgConfig QUIET)
 
-# -----------------------------------------------------------------------------
-# Sources
-# -----------------------------------------------------------------------------
-
 set(NSO_SOURCES
     src/main.cpp
     src/app.cpp
+    src/auth_callback.cpp
     src/config.cpp
     src/coral.cpp
     src/discord.cpp
@@ -89,6 +78,7 @@ set(NSO_SOURCES
 
 set(NSO_HEADERS
     include/nso_album_sync/app.hpp
+    include/nso_album_sync/auth_callback.hpp
     include/nso_album_sync/config.hpp
     include/nso_album_sync/coral.hpp
     include/nso_album_sync/discord.hpp
@@ -112,6 +102,7 @@ if(WIN32)
         @ONLY
     )
     list(APPEND NSO_SOURCES
+        src/auth_callback_windows.cpp
         src/http_windows.cpp
         src/platform_windows.cpp
         src/secure_store_windows.cpp
@@ -126,6 +117,7 @@ elseif(APPLE)
         PROPERTIES MACOSX_PACKAGE_LOCATION "Resources"
     )
     list(APPEND NSO_SOURCES
+        src/auth_callback_macos.mm
         src/http_openssl.cpp
         src/platform_macos.mm
         src/secure_store_macos.mm
@@ -134,16 +126,13 @@ elseif(APPLE)
     )
 else()
     list(APPEND NSO_SOURCES
+        src/auth_callback_linux.cpp
         src/http_openssl.cpp
         src/platform_linux.cpp
         src/secure_store_linux.cpp
         src/discord_ipc_unix.cpp
     )
 endif()
-
-# -----------------------------------------------------------------------------
-# Main target
-# -----------------------------------------------------------------------------
 
 if(WIN32)
     add_executable(nso-album-sync WIN32 ${NSO_SOURCES} ${NSO_HEADERS})
@@ -161,75 +150,40 @@ else()
     add_executable(nso-album-sync ${NSO_SOURCES} ${NSO_HEADERS})
 endif()
 
-target_include_directories(
-    nso-album-sync
-    PRIVATE "${CMAKE_SOURCE_DIR}/include"
-)
+target_include_directories(nso-album-sync PRIVATE "${CMAKE_SOURCE_DIR}/include")
 
-# Let CMake enable link-time optimization only when the active compiler/linker
-# toolchain can actually support it.  Forcing -flto breaks Clang installations
-# that do not ship an LLVMgold linker plugin.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT NSO_IPO_SUPPORTED OUTPUT NSO_IPO_ERROR LANGUAGES CXX)
 if(NSO_IPO_SUPPORTED)
-    set_property(
-        TARGET nso-album-sync
-        PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
-    )
+    set_property(TARGET nso-album-sync PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 else()
     message(STATUS "IPO/LTO disabled: ${NSO_IPO_ERROR}")
 endif()
 
 if(NOT WIN32)
-    target_link_libraries(
-        nso-album-sync
-        PRIVATE
-            OpenSSL::SSL
-            OpenSSL::Crypto
-    )
+    target_link_libraries(nso-album-sync PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
-# Compact Linux builds can carry the C++ runtime and OpenSSL statically while
-# still using the host libc. This keeps the distributed binary small and simple.
 if(NSO_STATIC_RUNTIME AND UNIX AND NOT APPLE)
     target_link_options(nso-album-sync PRIVATE -static-libgcc -static-libstdc++)
-
     find_library(
         NSO_ZSTD_STATIC
         NAMES libzstd.a zstd.a
-        PATHS
-            /usr/lib
-            /usr/lib/x86_64-linux-gnu
-            /usr/local/lib
+        PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/local/lib
     )
-
     if(NSO_ZSTD_STATIC)
         target_link_libraries(nso-album-sync PRIVATE ${NSO_ZSTD_STATIC})
     endif()
 endif()
 
-# -----------------------------------------------------------------------------
-# Platform integration
-# -----------------------------------------------------------------------------
-
 if(WIN32)
     target_link_libraries(
         nso-album-sync
-        PRIVATE
-            advapi32
-            bcrypt
-            crypt32
-            winhttp
-            shell32
-            ole32
-            comdlg32
+        PRIVATE advapi32 bcrypt crypt32 winhttp shell32 ole32 comdlg32
     )
 elseif(APPLE)
-    # platform_macos.mm uses AppKit/Cocoa for the menu-bar UI, Security for
-    # Keychain storage, and UserNotifications for native notifications.  Resolve
-    # the frameworks explicitly so the final Objective-C++ link step contains
-    # every framework whose classes are referenced.
     find_library(NSO_COCOA_FRAMEWORK Cocoa REQUIRED)
+    find_library(NSO_CORE_SERVICES_FRAMEWORK CoreServices REQUIRED)
     find_library(NSO_SECURITY_FRAMEWORK Security REQUIRED)
     find_library(NSO_USER_NOTIFICATIONS_FRAMEWORK UserNotifications REQUIRED)
 
@@ -237,13 +191,11 @@ elseif(APPLE)
         nso-album-sync
         PRIVATE
             ${NSO_COCOA_FRAMEWORK}
+            ${NSO_CORE_SERVICES_FRAMEWORK}
             ${NSO_SECURITY_FRAMEWORK}
             ${NSO_USER_NOTIFICATIONS_FRAMEWORK}
     )
 
-    # Sign every locally built .app, not only release artifacts.  The default
-    # identity '-' is Apple's ad-hoc/local signature, so this requires no
-    # developer certificate and also makes CI fail immediately if signing does.
     find_program(NSO_CODESIGN_EXECUTABLE codesign REQUIRED)
     add_custom_command(
         TARGET nso-album-sync
@@ -267,64 +219,27 @@ else()
     if(PkgConfig_FOUND)
         pkg_check_modules(LIBSECRET QUIET libsecret-1)
         if(LIBSECRET_FOUND)
-            target_compile_definitions(
-                nso-album-sync
-                PRIVATE NSO_HAVE_LIBSECRET=1
-            )
-            target_include_directories(
-                nso-album-sync
-                PRIVATE ${LIBSECRET_INCLUDE_DIRS}
-            )
-            target_link_libraries(
-                nso-album-sync
-                PRIVATE ${LIBSECRET_LIBRARIES}
-            )
+            target_compile_definitions(nso-album-sync PRIVATE NSO_HAVE_LIBSECRET=1)
+            target_include_directories(nso-album-sync PRIVATE ${LIBSECRET_INCLUDE_DIRS})
+            target_link_libraries(nso-album-sync PRIVATE ${LIBSECRET_LIBRARIES})
         endif()
 
         if(NSO_ENABLE_LINUX_TRAY)
             pkg_check_modules(GTK3 QUIET gtk+-3.0)
             pkg_check_modules(APPIND QUIET ayatana-appindicator3-0.1)
-
             if(GTK3_FOUND)
-                target_compile_definitions(
-                    nso-album-sync
-                    PRIVATE NSO_HAVE_GTK=1
-                )
-                target_include_directories(
-                    nso-album-sync
-                    PRIVATE ${GTK3_INCLUDE_DIRS}
-                )
-                target_link_libraries(
-                    nso-album-sync
-                    PRIVATE ${GTK3_LIBRARIES}
-                )
-
+                target_compile_definitions(nso-album-sync PRIVATE NSO_HAVE_GTK=1)
+                target_include_directories(nso-album-sync PRIVATE ${GTK3_INCLUDE_DIRS})
+                target_link_libraries(nso-album-sync PRIVATE ${GTK3_LIBRARIES})
                 if(APPIND_FOUND)
-                    target_compile_definitions(
-                        nso-album-sync
-                        PRIVATE NSO_HAVE_APPINDICATOR=1
-                    )
-                    target_include_directories(
-                        nso-album-sync
-                        PRIVATE ${APPIND_INCLUDE_DIRS}
-                    )
-                    target_link_libraries(
-                        nso-album-sync
-                        PRIVATE ${APPIND_LIBRARIES}
-                    )
+                    target_compile_definitions(nso-album-sync PRIVATE NSO_HAVE_APPINDICATOR=1)
+                    target_include_directories(nso-album-sync PRIVATE ${APPIND_INCLUDE_DIRS})
+                    target_link_libraries(nso-album-sync PRIVATE ${APPIND_LIBRARIES})
                 endif()
             endif()
         endif()
     endif()
 endif()
-
-# -----------------------------------------------------------------------------
-# Discord Rich Presence
-# -----------------------------------------------------------------------------
-
-# Discord Rich Presence uses the desktop client's documented local RPC/IPC
-# transport directly. No Discord SDK, extra library, secret, or download is
-# required at build or runtime.
 
 install(
     TARGETS nso-album-sync

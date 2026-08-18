@@ -36,20 +36,16 @@ private:
     PlatformUi ui_;
 
     std::atomic<bool> stopping_{false};
+    std::atomic<bool> auth_pending_{false};
+    std::atomic<bool> operational_workers_started_{false};
     std::thread auto_sync_thread_;
     std::thread presence_thread_;
+    std::thread auth_callback_thread_;
 
-    // Manual/startup syncs run off the UI thread but are retained and joined at
-    // shutdown so the App object can never be destroyed underneath a detached
-    // worker.
     std::mutex manual_workers_mutex_;
     std::vector<std::thread> manual_workers_;
-
-    // Album sync may be requested by both the timer and the tray menu.
     std::mutex sync_mutex_;
-
-    // Both workers share a condition variable so settings changes and shutdown
-    // can wake them immediately instead of waiting for the next timer tick.
+    std::mutex auth_flow_mutex_;
     std::mutex sleep_mutex_;
     std::condition_variable sleep_cv_;
 
@@ -61,11 +57,14 @@ private:
     void sync_now(bool background);
     void queue_sync(bool background);
     void sign_in_or_out();
+    void complete_pending_login(const std::string& redirect_url_or_code);
 
     void start_workers();
+    void start_operational_workers();
     void stop_workers();
     void presence_loop();
     void auto_sync_loop();
+    void auth_callback_loop();
     void wake_workers();
 };
 

@@ -14,15 +14,18 @@ A lightweight native tray/menu-bar app that keeps the recent Nintendo Switch Onl
 - **Title ID and localized-folder matching** to keep using existing Portuguese, Japanese, English, custom, and other localized game folders.
 - **Original capture timestamps** preserved on downloaded media (including creation/write time on Windows).
 - **Native Windows tray, macOS menu-bar, and Linux AppIndicator/GTK integration** with notifications, folder selection, proxy settings, start-on-login, and account switching.
+- **Automatic Nintendo Account browser return**: after clicking **Select this person**, the browser returns the one-time `npf…://auth` callback to NSO Album Sync automatically when the operating system allows it. Manual link entry remains available as a fallback when another application owns the callback scheme or registration is unavailable.
 - **Secure credential storage** through the operating system credential/keychain service when available. Session tokens are not written to `config.json` in plaintext by current builds.
 - **Discord Rich Presence** using Discord's local desktop IPC; game, console, play-time state, artwork, and Nintendo shop link data are published when Nintendo reports that you are playing.
-- **Single-instance protection** so accidentally launching the application twice does not create duplicate sync/presence workers.
+- **Single-instance protection** so accidentally launching the application twice does not create duplicate sync/presence workers. Nintendo auth callbacks launched as a second process are forwarded to the already-running instance instead.
 
 ## Nintendo Account and nxapi disclosure
 
 NSO Album Sync uses the third-party [`nxapi-znca-api`](https://github.com/samuelthomas2774/nxapi-znca-api) service at `fancy.org.uk` for Nintendo Switch Online request attestation and request/response encryption.
 
 Before Nintendo Account sign-in begins, the app requires an explicit acknowledgement that the user's Nintendo Account `id_token` is sent to this third-party service. The token can contain Nintendo Account information and can be used to authenticate to Nintendo Switch Online services while valid. The app also identifies itself to nxapi, caches service tokens/version data, serializes automated nxapi work, and respects `Retry-After` backoff.
+
+The Nintendo Account OAuth callback is protected with PKCE and an OAuth `state` value. NSO Album Sync validates that state before exchanging the one-time `session_token_code`. The PKCE verifier remains in the process that opened the Nintendo sign-in page.
 
 ## Discord visibility
 
@@ -44,8 +47,9 @@ Release downloads and SHA-256 checksums are available on the [Releases](https://
 
 1. Run the download for your operating system. On first launch, NSO Album Sync opens its Nintendo Account onboarding flow automatically.
 2. Read and accept the nxapi third-party disclosure.
-3. Nintendo's sign-in page opens in your browser. Sign in, then copy the complete link behind **Select this person** and paste it into NSO Album Sync.
-4. After authentication, the app performs the first album sync and then stays in the tray/menu bar. Use the menu to change the album folder, auto-sync, notifications, Discord presence, proxy, or startup behavior.
+3. Nintendo's sign-in page opens in your normal browser. Sign in and click **Select this person**. The browser normally returns directly to NSO Album Sync and authentication completes automatically.
+4. If automatic return cannot be registered because another application owns Nintendo's callback scheme, NSO Album Sync shows the original manual redirect-link field instead of replacing that application's handler.
+5. After authentication, the app performs the first album sync and then stays in the tray/menu bar. Use the menu to change the album folder, auto-sync, notifications, Discord presence, proxy, or startup behavior.
 
 By default captures are saved under the user's Pictures directory in `Nintendo Switch Album/Album/...` unless another destination is selected.
 
