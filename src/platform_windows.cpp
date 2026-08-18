@@ -1,581 +1,316 @@
 #include "nso_album_sync/platform.hpp"
 
 #ifdef _WIN32
-
 #include "nso_album_sync/windows_compat.hpp"
-#include <commdlg.h>
 #include <shellapi.h>
-#include <shlobj.h>
-
+#include <shobjidl.h>
+#include <algorithm>
+#include <mutex>
 #include <string>
 
 namespace nso {
 namespace {
-
 constexpr UINT kTrayMessage = WM_APP + 42;
-constexpr int kAppIconResourceId = 101;
-constexpr wchar_t kTrayWindowClass[] = L"NsoAlbumSyncTray";
-constexpr wchar_t kRunRegistryPath[] =
-    L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr wchar_t kRunRegistryValue[] = L"NSO Album Sync";
+constexpr int kIconId = 101;
+constexpr wchar_t kTrayClass[] = L"NSOAlbumSyncTray";
+constexpr wchar_t kPromptClass[] = L"NSOAlbumSyncPrompt";
+constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr wchar_t kRunValue[] = L"NSO Album Sync";
 
-enum MenuCommand : UINT {
-    SyncNow = 1001,
-    ToggleAutoSync,
-    ToggleNotifications,
-    ToggleDiscord,
-    SelectFolder,
-    OpenFolder,
-    ToggleStartOnBoot,
-    ConfigureProxy,
-    SignInOrOut,
-    Exit,
+enum Command : UINT {
+    CmdSync = 1001, CmdAuto, CmdNotifications, CmdDiscord, CmdFolder,
+    CmdOpen, CmdStartup, CmdProxy, CmdAccount, CmdExit,
 };
 
-std::wstring utf8_to_wide(const std::string& text) {
-    if (text.empty()) {
-        return {};
-    }
-
-    const int input_length = static_cast<int>(text.size());
-    const int required = MultiByteToWideChar(
-        CP_UTF8,
-        0,
-        text.data(),
-        input_length,
-        nullptr,
-        0);
-
-    std::wstring result(static_cast<std::size_t>(required), L'\0');
-    MultiByteToWideChar(
-        CP_UTF8,
-        0,
-        text.data(),
-        input_length,
-        result.data(),
-        required);
-
-    return result;
+std::wstring wide(const std::string& value) {
+    if (value.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, value.data(),
+        static_cast<int>(value.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out(static_cast<std::size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, value.data(),
+        static_cast<int>(value.size()), out.data(), n);
+    return out;
 }
 
-HICON load_app_icon() {
+std::string utf8(const std::wstring& value) {
+    if (value.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(static_cast<std::size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.data(),
+        static_cast<int>(value.size()), out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+HICON app_icon() {
+    HICON icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(kIconId));
+    return icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+}
+
+std::wstring auto_label(int minutes) {
+    if (minutes == 60) return L"Auto-Sync (Hourly)";
+    return L"Auto-Sync (Every " + std::to_wstring(std::max(1, minutes)) + L" min)";
+}
+
+struct PromptState {
+    HWND edit = nullptr;
+    bool done = false;
+    bool accepted = false;
+};
+
+LRESULT CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<PromptState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        state = static_cast<PromptState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+    }
+    if (state && msg == WM_COMMAND) {
+        if (LOWORD(wp) == IDOK) { state->accepted = true; state->done = true; return 0; }
+        if (LOWORD(wp) == IDCANCEL) { state->done = true; return 0; }
+    }
+    if (state && msg == WM_CLOSE) { state->done = true; return 0; }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+std::string prompt_box(const std::string& title, const std::string& text,
+                       const std::string& initial) {
     const HINSTANCE instance = GetModuleHandleW(nullptr);
-    HICON icon = LoadIconW(
-        instance,
-        MAKEINTRESOURCEW(kAppIconResourceId));
-    if (icon == nullptr) {
-        icon = LoadIconW(nullptr, IDI_APPLICATION);
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = prompt_proc;
+    wc.hInstance = instance;
+    wc.hIcon = app_icon();
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.lpszClassName = kPromptClass;
+    RegisterClassW(&wc);
+
+    PromptState state;
+    const int width = 640, height = 250;
+    const int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
+    const int y = (GetSystemMetrics(SM_CYSCREEN) - height) / 2;
+    HWND window = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        kPromptClass, wide(title).c_str(), WS_CAPTION | WS_SYSMENU,
+        x, y, width, height, nullptr, nullptr, instance, &state);
+    if (!window) return {};
+
+    const auto font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    const auto make = [&](const wchar_t* cls, const std::wstring& caption,
+                          DWORD style, int cx, int cy, int cw, int ch, int id) {
+        HWND control = CreateWindowW(cls, caption.c_str(), WS_CHILD | WS_VISIBLE | style,
+            cx, cy, cw, ch, window,
+            id ? reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)) : nullptr,
+            instance, nullptr);
+        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        return control;
+    };
+
+    make(L"STATIC", L"Nintendo Switch Online  ·  Album Sync", 0, 20, 16, 590, 22, 0);
+    make(L"STATIC", wide(text), SS_LEFT, 20, 48, 590, 58, 0);
+    state.edit = make(L"EDIT", wide(initial), WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
+        20, 116, 590, 28, 10);
+    make(L"BUTTON", L"Continue", WS_TABSTOP | BS_DEFPUSHBUTTON, 430, 164, 86, 30, IDOK);
+    make(L"BUTTON", L"Cancel", WS_TABSTOP, 524, 164, 86, 30, IDCANCEL);
+
+    ShowWindow(window, SW_SHOW);
+    SetFocus(state.edit);
+    SendMessageW(state.edit, EM_SETSEL, 0, -1);
+    MSG msg{};
+    while (!state.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == WM_KEYDOWN && msg.hwnd == state.edit) {
+            if (msg.wParam == VK_RETURN) { state.accepted = true; state.done = true; continue; }
+            if (msg.wParam == VK_ESCAPE) { state.done = true; continue; }
+        }
+        if (!IsDialogMessageW(window, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
-    return icon;
-}
 
-std::string wide_to_utf8(const std::wstring& text) {
-    if (text.empty()) {
-        return {};
+    std::string result;
+    if (state.accepted) {
+        const int n = GetWindowTextLengthW(state.edit);
+        std::wstring value(static_cast<std::size_t>(n) + 1, L'\0');
+        GetWindowTextW(state.edit, value.data(), n + 1);
+        value.resize(static_cast<std::size_t>(n));
+        result = utf8(value);
     }
-
-    const int required = WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        text.c_str(),
-        static_cast<int>(text.size()),
-        nullptr,
-        0,
-        nullptr,
-        nullptr);
-
-    std::string result(static_cast<std::size_t>(required), '\0');
-    WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        text.c_str(),
-        static_cast<int>(text.size()),
-        result.data(),
-        required,
-        nullptr,
-        nullptr);
-
+    DestroyWindow(window);
     return result;
 }
-
 }  // namespace
 
 struct PlatformUi::Impl {
     HWND window = nullptr;
-    NOTIFYICONDATAW tray_icon{};
+    NOTIFYICONDATAW tray{};
     PlatformCallbacks callbacks;
     MenuState state;
+    std::mutex mutex;
 };
 
 namespace {
+PlatformUi::Impl* g_ui = nullptr;
 
-PlatformUi::Impl* g_platform = nullptr;
-
-void dispatch_command(PlatformUi::Impl* impl, UINT command) {
-    if (impl == nullptr) {
-        return;
-    }
-
-    const auto& callbacks = impl->callbacks;
+void invoke(PlatformUi::Impl* ui, UINT command) {
+    if (!ui) return;
+    const auto& c = ui->callbacks;
     switch (command) {
-        case SyncNow:
-            callbacks.sync_now();
-            break;
-        case ToggleAutoSync:
-            callbacks.toggle_auto();
-            break;
-        case ToggleNotifications:
-            callbacks.toggle_notifications();
-            break;
-        case ToggleDiscord:
-            callbacks.toggle_discord();
-            break;
-        case SelectFolder:
-            callbacks.select_folder();
-            break;
-        case OpenFolder:
-            callbacks.open_folder();
-            break;
-        case ToggleStartOnBoot:
-            callbacks.toggle_start();
-            break;
-        case ConfigureProxy:
-            callbacks.proxy();
-            break;
-        case SignInOrOut:
-            callbacks.sign_in_out();
-            break;
-        case Exit:
-            callbacks.exit();
-            break;
-        default:
-            break;
+        case CmdSync: c.sync_now(); break;
+        case CmdAuto: c.toggle_auto(); break;
+        case CmdNotifications: c.toggle_notifications(); break;
+        case CmdDiscord: c.toggle_discord(); break;
+        case CmdFolder: c.select_folder(); break;
+        case CmdOpen: c.open_folder(); break;
+        case CmdStartup: c.toggle_start(); break;
+        case CmdProxy: c.proxy(); break;
+        case CmdAccount: c.sign_in_out(); break;
+        case CmdExit: c.exit(); break;
+        default: break;
     }
 }
 
-void show_tray_menu(PlatformUi::Impl* impl) {
+void tray_menu(PlatformUi::Impl* ui) {
+    if (!ui) return;
+    MenuState s;
+    { std::lock_guard lock(ui->mutex); s = ui->state; }
     HMENU menu = CreatePopupMenu();
-
-    const auto append_item = [&](UINT id,
-                                 const std::wstring& label,
-                                 UINT flags = MF_STRING) {
+    const auto add = [&](UINT id, const std::wstring& label, UINT flags = MF_STRING) {
         AppendMenuW(menu, flags, id, label.c_str());
     };
-
-    const auto& state = impl->state;
-    const auto account_label = state.signed_in
-        ? L"Connected (" + utf8_to_wide(state.nickname) + L")"
-        : L"Not signed in";
-
-    append_item(0, account_label, MF_STRING | MF_GRAYED);
-    append_item(
-        0,
-        L"Last sync: " + utf8_to_wide(state.last_sync),
-        MF_STRING | MF_GRAYED);
-
+    add(0, L"Nintendo Switch Online  ·  Album Sync", MF_GRAYED);
+    add(0, s.signed_in ? L"Connected as " + wide(s.nickname) : L"Not signed in", MF_GRAYED);
+    add(0, L"Status: " + wide(s.status.empty() ? "Ready" : s.status), MF_GRAYED);
+    add(0, L"Last sync: " + wide(s.last_sync), MF_GRAYED);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    append_item(SyncNow, L"Sync Now");
-    append_item(
-        ToggleAutoSync,
-        L"Auto-Sync (Hourly)",
-        MF_STRING | (state.auto_sync ? MF_CHECKED : 0));
-    append_item(
-        ToggleNotifications,
-        L"Notifications",
-        MF_STRING | (state.notifications ? MF_CHECKED : 0));
-    append_item(
-        ToggleDiscord,
-        L"Discord Rich Presence",
-        MF_STRING | (state.discord ? MF_CHECKED : 0));
-
+    add(CmdSync, L"Sync Album Now", s.signed_in ? MF_STRING : MF_GRAYED);
+    add(CmdAuto, auto_label(s.sync_interval_minutes), MF_STRING | (s.auto_sync ? MF_CHECKED : 0));
+    add(CmdNotifications, L"Notifications", MF_STRING | (s.notifications ? MF_CHECKED : 0));
+    add(CmdDiscord, L"Discord Rich Presence", MF_STRING | (s.discord ? MF_CHECKED : 0));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    append_item(SelectFolder, L"Select Folder...");
-    append_item(OpenFolder, L"Open Album Folder");
-
+    add(CmdFolder, L"Choose Album Folder…");
+    add(CmdOpen, L"Open Album Folder");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    append_item(
-        ToggleStartOnBoot,
-        L"Start on Boot",
-        MF_STRING | (state.start_on_boot ? MF_CHECKED : 0));
-    append_item(ConfigureProxy, L"HTTP Proxy...");
-    append_item(SignInOrOut, state.signed_in ? L"Sign Out" : L"Sign In");
-
+    add(CmdStartup, L"Start with Windows", MF_STRING | (s.start_on_boot ? MF_CHECKED : 0));
+    add(CmdProxy, L"HTTP Proxy…");
+    add(CmdAccount, s.signed_in ? L"Sign Out" : L"Sign In to Nintendo Account…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    append_item(Exit, L"Exit");
-
-    POINT cursor{};
-    GetCursorPos(&cursor);
-    SetForegroundWindow(impl->window);
-
-    const UINT selected = TrackPopupMenu(
-        menu,
-        TPM_RETURNCMD | TPM_NONOTIFY,
-        cursor.x,
-        cursor.y,
-        0,
-        impl->window,
-        nullptr);
-
+    add(CmdExit, L"Exit NSO Album Sync");
+    POINT p{}; GetCursorPos(&p); SetForegroundWindow(ui->window);
+    const UINT selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
+        p.x, p.y, 0, ui->window, nullptr);
     DestroyMenu(menu);
-    dispatch_command(impl, selected);
+    invoke(ui, selected);
 }
 
-LRESULT CALLBACK tray_window_proc(
-    HWND window,
-    UINT message,
-    WPARAM w_param,
-    LPARAM l_param) {
-    (void)w_param;
-
-    if (message == kTrayMessage) {
-        // NOTIFYICON_VERSION_4 packs the notification code into LOWORD(lParam)
-        // and the icon ID into HIWORD(lParam).  Handle both mouse and keyboard
-        // context-menu activation without relying on the legacy lParam layout.
-        const UINT tray_event = LOWORD(l_param);
-        if (tray_event == WM_RBUTTONUP || tray_event == WM_CONTEXTMENU) {
-            show_tray_menu(g_platform);
-            return 0;
-        }
+LRESULT CALLBACK tray_proc(HWND hwnd, UINT msg, WPARAM, LPARAM lp) {
+    if (msg == kTrayMessage) {
+        const UINT event = LOWORD(lp);
+        if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) { tray_menu(g_ui); return 0; }
+        if (event == WM_LBUTTONDBLCLK) { invoke(g_ui, CmdOpen); return 0; }
     }
-
-    if (message == WM_DESTROY) {
-        PostQuitMessage(0);
-        return 0;
-    }
-
-    return DefWindowProcW(window, message, w_param, l_param);
+    if (msg == WM_DESTROY) { PostQuitMessage(0); return 0; }
+    return DefWindowProcW(hwnd, msg, 0, lp);
 }
-
-std::string input_box(
-    const std::string& title,
-    const std::string& message,
-    const std::string& initial) {
-    const HINSTANCE instance = GetModuleHandleW(nullptr);
-    constexpr wchar_t kInputWindowClass[] = L"NsoInputBox";
-
-    WNDCLASSW window_class{};
-    window_class.lpfnWndProc = DefWindowProcW;
-    window_class.hInstance = instance;
-    window_class.hIcon = load_app_icon();
-    window_class.lpszClassName = kInputWindowClass;
-    window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    RegisterClassW(&window_class);
-
-    HWND window = CreateWindowExW(
-        WS_EX_DLGMODALFRAME,
-        kInputWindowClass,
-        utf8_to_wide(title).c_str(),
-        WS_CAPTION | WS_SYSMENU,
-        400,
-        300,
-        520,
-        180,
-        nullptr,
-        nullptr,
-        instance,
-        nullptr);
-
-    CreateWindowW(
-        L"STATIC",
-        utf8_to_wide(message).c_str(),
-        WS_CHILD | WS_VISIBLE,
-        15,
-        15,
-        480,
-        40,
-        window,
-        nullptr,
-        instance,
-        nullptr);
-
-    HWND edit = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        L"EDIT",
-        utf8_to_wide(initial).c_str(),
-        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-        15,
-        60,
-        480,
-        25,
-        window,
-        reinterpret_cast<HMENU>(10),
-        instance,
-        nullptr);
-
-    HWND ok_button = CreateWindowW(
-        L"BUTTON",
-        L"OK",
-        WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-        325,
-        100,
-        80,
-        28,
-        window,
-        reinterpret_cast<HMENU>(IDOK),
-        instance,
-        nullptr);
-
-    CreateWindowW(
-        L"BUTTON",
-        L"Cancel",
-        WS_CHILD | WS_VISIBLE,
-        415,
-        100,
-        80,
-        28,
-        window,
-        reinterpret_cast<HMENU>(IDCANCEL),
-        instance,
-        nullptr);
-
-    ShowWindow(window, SW_SHOW);
-
-    bool done = false;
-    bool accepted = false;
-    MSG message_record{};
-
-    while (!done && GetMessageW(&message_record, nullptr, 0, 0) > 0) {
-        if (message_record.hwnd == ok_button &&
-            message_record.message == WM_LBUTTONUP) {
-            accepted = true;
-            done = true;
-        } else if (message_record.message == WM_COMMAND &&
-                   LOWORD(message_record.wParam) == IDOK) {
-            accepted = true;
-            done = true;
-        } else if (message_record.message == WM_COMMAND &&
-                   LOWORD(message_record.wParam) == IDCANCEL) {
-            done = true;
-        } else {
-            TranslateMessage(&message_record);
-            DispatchMessageW(&message_record);
-        }
-    }
-
-    std::string result;
-    if (accepted) {
-        const int length = GetWindowTextLengthW(edit);
-        std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
-        GetWindowTextW(edit, text.data(), length + 1);
-        text.resize(static_cast<std::size_t>(length));
-        result = wide_to_utf8(text);
-    }
-
-    DestroyWindow(window);
-    return result;
-}
-
 }  // namespace
 
 PlatformUi::PlatformUi() : impl_(new Impl) {}
-
-PlatformUi::~PlatformUi() {
-    delete impl_;
-}
+PlatformUi::~PlatformUi() { delete impl_; }
 
 void PlatformUi::run(const PlatformCallbacks& callbacks) {
-    impl_->callbacks = callbacks;
-    g_platform = impl_;
-
+    impl_->callbacks = callbacks; g_ui = impl_;
     const HINSTANCE instance = GetModuleHandleW(nullptr);
-    HICON app_icon = load_app_icon();
-
-    WNDCLASSW window_class{};
-    window_class.lpfnWndProc = tray_window_proc;
-    window_class.hInstance = instance;
-    window_class.hIcon = app_icon;
-    window_class.lpszClassName = kTrayWindowClass;
-    RegisterClassW(&window_class);
-
-    impl_->window = CreateWindowExW(
-        0,
-        window_class.lpszClassName,
-        L"NSO Album Sync",
-        0,
-        0,
-        0,
-        0,
-        0,
-        HWND_MESSAGE,
-        nullptr,
-        window_class.hInstance,
-        nullptr);
-
-    impl_->tray_icon.cbSize = sizeof(impl_->tray_icon);
-    impl_->tray_icon.hWnd = impl_->window;
-    impl_->tray_icon.uID = 1;
-    impl_->tray_icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-    impl_->tray_icon.uCallbackMessage = kTrayMessage;
-    impl_->tray_icon.hIcon = app_icon;
-    wcscpy_s(impl_->tray_icon.szTip, L"NSO Album Sync");
-
-    if (!Shell_NotifyIconW(NIM_ADD, &impl_->tray_icon)) {
-        MessageBoxW(
-            nullptr,
-            L"NSO Album Sync could not create its notification-area icon.",
-            L"NSO Album Sync",
-            MB_OK | MB_ICONERROR);
-        return;
+    WNDCLASSW wc{}; wc.lpfnWndProc = tray_proc; wc.hInstance = instance;
+    wc.hIcon = app_icon(); wc.lpszClassName = kTrayClass; RegisterClassW(&wc);
+    impl_->window = CreateWindowExW(0, kTrayClass, L"NSO Album Sync", 0,
+        0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, nullptr);
+    impl_->tray.cbSize = sizeof(impl_->tray); impl_->tray.hWnd = impl_->window;
+    impl_->tray.uID = 1; impl_->tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    impl_->tray.uCallbackMessage = kTrayMessage; impl_->tray.hIcon = app_icon();
+    wcscpy_s(impl_->tray.szTip, L"NSO Album Sync");
+    if (!Shell_NotifyIconW(NIM_ADD, &impl_->tray)) {
+        MessageBoxW(nullptr, L"Could not create the NSO Album Sync tray icon.",
+            L"NSO Album Sync", MB_OK | MB_ICONERROR); return;
     }
-
-    // Use the current shell behavior for notification-area callbacks and make
-    // startup sequencing explicit before any worker can send notifications.
-    impl_->tray_icon.uVersion = NOTIFYICON_VERSION_4;
-    Shell_NotifyIconW(NIM_SETVERSION, &impl_->tray_icon);
-
-    if (impl_->callbacks.ready) {
-        impl_->callbacks.ready();
-    }
-
-    MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-    }
-
-    Shell_NotifyIconW(NIM_DELETE, &impl_->tray_icon);
+    impl_->tray.uVersion = NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION, &impl_->tray);
+    if (callbacks.ready) callbacks.ready();
+    MSG msg{}; while (GetMessageW(&msg, nullptr, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    Shell_NotifyIconW(NIM_DELETE, &impl_->tray);
 }
 
-void PlatformUi::stop() {
-    if (impl_->window != nullptr) {
-        PostMessageW(impl_->window, WM_CLOSE, 0, 0);
-    }
+void PlatformUi::stop() { if (impl_->window) PostMessageW(impl_->window, WM_CLOSE, 0, 0); }
+void PlatformUi::update(const MenuState& state) { std::lock_guard lock(impl_->mutex); impl_->state = state; }
+
+void PlatformUi::notify(const std::string& title, const std::string& message) {
+    if (!impl_->window) return;
+    std::lock_guard lock(impl_->mutex);
+    impl_->tray.uFlags = NIF_INFO;
+    wcsncpy_s(impl_->tray.szInfo, wide(message).c_str(), _TRUNCATE);
+    wcsncpy_s(impl_->tray.szInfoTitle, wide(title).c_str(), _TRUNCATE);
+    impl_->tray.dwInfoFlags = NIIF_INFO;
+    Shell_NotifyIconW(NIM_MODIFY, &impl_->tray);
+    impl_->tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
 }
 
-void PlatformUi::update(const MenuState& state) {
-    impl_->state = state;
+std::string PlatformUi::prompt(const std::string& title, const std::string& message,
+                               const std::string& initial) {
+    return prompt_box(title, message, initial);
 }
 
-void PlatformUi::notify(
-    const std::string& title,
-    const std::string& message) {
-    if (impl_->window == nullptr) {
-        return;
-    }
-
-    impl_->tray_icon.uFlags = NIF_INFO;
-    wcsncpy_s(
-        impl_->tray_icon.szInfo,
-        utf8_to_wide(message).c_str(),
-        _TRUNCATE);
-    wcsncpy_s(
-        impl_->tray_icon.szInfoTitle,
-        utf8_to_wide(title).c_str(),
-        _TRUNCATE);
-    impl_->tray_icon.dwInfoFlags = NIIF_INFO;
-
-    const BOOL delivered = Shell_NotifyIconW(NIM_MODIFY, &impl_->tray_icon);
-    impl_->tray_icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-
-    if (!delivered) {
-        // Shell_NotifyIcon is intentionally best-effort, but don't fail
-        // silently when the shell rejected the notification request.
-        OutputDebugStringW(L"NSO Album Sync: Shell_NotifyIcon notification failed.\n");
-    }
-}
-
-std::string PlatformUi::prompt(
-    const std::string& title,
-    const std::string& message,
-    const std::string& initial) {
-    return input_box(title, message, initial);
-}
-
-bool PlatformUi::confirm(
-    const std::string& title,
-    const std::string& message) {
-    return MessageBoxW(
-               nullptr,
-               utf8_to_wide(message).c_str(),
-               utf8_to_wide(title).c_str(),
-               MB_YESNO | MB_ICONQUESTION) == IDYES;
+bool PlatformUi::confirm(const std::string& title, const std::string& message) {
+    return MessageBoxW(impl_->window, wide(message).c_str(), wide(title).c_str(),
+        MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) == IDYES;
 }
 
 std::string PlatformUi::choose_folder(const std::string& initial) {
-    (void)initial;
-
-    BROWSEINFOW browse{};
-    browse.lpszTitle = L"Select Album Folder";
-    browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-
-    PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&browse);
-    if (item == nullptr) {
-        return {};
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    IFileOpenDialog* dialog = nullptr;
+    std::string selected;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&dialog))) && dialog) {
+        DWORD options = 0; dialog->GetOptions(&options);
+        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        dialog->SetTitle(L"Choose Nintendo Switch Album Folder");
+        if (!initial.empty()) {
+            IShellItem* folder = nullptr;
+            if (SUCCEEDED(SHCreateItemFromParsingName(wide(initial).c_str(), nullptr,
+                                                     IID_PPV_ARGS(&folder))) && folder) {
+                dialog->SetFolder(folder); folder->Release();
+            }
+        }
+        if (SUCCEEDED(dialog->Show(impl_->window))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+                    selected = utf8(path); CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
     }
-
-    wchar_t path[MAX_PATH];
-    std::string result;
-    if (SHGetPathFromIDListW(item, path)) {
-        result = wide_to_utf8(path);
-    }
-
-    CoTaskMemFree(item);
-    return result;
+    if (SUCCEEDED(init)) CoUninitialize();
+    return selected;
 }
 
 bool start_on_boot_enabled() {
     HKEY key = nullptr;
-    if (RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            kRunRegistryPath,
-            0,
-            KEY_READ,
-            &key) != ERROR_SUCCESS) {
-        return false;
-    }
-
-    wchar_t value[2048];
-    DWORD size = sizeof(value);
-    DWORD type = 0;
-
-    const bool exists = RegQueryValueExW(
-        key,
-        kRunRegistryValue,
-        nullptr,
-        &type,
-        reinterpret_cast<BYTE*>(value),
-        &size) == ERROR_SUCCESS;
-
-    RegCloseKey(key);
-    return exists;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_READ, &key) != ERROR_SUCCESS) return false;
+    const bool exists = RegQueryValueExW(key, kRunValue, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+    RegCloseKey(key); return exists;
 }
 
 void set_start_on_boot(bool enabled) {
     HKEY key = nullptr;
-    if (RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            kRunRegistryPath,
-            0,
-            nullptr,
-            0,
-            KEY_WRITE,
-            nullptr,
-            &key,
-            nullptr) != ERROR_SUCCESS) {
-        return;
-    }
-
-    if (!enabled) {
-        RegDeleteValueW(key, kRunRegistryValue);
-        RegCloseKey(key);
-        return;
-    }
-
-    wchar_t executable[MAX_PATH];
-    GetModuleFileNameW(nullptr, executable, MAX_PATH);
-
-    const std::wstring quoted = L"\"" + std::wstring(executable) + L"\"";
-    RegSetValueExW(
-        key,
-        kRunRegistryValue,
-        0,
-        REG_SZ,
-        reinterpret_cast<const BYTE*>(quoted.c_str()),
-        static_cast<DWORD>((quoted.size() + 1) * sizeof(wchar_t)));
-
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_WRITE,
+                        nullptr, &key, nullptr) != ERROR_SUCCESS) return;
+    if (!enabled) { RegDeleteValueW(key, kRunValue); RegCloseKey(key); return; }
+    wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const std::wstring value = L"\"" + std::wstring(exe) + L"\"";
+    RegSetValueExW(key, kRunValue, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                   static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
     RegCloseKey(key);
 }
-
 }  // namespace nso
-
-#endif  // _WIN32
+#endif
