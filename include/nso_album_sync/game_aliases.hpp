@@ -12,6 +12,8 @@ inline const std::vector<std::vector<std::string>>& game_alias_groups() {
             "The Legend of Zelda: Breath of the Wild",
             "Breath of the Wild",
             "Breath of the Wild - Nintendo Switch 2 Edition",
+            "The Legend of Zelda Breath of the Wild - Nintendo Switch 2 Edition",
+            "The Legend of Zelda: Breath of the Wild - Nintendo Switch 2 Edition",
             "ゼルダの伝説 ブレス オブ ザ ワイルド",
             "A Lenda de Zelda Breath of the Wild",
         },
@@ -20,6 +22,8 @@ inline const std::vector<std::vector<std::string>>& game_alias_groups() {
             "The Legend of Zelda: Tears of the Kingdom",
             "Tears of the Kingdom",
             "Tears of the Kingdom - Nintendo Switch 2 Edition",
+            "The Legend of Zelda Tears of the Kingdom - Nintendo Switch 2 Edition",
+            "The Legend of Zelda: Tears of the Kingdom - Nintendo Switch 2 Edition",
             "ゼルダの伝説 ティアーズ オブ ザ キングダム",
             "A Lenda de Zelda Tears of the Kingdom",
         },
@@ -55,6 +59,8 @@ inline const std::vector<std::vector<std::string>>& game_alias_groups() {
         {
             "Super Mario Bros. Wonder",
             "Super Mario Bros Wonder",
+            "Super Mario Bros. Wonder - Nintendo Switch 2 Edition",
+            "Super Mario Bros. Wonder - Nintendo Switch 2 Edition + Vamos ao Parque Belabel",
             "スーパーマリオブラザーズ ワンダー",
         },
         {
@@ -96,6 +102,8 @@ inline const std::vector<std::vector<std::string>>& game_alias_groups() {
         },
         {
             "Super Mario Party Jamboree",
+            "Super Mario Party Jamboree - Nintendo Switch 2 Edition",
+            "Super Mario Party Jamboree - Nintendo Switch 2 Edition + Jamboree TV",
             "スーパー マリオパーティ ジャンボリー",
         },
         {

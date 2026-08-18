@@ -574,7 +574,7 @@ bool PlatformUi::confirm(
 std::string PlatformUi::choose_folder(const std::string& initial) {
 #ifdef NSO_HAVE_GTK
     auto* dialog = gtk_file_chooser_dialog_new(
-        "Choose Nintendo Switch Album Folder",
+        "Choose Album Folder",
         nullptr,
         GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
         "Cancel",

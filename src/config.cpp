@@ -66,27 +66,59 @@ std::filesystem::path config_directory() {
 std::string default_album_folder() {
 #ifdef _WIN32
     wchar_t pictures[MAX_PATH]{};
-    if (SUCCEEDED(SHGetFolderPathW(
-            nullptr, CSIDL_MYPICTURES, nullptr, SHGFP_TYPE_CURRENT, pictures))) {
-        const std::wstring album =
-            (std::filesystem::path(pictures) / L"Nintendo Switch Album").native();
-        const int required = WideCharToMultiByte(
-            CP_UTF8, 0, album.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (required > 1) {
-            std::string utf8(static_cast<std::size_t>(required), '\0');
-            WideCharToMultiByte(
-                CP_UTF8, 0, album.c_str(), -1, utf8.data(), required, nullptr, nullptr);
-            utf8.resize(static_cast<std::size_t>(required - 1));
-            return utf8;
+    wchar_t videos[MAX_PATH]{};
+    const bool has_pictures = SUCCEEDED(SHGetFolderPathW(
+        nullptr, CSIDL_MYPICTURES, nullptr, SHGFP_TYPE_CURRENT, pictures));
+    const bool has_videos = SUCCEEDED(SHGetFolderPathW(
+        nullptr, CSIDL_MYVIDEO, nullptr, SHGFP_TYPE_CURRENT, videos));
+
+    std::vector<std::filesystem::path> candidates;
+    if (has_videos && videos[0] != L'\0') {
+        const std::filesystem::path v(videos);
+        candidates.push_back(v / L"Nintendo Switch 2" / L"Album");
+        candidates.push_back(v / L"Nintendo Switch" / L"Album");
+        candidates.push_back(v / L"Nintendo Switch 2");
+        candidates.push_back(v / L"Nintendo Switch");
+    }
+    if (has_pictures && pictures[0] != L'\0') {
+        const std::filesystem::path p(pictures);
+        candidates.push_back(p / L"Nintendo Switch 2" / L"Album");
+        candidates.push_back(p / L"Nintendo Switch" / L"Album");
+        candidates.push_back(p / L"Nintendo Switch 2");
+        candidates.push_back(p / L"Nintendo Switch");
+    }
+
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec)) {
+            return candidate.string();
         }
+    }
+
+    if (has_pictures && pictures[0] != L'\0') {
+        return (std::filesystem::path(pictures) / L"Nintendo Switch").string();
     }
     const auto profile = environment_variable("USERPROFILE");
     return (std::filesystem::path(profile.empty() ? "." : profile) /
-            "Pictures" / "Nintendo Switch Album").string();
+            "Pictures" / "Nintendo Switch").string();
+#elif __APPLE__
+    const auto home = environment_variable("HOME");
+    const std::filesystem::path base = home.empty() ? "." : home;
+    const auto candidate = base / "Pictures" / "Nintendo Switch" / "Album";
+    std::error_code ec;
+    if (std::filesystem::exists(candidate, ec)) {
+        return candidate.string();
+    }
+    return (base / "Pictures" / "Nintendo Switch").string();
 #else
     const auto home = environment_variable("HOME");
-    return (std::filesystem::path(home.empty() ? "." : home) /
-            "Pictures" / "Nintendo Switch Album").string();
+    const std::filesystem::path base = home.empty() ? "." : home;
+    const auto candidate = base / "Pictures" / "Nintendo Switch" / "Album";
+    std::error_code ec;
+    if (std::filesystem::exists(candidate, ec)) {
+        return candidate.string();
+    }
+    return (base / "Pictures" / "Nintendo Switch").string();
 #endif
 }
 

@@ -537,9 +537,9 @@ std::string PlatformUi::choose_folder(const std::string& initial) {
 
     void (^show_picker)(void) = ^{
         auto* panel = [NSOpenPanel openPanel];
-        panel.title = @"Choose Nintendo Switch Album Folder";
+        panel.title = @"Choose Album Folder";
         panel.prompt = @"Choose Folder";
-        panel.message = @"Select where NSO Album Sync should save Nintendo Switch captures.";
+        panel.message = @"Select where NSO Album Sync should save your album captures.";
         panel.canChooseDirectories = YES;
         panel.canChooseFiles = NO;
         panel.canCreateDirectories = YES;

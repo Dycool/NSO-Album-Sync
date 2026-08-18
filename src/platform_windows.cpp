@@ -700,7 +700,7 @@ std::string PlatformUi::choose_folder(const std::string& initial) {
             FOS_PICKFOLDERS |
             FOS_FORCEFILESYSTEM |
             FOS_PATHMUSTEXIST);
-        dialog->SetTitle(L"Choose Nintendo Switch Album Folder");
+        dialog->SetTitle(L"Choose Album Folder");
 
         if (!initial.empty()) {
             IShellItem* folder = nullptr;

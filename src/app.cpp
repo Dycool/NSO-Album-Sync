@@ -134,7 +134,7 @@ void App::sync_now(bool background) {
     try {
         {
             std::lock_guard state_lock(state_mutex_);
-            status_ = "Syncing Nintendo Switch album…";
+            status_ = "Syncing album…";
         }
         update_menu();
 

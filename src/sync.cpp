@@ -218,23 +218,72 @@ std::string normalize_for_matching_v1(const std::string& text) {
     return normalized;
 }
 
+bool is_unicode_dash_or_hyphen(std::uint32_t cp) {
+    switch (cp) {
+        case 0x2010:  // Hyphen
+        case 0x2011:  // Non-breaking hyphen
+        case 0x2012:  // Figure dash
+        case 0x2013:  // En dash
+        case 0x2014:  // Em dash
+        case 0x2015:  // Horizontal bar
+        case 0x2212:  // Minus sign
+        case 0xFE58:  // Small em dash
+        case 0xFE63:  // Small hyphen-minus
+        case 0xFF0D:  // Fullwidth hyphen-minus
+            return true;
+        default:
+            return false;
+    }
+}
+
 std::string sanitize_folder_v1(const std::string& text) {
     if (trim(text).empty()) return "Other";
     std::string clean;
     clean.reserve(text.size());
-    for (const unsigned char character : text) {
-        if (character < 0x20) continue;
-        switch (character) {
+
+    for (std::size_t offset = 0; offset < text.size();) {
+        const auto [code_point, width] = decode_utf8(text, offset);
+        offset += width;
+
+        if (code_point < 0x20) continue;
+
+        if (is_unicode_dash_or_hyphen(code_point)) {
+            clean.push_back('-');
+            continue;
+        }
+
+        switch (code_point) {
             case '<': case '>': case ':': case '"': case '/':
             case '\\': case '|': case '?': case '*':
+            case 0xFF1C: case 0xFF1E: case 0xFF1A: case 0xFF02: case 0xFF0F:
+            case 0xFF3C: case 0xFF5C: case 0xFF1F: case 0xFF0A:
                 continue;
             default:
-                clean.push_back(static_cast<char>(character));
+                append_utf8(clean, code_point);
                 break;
         }
     }
-    clean = trim(std::move(clean));
-    return clean.empty() ? "Other" : clean;
+
+    std::string result;
+    result.reserve(clean.size());
+    bool last_was_space = false;
+    for (char c : clean) {
+        if (c == ' ') {
+            if (!last_was_space && !result.empty()) {
+                result.push_back(' ');
+                last_was_space = true;
+            }
+        } else {
+            result.push_back(c);
+            last_was_space = false;
+        }
+    }
+
+    while (!result.empty() && (result.back() == ' ' || result.back() == '.')) {
+        result.pop_back();
+    }
+    result = trim(std::move(result));
+    return result.empty() ? "Other" : result;
 }
 
 bool equal_v1_name(const std::string& left, const std::string& right) {
@@ -435,7 +484,7 @@ SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
     throw_if_cancelled(cancelled);
 
     const std::filesystem::path root = config.destination_folder.empty()
-        ? std::filesystem::current_path() / "Nintendo Switch Album"
+        ? std::filesystem::path(default_album_folder())
         : std::filesystem::path(config.destination_folder);
     std::filesystem::create_directories(root);
 
