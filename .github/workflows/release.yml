@@ -19,8 +19,48 @@ env:
   DISCORD_SDK_REF: 21aa7516c44e2856d1fe0927f0c13c092182e2b7
 
 jobs:
+  tag:
+    name: Tag
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release: v')
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Clean
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$GITHUB_RUN_ID"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+            --jq '.workflow_runs[] | [.id, .status] | @tsv' |
+          while IFS=$'\t' read -r id status; do
+            [ "$id" = "$current" ] && continue
+            if [ "$status" != "completed" ]; then
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel" >/dev/null 2>&1 || true
+              sleep 1
+            fi
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$id" >/dev/null 2>&1 || true
+          done
+
+      - name: Create
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.head_commit.message }}"
+          tag="${tag#release: }"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$tag" \
+            -f sha="$GITHUB_SHA"
+          gh workflow run release.yml --ref "$tag"
+
   windows:
     name: Windows
+    if: github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -59,6 +99,7 @@ jobs:
 
   macos:
     name: macOS
+    if: github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
@@ -141,6 +182,7 @@ jobs:
 
   linux:
     name: Linux
+    if: github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')
     runs-on: ubuntu-24.04
     container: ubuntu:22.04
     steps:
