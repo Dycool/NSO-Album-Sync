@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <map>
 #include <mutex>
 #include <string>
@@ -31,12 +32,14 @@ public:
         const std::vector<std::string>& headers = {},
         const std::vector<unsigned char>& body = {},
         const std::string& content_type = "",
-        long timeout_seconds = 30) const;
+        long timeout_seconds = 30,
+        std::size_t max_response_bytes = 0) const;
 
     HttpResponse get(
         const std::string& url,
         const std::vector<std::string>& headers = {},
-        long timeout_seconds = 30) const;
+        long timeout_seconds = 30,
+        std::size_t max_response_bytes = 0) const;
 
     HttpResponse post(
         const std::string& url,
