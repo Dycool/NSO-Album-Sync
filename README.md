@@ -36,12 +36,14 @@ Discord Rich Presence is optional and disabled by default.
 
 ## 🔨 Building
 
-Requires **CMake 3.20+**, **Python 3** and a **C++20** compiler. Discord gates Social SDK downloads behind the Developer Portal, so provide the official SDK archive locally or set `DISCORD_SOCIAL_SDK_URL` to its direct official HTTPS download URL. No Discord secret, token or OAuth setup is used by the app.
+Requires **CMake 3.20+** and a **C++20** compiler. Download the official standalone C++ Discord Social SDK from the Discord Developer Portal and extract it to `third_party/discord_social_sdk`, or pass its location with `-DNSO_DISCORD_SOCIAL_SDK_ROOT=<path>`.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
+
+The app uses only the desktop Rich Presence path; it does not use a Discord client secret, bot token or Discord OAuth login. Official CI obtains the SDK from a private build-dependency cache rather than committing Discord SDK files to this public repository.
 
 Windows builds are unsigned. macOS builds use local/ad-hoc codesigning and do not require an Apple Developer membership.
 
