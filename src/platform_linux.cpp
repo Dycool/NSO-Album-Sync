@@ -206,15 +206,11 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         state = impl->state;
     }
 
-    append_status_item(impl->menu, "Nintendo Switch Online · Album Sync", true);
     append_status_item(
         impl->menu,
         state.signed_in
             ? "Connected as " + state.nickname
             : "Not signed in");
-    append_status_item(
-        impl->menu,
-        "Status: " + (state.status.empty() ? std::string("Ready") : state.status));
     append_status_item(impl->menu, "Last sync: " + state.last_sync);
     append_separator(impl->menu);
 
@@ -311,11 +307,7 @@ GtkWidget* create_dialog(
         entry = gtk_entry_new();
         gtk_entry_set_text(GTK_ENTRY(entry), initial.c_str());
         gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
-        gtk_entry_set_placeholder_text(
-            GTK_ENTRY(entry),
-            title.find("Nintendo") != std::string::npos
-                ? "npf71b963c1b7b6d119://auth#session_token_code=…"
-                : "Optional value");
+        gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Optional value");
         gtk_box_pack_start(GTK_BOX(content), entry, FALSE, FALSE, 0);
     }
 
