@@ -9,6 +9,9 @@
 
 namespace nso {
 
+inline constexpr std::size_t kDefaultGetResponseLimit =
+    256ULL * 1024ULL * 1024ULL;
+
 struct HttpResponse {
     long status = 0;
     std::vector<unsigned char> body;
@@ -39,7 +42,7 @@ public:
         const std::string& url,
         const std::vector<std::string>& headers = {},
         long timeout_seconds = 30,
-        std::size_t max_response_bytes = 0) const;
+        std::size_t max_response_bytes = kDefaultGetResponseLimit) const;
 
     HttpResponse post(
         const std::string& url,
