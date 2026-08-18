@@ -273,7 +273,24 @@ endif()
 include(CheckIPOSupported)
 check_ipo_supported(RESULT NSO_IPO_SUPPORTED OUTPUT NSO_IPO_ERROR LANGUAGES CXX)
 if(NSO_IPO_SUPPORTED)
-    set_property(TARGET nso-album-sync PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND UNIX AND NOT APPLE)
+        # CMake's generic GCC IPO flags use plain -flto. Under Ninja that makes
+        # GCC's LTO wrapper fall back to serial LTRANS jobs and emit a warning.
+        # -flto=auto keeps the same LTO optimization while allowing GCC to use
+        # the jobserver when available or auto-detect the host CPU count.
+        target_compile_options(
+            nso-album-sync
+            PRIVATE
+                $<$<CONFIG:Release>:-flto=auto>
+                $<$<CONFIG:Release>:-fno-fat-lto-objects>
+        )
+        target_link_options(
+            nso-album-sync
+            PRIVATE $<$<CONFIG:Release>:-flto=auto>
+        )
+    else()
+        set_property(TARGET nso-album-sync PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    endif()
 else()
     message(STATUS "IPO/LTO disabled: ${NSO_IPO_ERROR}")
 endif()
