@@ -34,7 +34,7 @@ public:
     explicit NintendoAuthManager(HttpClient& http) : http_(http) {}
 
     std::string authorize_url();
-    AuthResult complete_login(const std::string& redirect_url_or_code);
+    AuthResult complete_login(const std::string& callback_url);
     TokenResponse exchange_session_token(const std::string& session_token);
     UserProfile fetch_profile(const std::string& access_token);
     void clear_cached_tokens();
