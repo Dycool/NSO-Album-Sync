@@ -209,6 +209,7 @@ MediaItem parse_media_item(const Json& item) {
     media.expires_at = item.integer("expiresAt");
     media.content_uri = item.string("contentUri");
     media.thumbnail_uri = item.string("thumbnailUri");
+    media.content_length = item.integer("contentLength");
     return media;
 }
 
