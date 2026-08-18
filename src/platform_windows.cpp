@@ -195,7 +195,7 @@ void tray_menu(PlatformUi::Impl* ui) {
     add(0, s.signed_in ? L"Connected as " + wide(s.nickname) : L"Not signed in", MF_GRAYED);
     add(0, L"Last sync: " + wide(s.last_sync), MF_GRAYED);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    add(CmdSync, L"Sync Album Now", s.signed_in ? MF_STRING : MF_GRAYED);
+    add(CmdSync, L"Sync Now", s.signed_in ? MF_STRING : MF_GRAYED);
     add(CmdAuto, auto_label(s.sync_interval_minutes), MF_STRING | (s.auto_sync ? MF_CHECKED : 0));
     add(CmdNotifications, L"Notifications", MF_STRING | (s.notifications ? MF_CHECKED : 0));
     add(CmdDiscord, L"Discord Rich Presence", MF_STRING | (s.discord ? MF_CHECKED : 0));
@@ -203,11 +203,11 @@ void tray_menu(PlatformUi::Impl* ui) {
     add(CmdFolder, L"Choose Album Folder…");
     add(CmdOpen, L"Open Album Folder");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    add(CmdStartup, L"Start with Windows", MF_STRING | (s.start_on_boot ? MF_CHECKED : 0));
+    add(CmdStartup, L"Start on Boot", MF_STRING | (s.start_on_boot ? MF_CHECKED : 0));
     add(CmdProxy, L"HTTP Proxy…");
     add(CmdAccount, s.signed_in ? L"Sign Out" : L"Sign In to Nintendo Account…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    add(CmdExit, L"Exit NSO Album Sync");
+    add(CmdExit, L"Exit");
     POINT p{}; GetCursorPos(&p); SetForegroundWindow(ui->window);
     const UINT selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
         p.x, p.y, 0, ui->window, nullptr);
