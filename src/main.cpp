@@ -12,14 +12,18 @@
 #else
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
+#include <chrono>
 #include <cctype>
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -31,10 +35,36 @@ public:
             L"Local\\NSOAlbumSync_SingleInstance_Mutex_f8bb0128");
         acquired_ = handle_ != nullptr && GetLastError() != ERROR_ALREADY_EXISTS;
 #else
-        const auto path = std::filesystem::temp_directory_path() /
-            ("nso-album-sync-" + std::to_string(getuid()) + ".lock");
-        fd_ = open(path.c_str(), O_CREAT | O_RDWR, 0600);
-        acquired_ = fd_ >= 0 && flock(fd_, LOCK_EX | LOCK_NB) == 0;
+        const auto directory = nso::application_runtime_directory();
+        if (directory.empty()) {
+            throw std::runtime_error(
+                "Could not create a private application runtime directory");
+        }
+
+        const auto path = directory / "instance.lock";
+        fd_ = open(
+            path.c_str(),
+            O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+            0600);
+        if (fd_ < 0) {
+            throw std::runtime_error("Could not open the application instance lock");
+        }
+
+        struct stat information{};
+        if (fstat(fd_, &information) != 0 ||
+            !S_ISREG(information.st_mode) ||
+            information.st_uid != getuid()) {
+            close(fd_);
+            fd_ = -1;
+            throw std::runtime_error("Application instance lock is not a private user file");
+        }
+        if ((information.st_mode & 0077) != 0 && fchmod(fd_, 0600) != 0) {
+            close(fd_);
+            fd_ = -1;
+            throw std::runtime_error("Could not secure the application instance lock");
+        }
+
+        acquired_ = flock(fd_, LOCK_EX | LOCK_NB) == 0;
 #endif
     }
 
@@ -72,9 +102,7 @@ int run_application(const std::string& auth_callback) {
                     if (nso::publish_nintendo_auth_callback(auth_callback)) {
                         return 0;
                     }
-#ifdef _WIN32
-                    Sleep(20);
-#endif
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 }
             }
 #ifdef _WIN32
