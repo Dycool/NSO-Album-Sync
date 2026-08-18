@@ -397,6 +397,76 @@ std::vector<unsigned char> NxapiClient::encrypted_login_body(
     return base64_decode(encrypted);
 }
 
+FAttestation NxapiClient::generate_f(
+    int hash_method,
+    const std::string& token,
+    const std::string& na_id,
+    const std::string& coral_user_id) {
+    const auto version = nso_version();
+    const Json payload(Json::object{
+        {"hash_method", std::to_string(hash_method)},
+        {"token", token},
+        {"na_id", na_id},
+        {"coral_user_id", coral_user_id},
+    });
+
+    const auto response = znca_request(
+        "POST", "/f", payload.dump(), "application/json", znca_headers(version));
+    if (response.status / 100 != 2) {
+        throw std::runtime_error("nxapi /f failed: " + response.text());
+    }
+    const auto json = Json::parse(response.text());
+    FAttestation attestation;
+    attestation.f = json.string("f");
+    attestation.request_id = json.string("request_id");
+    attestation.timestamp = json.integer("timestamp");
+    if (attestation.f.empty() || attestation.request_id.empty() || attestation.timestamp == 0) {
+        throw std::runtime_error("nxapi /f returned incomplete attestation: " + response.text());
+    }
+    return attestation;
+}
+
+std::vector<unsigned char> NxapiClient::encrypted_web_service_token_body(
+    const std::string& coral_access_token,
+    const std::string& na_id,
+    const std::string& coral_user_id,
+    std::uint64_t game_service_id) {
+    const auto version = nso_version();
+
+    const Json payload(Json::object{
+        {"token", coral_access_token},
+        {"hash_method", "2"},
+        {"na_id", na_id},
+        {"coral_user_id", coral_user_id},
+        {"encrypt_token_request",
+         Json::object{
+             {"url", "https://api-lp1.znc.srv.nintendo.net/v4/Game/GetWebServiceToken"},
+             {"parameter",
+              Json::object{
+                  {"id", static_cast<double>(game_service_id)},
+                  {"registrationToken", ""},
+                  {"f", ""},
+                  {"requestId", ""},
+                  {"timestamp", 0},
+              }},
+         }},
+    });
+
+    const auto response = znca_request(
+        "POST", "/f", payload.dump(), "application/json", znca_headers(version));
+    if (response.status / 100 != 2) {
+        throw std::runtime_error(
+            "nxapi /f (hash_method 2) failed: " + response.text());
+    }
+    const auto encrypted =
+        Json::parse(response.text()).string("encrypted_token_request");
+    if (encrypted.empty()) {
+        throw std::runtime_error(
+            "nxapi /f (hash_method 2) missing encrypted_token_request");
+    }
+    return base64_decode(encrypted);
+}
+
 std::vector<unsigned char> NxapiClient::encrypt_request(
     const std::string& url,
     const std::string& coral_token,

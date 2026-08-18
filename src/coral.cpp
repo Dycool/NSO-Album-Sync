@@ -232,6 +232,45 @@ NintendoPresence parse_presence(const Json& result) {
         presence.shop_uri = game->string("shopUri");
         presence.sys_description = game->string("sysDescription");
         presence.total_play_time = game->integer("totalPlayTime");
+
+        // 1. Direct titleId / applicationId fields
+        presence.title_id = game->string("titleId", game->string("applicationId"));
+
+        // 2. Numeric or string ID field in Coral
+        if (presence.title_id.empty()) {
+            if (const auto* id_val = game->find("id")) {
+                if (id_val->is_string()) {
+                    presence.title_id = id_val->as_string();
+                } else if (id_val->is_number()) {
+                    const auto numeric_id = static_cast<std::uint64_t>(id_val->as_i64());
+                    if (numeric_id > 0) {
+                        char hex_buf[32];
+                        std::snprintf(hex_buf, sizeof(hex_buf), "%016llx", static_cast<unsigned long long>(numeric_id));
+                        presence.title_id = hex_buf;
+                    }
+                }
+            }
+        }
+
+        // 3. Extract 16-hex Title ID from shopUri (e.g. /apps/0100f2c0115b6000/US)
+        if (presence.title_id.empty() && !presence.shop_uri.empty()) {
+            const auto pos = presence.shop_uri.find("/apps/");
+            if (pos != std::string::npos && pos + 6 + 16 <= presence.shop_uri.size()) {
+                const auto candidate = presence.shop_uri.substr(pos + 6, 16);
+                bool valid_hex = true;
+                for (char c : candidate) {
+                    if (!std::isxdigit(static_cast<unsigned char>(c))) {
+                        valid_hex = false;
+                        break;
+                    }
+                }
+                if (valid_hex) {
+                    presence.title_id = candidate;
+                }
+            }
+        }
+
+        presence.title_id = lower(presence.title_id);
     }
     return presence;
 }
@@ -407,6 +446,7 @@ void CoralClient::clear_cached_session() {
         coral_access_token_.clear();
         cached_session_token_.clear();
         user_id_.clear();
+        na_id_.clear();
         coral_token_expiry_ = {};
         web_service_tokens_.clear();
     }
@@ -516,6 +556,7 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
         }
         coral_access_token_ = access_token;
         user_id_ = std::move(user_id);
+        na_id_ = profile.id;
         cached_session_token_ = session_token;
         coral_token_expiry_ = Clock::now() + std::chrono::seconds(
             std::max<std::int64_t>(1, expires_in));
@@ -606,22 +647,104 @@ std::string CoralClient::get_web_service_token(
     {
         std::lock_guard lock(session_mutex_);
         if (cached_session_token_ == session_token) {
-            const auto it = web_service_tokens_.find(game_service_id);
-            if (it != web_service_tokens_.end() &&
-                !it->second.token.empty() &&
-                now < it->second.expires_at) {
-                return it->second.token;
+            if (game_service_id != 0) {
+                const auto it = web_service_tokens_.find(game_service_id);
+                if (it != web_service_tokens_.end() &&
+                    !it->second.token.empty() &&
+                    now < it->second.expires_at) {
+                    return it->second.token;
+                }
+            } else {
+                // If game_service_id == 0, reuse any currently active valid token
+                for (const auto& [id, cached] : web_service_tokens_) {
+                    if (!cached.token.empty() && now < cached.expires_at) {
+                        return cached.token;
+                    }
+                }
             }
         }
     }
 
     try {
         const auto access_token = ensure_session(session_token);
-        const std::string body =
-            R"({"parameter":{"id":)" + std::to_string(game_service_id) + R"(}})";
-        const auto response = coral_call(
-            coral_url("/v2/Game/GetWebServiceToken"), access_token, body);
-        const auto* result = response.find("result");
+        std::string coral_user_id;
+        std::string na_id;
+        {
+            std::lock_guard lock(session_mutex_);
+            coral_user_id = user_id_;
+            na_id = na_id_;
+        }
+        if (na_id.empty()) {
+            const auto nintendo_tokens = auth_.exchange_session_token(session_token);
+            const auto profile = auth_.fetch_profile(nintendo_tokens.access_token);
+            na_id = profile.id;
+            std::lock_guard lock(session_mutex_);
+            na_id_ = na_id;
+        }
+
+        const std::uint64_t target_service_id = (game_service_id != 0)
+            ? game_service_id
+            : 4834290508791808ULL; // Universal fallback service ID
+
+        std::lock_guard request_lock(request_mutex_);
+        const auto nso_version = nxapi_.nso_version();
+
+        std::vector<unsigned char> encrypted_request;
+        try {
+            encrypted_request = nxapi_.encrypted_web_service_token_body(
+                access_token, na_id, coral_user_id, target_service_id);
+        } catch (...) {
+            const auto attestation = nxapi_.generate_f(2, access_token, na_id, coral_user_id);
+            const Json parameter(Json::object{
+                {"id", static_cast<double>(target_service_id)},
+                {"registrationToken", ""},
+                {"f", attestation.f},
+                {"requestId", attestation.request_id},
+                {"timestamp", static_cast<double>(attestation.timestamp)},
+            });
+            const Json request_body(Json::object{
+                {"parameter", parameter},
+            });
+            encrypted_request = nxapi_.encrypt_request(
+                coral_url("/v4/Game/GetWebServiceToken"),
+                access_token,
+                request_body.dump());
+        }
+
+        const auto response = http_.post_bytes(
+            coral_url("/v4/Game/GetWebServiceToken"),
+            encrypted_request,
+            {
+                "Content-Type: application/octet-stream",
+                "Accept: application/octet-stream,application/json",
+                "Accept-Language: en-US",
+                "Authorization: Bearer " + access_token,
+                "X-Platform: Android",
+                "X-ProductVersion: " + nso_version,
+                "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
+            });
+        apply_coral_rate_limit_response(response);
+
+        if (response.status / 100 != 2) {
+            if (response.status == 401 || response.status == 403) {
+                clear_cached_session();
+            }
+            std::string detail;
+            if (!response.body.empty()) {
+                try {
+                    detail = nxapi_.decrypt_response(response.body);
+                } catch (...) {
+                }
+            }
+            throw std::runtime_error(
+                "Coral GetWebServiceToken failed (HTTP " +
+                std::to_string(response.status) + ")" +
+                (detail.empty() ? std::string{} : ": " + detail));
+        }
+
+        const auto decrypted = nxapi_.decrypt_response(response.body);
+        const auto json = Json::parse(decrypted);
+        const auto* result = json.find("result");
         if (result == nullptr) return {};
 
         const auto token = result->string("accessToken");
@@ -634,7 +757,7 @@ std::string CoralClient::get_web_service_token(
         {
             std::lock_guard lock(session_mutex_);
             if (cached_session_token_ == session_token) {
-                web_service_tokens_[game_service_id] = {token, now + ttl};
+                web_service_tokens_[target_service_id] = CachedWebServiceToken{token, now + ttl};
             }
         }
 

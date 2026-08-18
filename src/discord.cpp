@@ -3,10 +3,12 @@
 #define DISCORDPP_IMPLEMENTATION
 #include "discordpp.h"
 
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -14,6 +16,13 @@
 
 #ifdef _WIN32
 #include "nso_album_sync/windows_compat.hpp"
+#endif
+
+#ifndef NSO_DISCORD_SOCIAL_SDK_VERSION
+#define NSO_DISCORD_SOCIAL_SDK_VERSION "1.10.18687"
+#endif
+#ifndef NSO_DISCORD_SDK_RESOURCE_ID
+#define NSO_DISCORD_SDK_RESOURCE_ID 101
 #endif
 
 namespace nso {
@@ -82,6 +91,15 @@ bool ensure_embedded_discord_sdk_loaded() {
     return loaded;
 }
 #endif
+
+bool is_valid_discord_image_url(const std::string& url) {
+    if (url.empty() || url.size() > 512) return false;
+    if (url.rfind("https://", 0) != 0) return false;
+    for (char c : url) {
+        if (std::isspace(static_cast<unsigned char>(c))) return false;
+    }
+    return true;
+}
 
 }  // namespace
 
@@ -166,17 +184,12 @@ DiscordPresence::~DiscordPresence() {
 }
 
 bool DiscordPresence::available() const {
-    // The SDK is compiled into/bundled with the application. Construct the
-    // Discord client lazily only after the user enables Rich Presence.
     return impl_ != nullptr;
 }
 
 bool DiscordPresence::self_test_runtime() {
     if (!impl_) return false;
     std::lock_guard sdk_lock(impl_->sdk_mutex);
-    // Constructing the Social SDK client and assigning the public application
-    // ID exercises dynamic runtime loading without requiring Discord OAuth,
-    // Nintendo sign-in, or a running Discord desktop client.
     return impl_->ensure_client_locked();
 }
 
@@ -203,9 +216,7 @@ void DiscordPresence::update(const NintendoPresence& presence) {
     discordpp::Activity activity;
     activity.SetType(discordpp::ActivityTypes::Playing);
 
-    // Social SDK 1.6+ allows the activity name itself to be customized. Use
-    // that name as the status display field so Discord renders the game as the
-    // primary activity identity instead of repeating our publisher app name.
+    // Activity name is set to the currently played game title
     activity.SetName(presence.game_name);
     activity.SetStatusDisplayType(discordpp::StatusDisplayTypes::Name);
 
@@ -233,30 +244,39 @@ void DiscordPresence::update(const NintendoPresence& presence) {
         activity.SetTimestamps(timestamps);
     }
 
-    if (!presence.custom_image_uri.empty()) {
+    if (is_valid_discord_image_url(presence.custom_image_uri)) {
         discordpp::ActivityAssets assets;
         assets.SetLargeImage(presence.custom_image_uri);
         assets.SetLargeText(presence.game_name);
-        if (!presence.image_uri.empty()) {
+        if (is_valid_discord_image_url(presence.image_uri)) {
             assets.SetSmallImage(presence.image_uri);
             assets.SetSmallText(presence.console_name().empty()
                                     ? presence.game_name
                                     : presence.console_name());
         }
-        if (!presence.shop_uri.empty()) assets.SetLargeUrl(presence.shop_uri);
+        if (is_valid_discord_image_url(presence.shop_uri)) {
+            assets.SetLargeUrl(presence.shop_uri);
+        }
         activity.SetAssets(assets);
-    } else if (!presence.image_uri.empty()) {
+    } else if (is_valid_discord_image_url(presence.image_uri)) {
         discordpp::ActivityAssets assets;
         assets.SetLargeImage(presence.image_uri);
         assets.SetLargeText(presence.game_name);
-        if (!presence.shop_uri.empty()) assets.SetLargeUrl(presence.shop_uri);
+        if (is_valid_discord_image_url(presence.shop_uri)) {
+            assets.SetLargeUrl(presence.shop_uri);
+        }
         activity.SetAssets(assets);
     }
 
     impl_->set_callback_pump(true);
     impl_->client->UpdateRichPresence(
         std::move(activity),
-        [](discordpp::ClientResult) {});
+        [](const discordpp::ClientResult& result) {
+            if (!result.Successful()) {
+                std::cerr << "[DiscordPresence] UpdateRichPresence failed: "
+                          << result.Error() << "\n";
+            }
+        });
 }
 
 }  // namespace nso

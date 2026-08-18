@@ -13,6 +13,12 @@
 
 namespace nso {
 
+struct FAttestation {
+    std::string f;
+    std::string request_id;
+    std::int64_t timestamp = 0;
+};
+
 class NxapiClient {
 public:
     NxapiClient(
@@ -22,9 +28,21 @@ public:
 
     std::string nso_version();
 
+    FAttestation generate_f(
+        int hash_method,
+        const std::string& token,
+        const std::string& na_id,
+        const std::string& coral_user_id);
+
     std::vector<unsigned char> encrypted_login_body(
         const std::string& id_token,
         const UserProfile& profile);
+
+    std::vector<unsigned char> encrypted_web_service_token_body(
+        const std::string& coral_access_token,
+        const std::string& na_id,
+        const std::string& coral_user_id,
+        std::uint64_t game_service_id);
 
     std::vector<unsigned char> encrypt_request(
         const std::string& url,

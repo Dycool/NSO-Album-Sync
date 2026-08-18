@@ -34,6 +34,7 @@ struct NintendoPresence {
     std::string state = "OFFLINE";
     std::string platform;
     std::string game_name;
+    std::string title_id;
     std::string image_uri;
     std::string shop_uri;
     std::string sys_description;
@@ -44,7 +45,7 @@ struct NintendoPresence {
     std::string custom_details;
     std::string custom_image_uri;
 
-    bool is_playing() const { return !game_name.empty(); }
+    bool is_playing() const { return state == "ONLINE" || state == "PLAYING"; }
     std::string console_name() const;
     std::string discord_state() const;
 };
@@ -65,7 +66,7 @@ public:
     NintendoPresence self_presence(const std::string& session_token);
     std::string get_web_service_token(
         const std::string& session_token,
-        std::uint64_t game_service_id);
+        std::uint64_t game_service_id = 0);
     void clear_cached_session();
 
 private:
@@ -84,6 +85,7 @@ private:
     std::string coral_access_token_;
     std::string cached_session_token_;
     std::string user_id_;
+    std::string na_id_;
     Clock::time_point coral_token_expiry_{};
     std::deque<Clock::time_point> auth_attempts_;
     std::string rate_limit_session_hash_;
