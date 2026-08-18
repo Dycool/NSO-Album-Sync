@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
+#include <random>
 #include <thread>
 
 namespace nso {
@@ -16,6 +17,7 @@ namespace {
 constexpr auto kPresencePollInterval = std::chrono::seconds(60);
 constexpr auto kAuthCallbackPollInterval = std::chrono::milliseconds(150);
 constexpr auto kExitWatchdogDelay = std::chrono::seconds(5);
+constexpr std::int64_t kPollingJitterDivisor = 50;  // +/- 2%
 
 constexpr char kNxapiDisclosureTitle[] = "Third-Party Service Disclosure";
 constexpr char kNxapiDisclosure[] =
@@ -30,6 +32,24 @@ constexpr char kNxapiDisclosure[] =
     "Service source, terms, and end-user information:\n"
     "https://github.com/samuelthomas2774/nxapi-znca-api\n\n"
     "Continue with Nintendo Account sign-in?";
+
+std::chrono::milliseconds jittered_interval(std::chrono::milliseconds nominal) {
+    const auto nominal_ms = std::max<std::int64_t>(1, nominal.count());
+    const auto jitter_ms = std::max<std::int64_t>(1, nominal_ms / kPollingJitterDivisor);
+
+    static thread_local std::mt19937_64 generator([] {
+        std::random_device random;
+        std::seed_seq seed{
+            random(), random(), random(), random(),
+            random(), random(), random(), random(),
+        };
+        return std::mt19937_64(seed);
+    }());
+
+    std::uniform_int_distribution<std::int64_t> distribution(-jitter_ms, jitter_ms);
+    return std::chrono::milliseconds(
+        std::max<std::int64_t>(1, nominal_ms + distribution(generator)));
+}
 
 std::string current_time_text() {
     const auto now = std::time(nullptr);
@@ -349,7 +369,7 @@ void App::presence_loop() {
         }
 
         // Reaching this point means one of three things made a presence poll
-        // eligible: Rich Presence became active, the 60-second timer elapsed,
+        // eligible: Rich Presence became active, the recurring timer elapsed,
         // or an explicit refresh was queued by Sync Now. Consume any queued
         // refresh before polling; a new request arriving during the network
         // call remains set and causes another immediate pass afterwards.
@@ -377,8 +397,14 @@ void App::presence_loop() {
             }
         }
 
+        // Re-randomize every cycle so timer-driven Nintendo requests do not
+        // land on an exact 60-second cadence. Explicit user-triggered refreshes
+        // still bypass this wait and run immediately.
+        const auto poll_interval = jittered_interval(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                kPresencePollInterval));
         std::unique_lock wait_lock(presence_sleep_mutex_);
-        presence_cv_.wait_for(wait_lock, kPresencePollInterval, [this] {
+        presence_cv_.wait_for(wait_lock, poll_interval, [this] {
             if (stopping_) return true;
             if (presence_refresh_requested_.load(std::memory_order_acquire)) {
                 return true;
@@ -406,8 +432,11 @@ void App::auto_sync_loop() {
             continue;
         }
 
-        const auto interval = std::chrono::minutes(
+        const auto nominal_interval = std::chrono::minutes(
             std::max(1, config.sync_interval_minutes));
+        const auto interval = jittered_interval(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                nominal_interval));
         std::unique_lock sleep_lock(sleep_mutex_);
         const auto wake_reason = sleep_cv_.wait_for(sleep_lock, interval);
         sleep_lock.unlock();
