@@ -189,7 +189,7 @@ jobs:
             cd "openssl-${OPENSSL_VERSION}"
             export MACOSX_DEPLOYMENT_TARGET=11.0
             ./Configure "$openssl_target" \
-              no-shared no-tests \
+              -Os no-shared no-tests no-apps \
               --prefix="$prefix" \
               --openssldir="$prefix/ssl"
             make -j"$(sysctl -n hw.ncpu)"
@@ -208,6 +208,8 @@ jobs:
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DCMAKE_OSX_ARCHITECTURES="${{ matrix.cmake_arch }}" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_CXX_FLAGS_RELEASE="-Oz -DNDEBUG" \
+            -DCMAKE_OBJCXX_FLAGS_RELEASE="-Oz -DNDEBUG" \
             -DOPENSSL_ROOT_DIR="$PWD/openssl-install" \
             -DOPENSSL_USE_STATIC_LIBS=TRUE \
             -DNSO_STATIC_RUNTIME=ON
@@ -225,7 +227,18 @@ jobs:
           test -x "$binary"
           test -f "$framework"
           test -s "$notices"
+
+          binary_before="$(stat -f%z "$binary")"
+          framework_before="$(stat -f%z "$framework")"
+          strip -S -x "$binary"
+          strip -S -x "$framework"
+          codesign --force --deep --sign - --timestamp=none "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
+          binary_after="$(stat -f%z "$binary")"
+          framework_after="$(stat -f%z "$framework")"
+          echo "macOS slice app binary: $binary_before -> $binary_after bytes"
+          echo "macOS Discord framework: $framework_before -> $framework_after bytes"
+          du -sh "$app"
 
           app_archs="$(lipo -archs "$binary")"
           echo "Slice executable architectures: $app_archs"
@@ -244,7 +257,8 @@ jobs:
           "$binary" --self-test
 
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "$app" dist/slice.zip
+          ditto -c -k --sequesterRsrc --keepParent --zlibCompressionLevel 9 \
+            "$app" dist/slice.zip
 
       - name: Upload internal macOS slice
         uses: actions/upload-artifact@v7
@@ -309,6 +323,11 @@ jobs:
           vtool -show-build "$binary"
           vtool -show-build "$binary" | grep -Eq 'minos[[:space:]]+11\.0([[:space:]]|$)'
 
+          # lipo creates a fresh Universal 2 executable. Strip release-only
+          # symbol data once more after merging, then re-sign the final app.
+          strip -S -x "$binary"
+          strip -S -x "$framework"
+
           # Free/local ad-hoc signing: no Apple Developer membership,
           # certificate, notarization, or paid signing service is required.
           codesign --force --deep --sign - --timestamp=none "$app"
@@ -316,10 +335,17 @@ jobs:
           codesign -dv --verbose=2 "$app" 2>&1
           "$binary" --self-test
 
-          ditto -c -k --sequesterRsrc --keepParent "$app" \
-            dist/nso-album-sync-macOS.zip
+          ditto -c -k --sequesterRsrc --keepParent --zlibCompressionLevel 9 \
+            "$app" dist/nso-album-sync-macOS.zip
 
           test "$(find dist -maxdepth 1 -type f -name '*.zip' | wc -l | tr -d ' ')" = "1"
+          app_kib="$(du -sk "$app" | awk '{print $1}')"
+          zip_bytes="$(stat -f%z dist/nso-album-sync-macOS.zip)"
+          echo "Universal app size: $((app_kib / 1024)) MiB"
+          echo "macOS release ZIP size: $((zip_bytes / 1024 / 1024)) MiB"
+          if (( zip_bytes > 40 * 1024 * 1024 )); then
+            echo "::warning::macOS release ZIP is still above the 40 MiB size target."
+          fi
 
       - name: Upload macOS Universal build
         uses: actions/upload-artifact@v7
@@ -372,6 +398,8 @@ jobs:
           set -euo pipefail
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_CXX_FLAGS_RELEASE="-Os -DNDEBUG" \
+            -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-Wl,--as-needed" \
             -DNSO_STATIC_RUNTIME=ON \
             -DNSO_ENABLE_LINUX_TRAY=ON
 
@@ -382,6 +410,15 @@ jobs:
           cmake --build build --parallel
           test -x build/nso-album-sync
           test -s build/libdiscord_partner_sdk.so
+
+          app_before="$(stat -c%s build/nso-album-sync)"
+          discord_before="$(stat -c%s build/libdiscord_partner_sdk.so)"
+          strip --strip-unneeded build/nso-album-sync
+          strip --strip-unneeded build/libdiscord_partner_sdk.so
+          app_after="$(stat -c%s build/nso-album-sync)"
+          discord_after="$(stat -c%s build/libdiscord_partner_sdk.so)"
+          echo "Linux app binary: $(numfmt --to=iec-i --suffix=B "$app_before") -> $(numfmt --to=iec-i --suffix=B "$app_after")"
+          echo "Linux Discord runtime: $(numfmt --to=iec-i --suffix=B "$discord_before") -> $(numfmt --to=iec-i --suffix=B "$discord_after")"
 
           echo "Native executable dependencies:"
           LD_LIBRARY_PATH="$PWD/build" ldd build/nso-album-sync
@@ -437,6 +474,7 @@ jobs:
 
           export PATH="$PWD/tools:$PATH"
           export APPIMAGE_EXTRACT_AND_RUN=1
+          export LDAI_COMP=zstd
           export OUTPUT="$PWD/dist/nso-album-sync.AppImage"
           "$deploy" --appimage-extract-and-run \
             --appdir AppDir \
@@ -449,6 +487,9 @@ jobs:
           file dist/nso-album-sync.AppImage
           size="$(stat -c%s dist/nso-album-sync.AppImage)"
           echo "AppImage size: $(numfmt --to=iec-i --suffix=B "$size")"
+          if (( size > 35 * 1024 * 1024 )); then
+            echo "::warning::Linux AppImage is still above the 35 MiB size target."
+          fi
           dist/nso-album-sync.AppImage --self-test
 
           rm -rf appimage-inspect
@@ -464,6 +505,8 @@ jobs:
           LD_LIBRARY_PATH="$root/usr/lib" ldd "$root/usr/bin/nso-album-sync"
           LD_LIBRARY_PATH="$root/usr/lib" ldd "$root/usr/bin/nso-album-sync" \
             | grep -q "libdiscord_partner_sdk.so"
+          echo "Largest files in AppImage:"
+          du -ah "$root" | sort -h | tail -n 20
 
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v7
