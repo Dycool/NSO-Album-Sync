@@ -10,7 +10,8 @@
 
 namespace nso {
 
-inline constexpr std::uint64_t kSplatoon3GameServiceId = 4834290530795520ULL;
+inline constexpr std::uint64_t kSplatoon3GameServiceId = 4834290508791808ULL;
+inline constexpr std::uint64_t kSplatoon3GameServiceIdAlt = 4834290530795520ULL;
 
 struct SplatNetPresence {
     std::string mode_name;

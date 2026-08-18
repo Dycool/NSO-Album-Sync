@@ -10,7 +10,8 @@
 
 namespace nso {
 
-inline constexpr std::uint64_t kZeldaNotesGameServiceId = 8742910541289123ULL;
+inline constexpr std::uint64_t kZeldaNotesGameServiceId = 5935781783175168ULL;
+inline constexpr std::uint64_t kZeldaNotesGameServiceIdAlt = 4974384874151936ULL;
 
 enum class ZeldaGame {
     Unknown,

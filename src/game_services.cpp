@@ -10,7 +10,7 @@ namespace {
 constexpr char kNookLinkBaseUrl[] =
     "https://web.sd.lp1.acbaa.srv.nintendo.net";
 constexpr char kSmashWorldBaseUrl[] =
-    "https://web.sd.lp1.wrsv.srv.nintendo.net";
+    "https://app.smashbros.nintendo.net";
 constexpr char kSplatNet2BaseUrl[] =
     "https://app.splatoon2.nintendo.net";
 

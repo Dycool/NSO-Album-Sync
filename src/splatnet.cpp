@@ -19,9 +19,9 @@ constexpr auto kBulletTokenTtl = std::chrono::hours(2);
 
 // Standard persisted query hashes for SplatNet 3 GraphQL queries
 constexpr char kLatestBattleHistoriesHash[] =
-    "3baef0e20aa02b740e53a2588f98e6d2a8ab602df00e998dbce4f4f34685ff86";
+    "80585ad4e4ecb674c3d8cd278adb1d21";
 constexpr char kStageScheduleHash[] =
-    "730cd98eede15116068fe42d1e7fbf0764c24386927d6d533d3fae4c1945e43a";
+    "2b6940a02978cf47bc62e15e1233dbdf";
 
 }  // namespace
 

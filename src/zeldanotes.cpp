@@ -8,7 +8,7 @@ namespace nso {
 namespace {
 
 constexpr char kZeldaNotesBaseUrl[] =
-    "https://api.lp1.zn87b.srv.nintendo.net";
+    "https://api.lp1.87abc152.srv.nintendo.net";
 constexpr char kDefaultWebViewVersion[] = "1.0.0";
 constexpr char kDefaultUserAgent[] =
     "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36";
