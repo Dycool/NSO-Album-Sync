@@ -268,10 +268,16 @@ void ConfigManager::load() {
             config_.nxapi_auth_client_id = string_with_legacy_key(
                 json, "nxapiAuthClientId", "NxapiAuthClientId",
                 config_.nxapi_auth_client_id);
-            config_.discord_application_id = static_cast<std::uint64_t>(
-                json.integer(
-                    "discordApplicationId",
-                    static_cast<std::int64_t>(config_.discord_application_id)));
+
+            // Rich Presence uses one public application identity controlled by
+            // NSO Album Sync. Older builds persisted this 64-bit snowflake as a
+            // JSON number, which can lose precision because Json stores numbers
+            // as doubles. Ignore and remove any legacy override instead.
+            config_.discord_application_id = kDiscordApplicationId;
+            if (json.find("discordApplicationId") != nullptr ||
+                json.find("DiscordApplicationId") != nullptr) {
+                needs_config_rewrite = true;
+            }
 
             const auto stored_session = string_with_legacy_key(
                 json, "sessionToken", "SessionToken");
@@ -343,8 +349,6 @@ void ConfigManager::save_locked() {
         {"lastSync", config_.last_sync},
         {"proxyUrl", config_.proxy_url},
         {"nxapiAuthClientId", config_.nxapi_auth_client_id},
-        {"discordApplicationId",
-         static_cast<std::int64_t>(config_.discord_application_id)},
     });
 
     auto temporary = config_file_;
