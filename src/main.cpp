@@ -15,6 +15,7 @@
 #include <unistd.h>
 #endif
 
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -110,13 +111,38 @@ std::string wide_to_utf8(const std::wstring& value) {
     return result;
 }
 
+std::size_t find_case_insensitive(
+    const std::string& text,
+    const std::string& needle) {
+    if (needle.empty() || text.size() < needle.size()) {
+        return std::string::npos;
+    }
+    for (std::size_t start = 0; start + needle.size() <= text.size(); ++start) {
+        bool matches = true;
+        for (std::size_t i = 0; i < needle.size(); ++i) {
+            const auto left = static_cast<unsigned char>(text[start + i]);
+            const auto right = static_cast<unsigned char>(needle[i]);
+            if (std::tolower(left) != std::tolower(right)) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return start;
+    }
+    return std::string::npos;
+}
+
 std::string extract_auth_callback(const std::string& text) {
     const std::string prefix = nso::kNintendoAuthCallbackPrefix;
-    const auto start = text.find(prefix);
+    const auto start = find_case_insensitive(text, prefix);
     if (start == std::string::npos) return {};
 
     auto end = text.find_first_of("\"' \t\r\n", start);
     if (end == std::string::npos) end = text.size();
+    while (end > start && (text[end - 1] == ',' || text[end - 1] == ';')) {
+        --end;
+    }
+
     const auto callback = text.substr(start, end - start);
     return nso::is_nintendo_auth_callback(callback) ? callback : std::string{};
 }
