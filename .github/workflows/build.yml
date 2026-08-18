@@ -248,6 +248,6 @@ jobs:
             release-artifacts/nso-album-sync-windows/nso-album-sync.exe
             release-artifacts/nso-album-sync-macos/nso-album-sync-macOS.zip
             release-artifacts/nso-album-sync-linux/nso-album-sync.AppImage
-          draft: false
+          draft: true
           prerelease: false
           generate_release_notes: true
