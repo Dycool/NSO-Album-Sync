@@ -99,9 +99,18 @@ jobs:
             [void][NsoResourceCheck]::FreeLibrary($module)
           }
 
-          & $exe --self-test
-          if ($LASTEXITCODE -ne 0) {
-            throw "Packaged Windows runtime self-test failed with exit code $LASTEXITCODE"
+          # PowerShell does not reliably wait for GUI-subsystem executables or
+          # populate $LASTEXITCODE for them. Wait explicitly and inspect the
+          # actual process exit code so a successful self-test cannot look like
+          # a failure merely because $LASTEXITCODE is $null.
+          $selfTest = Start-Process `
+            -FilePath $exe `
+            -ArgumentList "--self-test" `
+            -Wait `
+            -PassThru
+          Write-Host "Packaged Windows runtime self-test exit code: $($selfTest.ExitCode)"
+          if ($selfTest.ExitCode -ne 0) {
+            throw "Packaged Windows runtime self-test failed with exit code $($selfTest.ExitCode)"
           }
 
           $files = @(Get-ChildItem dist -File)
