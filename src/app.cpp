@@ -30,8 +30,6 @@ constexpr char kNxapiDisclosure[] =
     "API requests and responses used by this app are sent to and processed by "
     "that third-party service. These tokens can authenticate Nintendo services "
     "while they remain valid.\n\n"
-    "Service source, terms, and end-user information:\n"
-    "https://github.com/samuelthomas2774/nxapi-znca-api\n\n"
     "Continue with Nintendo Account sign-in?";
 
 std::chrono::milliseconds jittered_interval(std::chrono::milliseconds nominal) {
