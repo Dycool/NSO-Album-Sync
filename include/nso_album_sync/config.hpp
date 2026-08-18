@@ -17,6 +17,9 @@ struct AppConfig {
     bool discord_presence = true;
     bool start_on_boot = false;
 
+    int sync_interval_minutes = 60;
+    std::string last_sync = "Never";
+
     std::string proxy_url;
     std::string nxapi_auth_client_id = "eJ8TDme0c-Z4czx5SvZabA";
     std::uint64_t discord_application_id = 637692124539650048ULL;

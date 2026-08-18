@@ -3,6 +3,10 @@
 #include "nso_album_sync/game_aliases.hpp"
 #include "nso_album_sync/util.hpp"
 
+#ifdef _WIN32
+#include "nso_album_sync/windows_compat.hpp"
+#endif
+
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -75,10 +79,10 @@ ExistingAlbumIndex index_existing_album(const std::filesystem::path& root) {
         const auto filename = path.filename().string();
         const auto prefix = prefix_from_existing_filename(path);
 
-        index.filenames_and_prefixes.insert(filename);
-        index.filenames_and_prefixes.insert(prefix);
+        index.filenames_and_prefixes.insert(lower(filename));
+        index.filenames_and_prefixes.insert(lower(prefix));
         index.folder_by_timestamp_prefix.emplace(
-            prefix,
+            lower(prefix),
             path.parent_path().filename().string());
     }
 
@@ -99,7 +103,7 @@ std::unordered_map<std::string, std::string> learn_title_folders(
             item.captured_at != 0 ? item.captured_at : item.uploaded_at;
         const auto prefix = capture_timestamp_prefix(timestamp);
         const auto existing_folder =
-            existing.folder_by_timestamp_prefix.find(prefix);
+            existing.folder_by_timestamp_prefix.find(lower(prefix));
 
         if (existing_folder != existing.folder_by_timestamp_prefix.end()) {
             folders[item.title_id] = existing_folder->second;
@@ -117,9 +121,40 @@ void preserve_capture_timestamp(
     }
 
     try {
-        const auto seconds = std::chrono::seconds(
-            timestamp > 10'000'000'000LL ? timestamp / 1000 : timestamp);
+        const auto seconds_value =
+            timestamp > 10'000'000'000LL ? timestamp / 1000 : timestamp;
+        const auto seconds = std::chrono::seconds(seconds_value);
         const auto capture_time = std::chrono::system_clock::time_point(seconds);
+
+#ifdef _WIN32
+        // v1 preserved both CreationTime and LastWriteTime on Windows. Restore
+        // that behavior so files copied back to a Switch keep the same metadata.
+        constexpr std::uint64_t kUnixToWindowsEpochSeconds = 11'644'473'600ULL;
+        if (seconds_value >= 0) {
+            ULARGE_INTEGER raw_time{};
+            raw_time.QuadPart =
+                (static_cast<std::uint64_t>(seconds_value) +
+                 kUnixToWindowsEpochSeconds) *
+                10'000'000ULL;
+
+            FILETIME file_time{};
+            file_time.dwLowDateTime = raw_time.LowPart;
+            file_time.dwHighDateTime = raw_time.HighPart;
+
+            HANDLE file = CreateFileW(
+                path.c_str(),
+                FILE_WRITE_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (file != INVALID_HANDLE_VALUE) {
+                SetFileTime(file, &file_time, nullptr, &file_time);
+                CloseHandle(file);
+            }
+        }
+#endif
 
         // Convert from system_clock to the filesystem clock without assuming
         // both clocks use the same epoch.
@@ -177,8 +212,8 @@ std::string SyncEngine::resolve_game_folder(
 
             const bool exact_match = normalized_existing == normalized_alias;
             const bool fuzzy_match =
-                !normalized_existing.empty() &&
-                !normalized_alias.empty() &&
+                normalized_existing.size() >= 6 &&
+                normalized_alias.size() >= 6 &&
                 (normalized_existing.find(normalized_alias) != std::string::npos ||
                  normalized_alias.find(normalized_existing) != std::string::npos);
 
@@ -221,8 +256,8 @@ SyncResult SyncEngine::sync() {
         const auto extension = lower(item.type) == "video" ? "mp4" : "jpg";
         const auto filename = prefix + "_c." + extension;
 
-        if (existing.filenames_and_prefixes.contains(filename) ||
-            existing.filenames_and_prefixes.contains(prefix)) {
+        if (existing.filenames_and_prefixes.contains(lower(filename)) ||
+            existing.filenames_and_prefixes.contains(lower(prefix))) {
             continue;
         }
 
@@ -253,8 +288,8 @@ SyncResult SyncEngine::sync() {
 
         preserve_capture_timestamp(destination, timestamp);
 
-        existing.filenames_and_prefixes.insert(filename);
-        existing.filenames_and_prefixes.insert(prefix);
+        existing.filenames_and_prefixes.insert(lower(filename));
+        existing.filenames_and_prefixes.insert(lower(prefix));
         ++downloaded;
     }
 

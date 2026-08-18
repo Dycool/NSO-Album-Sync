@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace nso {
 
@@ -38,6 +39,12 @@ private:
     std::thread auto_sync_thread_;
     std::thread presence_thread_;
 
+    // Manual/startup syncs run off the UI thread but are retained and joined at
+    // shutdown so the App object can never be destroyed underneath a detached
+    // worker.
+    std::mutex manual_workers_mutex_;
+    std::vector<std::thread> manual_workers_;
+
     // Album sync may be requested by both the timer and the tray menu.
     std::mutex sync_mutex_;
 
@@ -46,11 +53,13 @@ private:
     std::mutex sleep_mutex_;
     std::condition_variable sleep_cv_;
 
+    std::mutex state_mutex_;
     std::string last_sync_ = "Never";
     std::string status_ = "Ready";
 
     void update_menu();
-    void sync_now();
+    void sync_now(bool background);
+    void queue_sync(bool background);
     void sign_in_or_out();
 
     void start_workers();

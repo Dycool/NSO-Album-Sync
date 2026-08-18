@@ -1,0 +1,150 @@
+name: Multi-architecture packages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - {arch: x64, runner: windows-latest, cmake_arch: x64}
+          - {arch: arm64, runner: windows-11-arm, cmake_arch: ARM64}
+    steps:
+      - uses: actions/checkout@v6
+      - shell: pwsh
+        run: cmake -S . -B build -A "${{ matrix.cmake_arch }}" -DNSO_STATIC_RUNTIME=ON
+      - shell: pwsh
+        run: cmake --build build --config $env:BUILD_TYPE --parallel
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ matrix.arch }}
+          path: build/Release/nso-album-sync.exe
+
+  windows-package:
+    name: Windows combined download
+    needs: windows
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v5
+        with: {name: windows-x64, path: bundle/x64}
+      - uses: actions/download-artifact@v5
+        with: {name: windows-arm64, path: bundle/arm64}
+      - run: |
+          printf 'Use x64/ on Intel/AMD64 Windows and arm64/ on ARM64 Windows.\n' > bundle/README.txt
+          (cd bundle && zip -9 -r ../nso-album-sync-windows-multiarch.zip .)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-windows-multiarch
+          path: nso-album-sync-windows-multiarch.zip
+
+  macos:
+    name: macOS ${{ matrix.arch }} slice
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - {arch: arm64, runner: macos-15}
+          - {arch: x64, runner: macos-15-intel}
+    steps:
+      - uses: actions/checkout@v6
+      - run: brew install cmake ninja openssl@3
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DOPENSSL_USE_STATIC_LIBS=TRUE -DNSO_STATIC_RUNTIME=ON
+      - run: cmake --build build --parallel
+      - run: |
+          codesign --verify --strict --verbose=2 build/nso-album-sync.app
+          ditto -c -k --sequesterRsrc --keepParent build/nso-album-sync.app app.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-${{ matrix.arch }}
+          path: app.zip
+
+  macos-universal:
+    name: macOS Universal 2
+    needs: macos
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@v5
+        with: {name: macos-arm64, path: arm}
+      - uses: actions/download-artifact@v5
+        with: {name: macos-x64, path: x64}
+      - run: |
+          mkdir -p a x out
+          ditto -x -k arm/app.zip a
+          ditto -x -k x64/app.zip x
+          ditto a/nso-album-sync.app out/nso-album-sync.app
+          lipo -create a/nso-album-sync.app/Contents/MacOS/nso-album-sync x/nso-album-sync.app/Contents/MacOS/nso-album-sync -output out/nso-album-sync.app/Contents/MacOS/nso-album-sync
+          archs="$(lipo -archs out/nso-album-sync.app/Contents/MacOS/nso-album-sync)"
+          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
+          codesign --force --deep --sign - --timestamp=none out/nso-album-sync.app
+          codesign --verify --deep --strict --verbose=2 out/nso-album-sync.app
+          ditto -c -k --sequesterRsrc --keepParent out/nso-album-sync.app nso-album-sync-macos-universal.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-macos-universal
+          path: nso-album-sync-macos-universal.zip
+
+  linux:
+    name: Linux ${{ matrix.arch }} AppImage
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - {arch: x64, runner: ubuntu-24.04, ai_arch: x86_64}
+          - {arch: arm64, runner: ubuntu-24.04-arm, ai_arch: aarch64}
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build libssl-dev libsecret-1-dev libgtk-3-dev libayatana-appindicator3-dev curl
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNSO_STATIC_RUNTIME=ON -DNSO_ENABLE_LINUX_TRAY=ON
+      - run: cmake --build build --parallel
+      - shell: bash
+        run: |
+          set -euo pipefail
+          cat > nso-album-sync.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=NSO Album Sync
+          Exec=nso-album-sync
+          Icon=nso-album-sync
+          Categories=Utility;
+          Terminal=false
+          DESKTOP
+          deploy="linuxdeploy-${{ matrix.ai_arch }}.AppImage"
+          plugin="linuxdeploy-plugin-appimage-${{ matrix.ai_arch }}.AppImage"
+          curl -fL --retry 3 -o "$deploy" "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/$deploy"
+          curl -fL --retry 3 -o "$plugin" "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/$plugin"
+          chmod +x "$deploy" "$plugin"
+          export PATH="$PWD:$PATH" APPIMAGE_EXTRACT_AND_RUN=1
+          export OUTPUT="$PWD/nso-album-sync-linux-${{ matrix.arch }}.AppImage"
+          ./$deploy --appimage-extract-and-run --appdir AppDir --executable build/nso-album-sync --desktop-file nso-album-sync.desktop --icon-file icon.svg --output appimage
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: nso-album-sync-linux-${{ matrix.arch }}.AppImage
+
+  linux-package:
+    name: Linux combined download
+    needs: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v5
+        with: {name: linux-x64, path: bundle}
+      - uses: actions/download-artifact@v5
+        with: {name: linux-arm64, path: bundle}
+      - run: |
+          printf 'AppImages are CPU-specific; choose x64 or arm64 for your machine.\n' > bundle/README.txt
+          tar -C bundle -czf nso-album-sync-linux-multiarch.tar.gz .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-linux-multiarch
+          path: nso-album-sync-linux-multiarch.tar.gz

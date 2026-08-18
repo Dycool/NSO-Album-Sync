@@ -15,11 +15,12 @@ struct MenuState {
     bool discord = true;
     bool start_on_boot = false;
     bool signed_in = false;
+    int sync_interval_minutes = 60;
 };
 
 struct PlatformCallbacks {
     // Called by the platform backend only after its tray/menu and native
-    // notification infrastructure are ready.  Background workers must not
+    // notification infrastructure are ready. Background workers must not
     // start before this or startup notifications can be dropped.
     std::function<void()> ready;
     std::function<void()> sync_now;

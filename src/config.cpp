@@ -4,6 +4,7 @@
 #include "nso_album_sync/secure_store.hpp"
 #include "nso_album_sync/util.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -12,6 +13,7 @@
 #include <sys/stat.h>
 #else
 #include "nso_album_sync/windows_compat.hpp"
+#include <shlobj.h>
 #include <wincrypt.h>
 #endif
 
@@ -66,11 +68,46 @@ std::filesystem::path config_directory() {
 }
 
 std::string default_album_folder() {
+#ifdef _WIN32
+    wchar_t pictures[MAX_PATH]{};
+    if (SUCCEEDED(SHGetFolderPathW(
+            nullptr,
+            CSIDL_MYPICTURES,
+            nullptr,
+            SHGFP_TYPE_CURRENT,
+            pictures))) {
+        const std::wstring album =
+            (std::filesystem::path(pictures) / L"Nintendo Switch Album").native();
+        const int required = WideCharToMultiByte(
+            CP_UTF8, 0, album.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (required > 1) {
+            std::string utf8(static_cast<std::size_t>(required), '\0');
+            WideCharToMultiByte(
+                CP_UTF8,
+                0,
+                album.c_str(),
+                -1,
+                utf8.data(),
+                required,
+                nullptr,
+                nullptr);
+            utf8.resize(static_cast<std::size_t>(required - 1));
+            return utf8;
+        }
+    }
+
+    const auto profile = environment_variable("USERPROFILE");
+    return (std::filesystem::path(profile.empty() ? "." : profile) /
+            "Pictures" /
+            "Nintendo Switch Album")
+        .string();
+#else
     const auto home = environment_variable("HOME");
     return (std::filesystem::path(home.empty() ? "." : home) /
             "Pictures" /
             "Nintendo Switch Album")
         .string();
+#endif
 }
 
 std::string string_with_legacy_key(
@@ -95,6 +132,34 @@ bool bool_with_legacy_key(
     }
 
     return json.boolean(legacy_key, fallback);
+}
+
+std::int64_t integer_with_legacy_key(
+    const Json& json,
+    const char* current_key,
+    const char* legacy_key,
+    std::int64_t fallback) {
+    if (const auto* current = json.find(current_key);
+        current != nullptr && current->is_number()) {
+        return current->as_i64();
+    }
+
+    return json.integer(legacy_key, fallback);
+}
+
+std::string display_last_sync(const std::string& stored) {
+    if (stored.empty()) {
+        return "Never";
+    }
+
+    // v1 persisted DateTime as ISO-8601. Keep backwards compatibility while
+    // presenting it in the same compact menu format used by the native port.
+    if (stored.size() >= 16 && stored[4] == '-' && stored[7] == '-' &&
+        (stored[10] == 'T' || stored[10] == ' ')) {
+        return stored.substr(11, 5) + " (" + stored.substr(0, 10) + ")";
+    }
+
+    return stored;
 }
 
 bool is_secure_store_marker(const std::string& value) {
@@ -208,6 +273,27 @@ void ConfigManager::load() {
             "DiscordPresenceEnabled",
             true);
 
+        config_.start_on_boot = bool_with_legacy_key(
+            json,
+            "startOnBoot",
+            "StartOnBoot",
+            false);
+
+        config_.sync_interval_minutes = static_cast<int>(std::clamp<std::int64_t>(
+            integer_with_legacy_key(
+                json,
+                "syncIntervalMinutes",
+                "SyncIntervalMinutes",
+                60),
+            1,
+            10'080));
+
+        config_.last_sync = display_last_sync(string_with_legacy_key(
+            json,
+            "lastSync",
+            "LastSyncTime",
+            "Never"));
+
         config_.proxy_url = string_with_legacy_key(
             json,
             "proxyUrl",
@@ -289,6 +375,8 @@ void ConfigManager::save() {
         {"notifications", config_.notifications},
         {"discordPresence", config_.discord_presence},
         {"startOnBoot", config_.start_on_boot},
+        {"syncIntervalMinutes", config_.sync_interval_minutes},
+        {"lastSync", config_.last_sync},
         {"proxyUrl", config_.proxy_url},
         {"nxapiAuthClientId", config_.nxapi_auth_client_id},
         {"discordApplicationId",
