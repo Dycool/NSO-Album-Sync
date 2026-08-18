@@ -245,6 +245,10 @@ jobs:
           Terminal=false
           DESKTOP
 
+          # linuxdeploy resolves the desktop Icon= entry by basename. Give the
+          # staged SVG the same basename instead of the repository's icon.svg.
+          cp icon.svg nso-album-sync.svg
+
           deploy="tools/linuxdeploy-x86_64.AppImage"
           plugin="tools/linuxdeploy-plugin-appimage-x86_64.AppImage"
           curl -fL --retry 3 -o "$deploy" \
@@ -260,7 +264,7 @@ jobs:
             --appdir AppDir \
             --executable build/nso-album-sync \
             --desktop-file nso-album-sync.desktop \
-            --icon-file icon.svg \
+            --icon-file nso-album-sync.svg \
             --output appimage
 
           chmod +x dist/nso-album-sync.AppImage
