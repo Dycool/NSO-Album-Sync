@@ -16,17 +16,12 @@ Json activity_from_presence(const NintendoPresence& presence) {
         {"instance", false},
     };
 
-    std::string state = presence.console_name();
+    // The Discord application name already identifies the Nintendo/Switch
+    // activity. Keep the Rich Presence body focused on information that is not
+    // already visible instead of repeating "Nintendo Switch" a second time.
     const auto play_time = presence.discord_state();
     if (!play_time.empty()) {
-        if (!state.empty()) {
-            state += " · ";
-        }
-        state += play_time;
-    }
-
-    if (!state.empty()) {
-        activity.emplace("state", std::move(state));
+        activity.emplace("state", play_time);
     }
 
     Json::object assets;
