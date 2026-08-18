@@ -151,11 +151,14 @@ set(NSO_SOURCES
     src/config.cpp
     src/coral.cpp
     src/discord.cpp
+    src/game_services.cpp
     src/json.cpp
     src/nintendo_auth.cpp
     src/nxapi.cpp
+    src/splatnet.cpp
     src/sync.cpp
     src/util.cpp
+    src/zeldanotes.cpp
 )
 
 set(NSO_HEADERS
@@ -165,14 +168,17 @@ set(NSO_HEADERS
     include/nso_album_sync/coral.hpp
     include/nso_album_sync/discord.hpp
     include/nso_album_sync/game_aliases.hpp
+    include/nso_album_sync/game_services.hpp
     include/nso_album_sync/http.hpp
     include/nso_album_sync/json.hpp
     include/nso_album_sync/nintendo_auth.hpp
     include/nso_album_sync/nxapi.hpp
     include/nso_album_sync/platform.hpp
     include/nso_album_sync/secure_store.hpp
+    include/nso_album_sync/splatnet.hpp
     include/nso_album_sync/sync.hpp
     include/nso_album_sync/util.hpp
+    include/nso_album_sync/zeldanotes.hpp
 )
 
 if(WIN32)

@@ -3,11 +3,14 @@
 #include "nso_album_sync/config.hpp"
 #include "nso_album_sync/coral.hpp"
 #include "nso_album_sync/discord.hpp"
+#include "nso_album_sync/game_services.hpp"
 #include "nso_album_sync/http.hpp"
 #include "nso_album_sync/nintendo_auth.hpp"
 #include "nso_album_sync/nxapi.hpp"
 #include "nso_album_sync/platform.hpp"
+#include "nso_album_sync/splatnet.hpp"
 #include "nso_album_sync/sync.hpp"
+#include "nso_album_sync/zeldanotes.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -31,6 +34,9 @@ private:
     NintendoAuthManager auth_;
     NxapiClient nxapi_;
     CoralClient coral_;
+    SplatNetClient splatnet_;
+    ZeldaNotesClient zeldanotes_;
+    GameServicesClient game_services_;
     SyncEngine sync_;
     DiscordPresence discord_;
     PlatformUi ui_;

@@ -208,11 +208,38 @@ void DiscordPresence::update(const NintendoPresence& presence) {
     // primary activity identity instead of repeating our publisher app name.
     activity.SetName(presence.game_name);
     activity.SetStatusDisplayType(discordpp::StatusDisplayTypes::Name);
-    activity.SetState(presence.console_name());
 
-    if (!presence.image_uri.empty()) {
+    if (!presence.custom_details.empty()) {
+        activity.SetDetails(presence.custom_details);
+    } else {
+        const auto playtime_description = presence.discord_state();
+        if (!playtime_description.empty()) {
+            activity.SetDetails(playtime_description);
+        }
+    }
+
+    if (!presence.custom_state.empty()) {
+        activity.SetState(presence.custom_state);
+    } else {
+        activity.SetState(presence.console_name());
+    }
+
+    if (presence.updated_at > 0) {
+        const auto start_seconds = presence.updated_at > 10'000'000'000LL
+            ? presence.updated_at / 1000
+            : presence.updated_at;
+        discordpp::ActivityTimestamps timestamps;
+        timestamps.SetStart(static_cast<std::uint64_t>(start_seconds));
+        activity.SetTimestamps(timestamps);
+    }
+
+    const auto& image_url = !presence.custom_image_uri.empty()
+        ? presence.custom_image_uri
+        : presence.image_uri;
+
+    if (!image_url.empty()) {
         discordpp::ActivityAssets assets;
-        assets.SetLargeImage(presence.image_uri);
+        assets.SetLargeImage(image_url);
         assets.SetLargeText(presence.game_name);
         if (!presence.shop_uri.empty()) assets.SetLargeUrl(presence.shop_uri);
         activity.SetAssets(assets);

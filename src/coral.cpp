@@ -249,6 +249,7 @@ std::string NintendoPresence::console_name() const {
 
 std::string NintendoPresence::discord_state() const {
     if (!sys_description.empty()) return sys_description;
+    if (total_play_time <= 0) return {};
     const auto played_hours = total_play_time / 60;
     if (played_hours < 5) return "Played for a little while";
     const auto rounded_hours = (played_hours / 5) * 5;
@@ -407,6 +408,7 @@ void CoralClient::clear_cached_session() {
         cached_session_token_.clear();
         user_id_.clear();
         coral_token_expiry_ = {};
+        web_service_tokens_.clear();
     }
     SecureStore::erase(kCoralCredentialAccount);
 }
@@ -595,6 +597,51 @@ NintendoPresence CoralClient::self_presence(
     const auto* result = response.find("result");
     if (result == nullptr) return {};
     return parse_presence(*result);
+}
+
+std::string CoralClient::get_web_service_token(
+    const std::string& session_token,
+    std::uint64_t game_service_id) {
+    const auto now = Clock::now();
+    {
+        std::lock_guard lock(session_mutex_);
+        if (cached_session_token_ == session_token) {
+            const auto it = web_service_tokens_.find(game_service_id);
+            if (it != web_service_tokens_.end() &&
+                !it->second.token.empty() &&
+                now < it->second.expires_at) {
+                return it->second.token;
+            }
+        }
+    }
+
+    try {
+        const auto access_token = ensure_session(session_token);
+        const std::string body =
+            R"({"parameter":{"id":)" + std::to_string(game_service_id) + R"(}})";
+        const auto response = coral_call(
+            coral_url("/v2/Game/GetWebServiceToken"), access_token, body);
+        const auto* result = response.find("result");
+        if (result == nullptr) return {};
+
+        const auto token = result->string("accessToken");
+        if (token.empty()) return {};
+
+        const auto expires_in = result->integer("expiresIn", 10800);
+        const auto ttl = std::chrono::seconds(
+            std::max<std::int64_t>(60, expires_in - 120));
+
+        {
+            std::lock_guard lock(session_mutex_);
+            if (cached_session_token_ == session_token) {
+                web_service_tokens_[game_service_id] = {token, now + ttl};
+            }
+        }
+
+        return token;
+    } catch (...) {
+        return {};
+    }
 }
 
 }  // namespace nso
