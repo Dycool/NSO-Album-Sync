@@ -13,6 +13,7 @@ public:
     ~DiscordPresence();
 
     bool available() const;
+    bool self_test_runtime();
     void update(const NintendoPresence& presence);
     void clear();
 
