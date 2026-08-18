@@ -63,9 +63,18 @@ int run_application(const std::string& auth_callback) {
     try {
         SingleInstanceGuard single_instance;
         if (!single_instance.acquired()) {
-            if (!auth_callback.empty() &&
-                nso::publish_nintendo_auth_callback(auth_callback)) {
-                return 0;
+            if (!auth_callback.empty()) {
+                // Protocol callbacks launch a second copy of the executable.
+                // Forward that URL to the already-running tray process instead
+                // of treating the launch as an ordinary second app instance.
+                for (int attempt = 0; attempt < 5; ++attempt) {
+                    if (nso::publish_nintendo_auth_callback(auth_callback)) {
+                        return 0;
+                    }
+#ifdef _WIN32
+                    Sleep(20);
+#endif
+                }
             }
 #ifdef _WIN32
             MessageBoxW(nullptr,
@@ -101,21 +110,34 @@ std::string wide_to_utf8(const std::wstring& value) {
     return result;
 }
 
+std::string extract_auth_callback(const std::string& text) {
+    const std::string prefix = nso::kNintendoAuthCallbackPrefix;
+    const auto start = text.find(prefix);
+    if (start == std::string::npos) return {};
+
+    auto end = text.find_first_of("\"' \t\r\n", start);
+    if (end == std::string::npos) end = text.size();
+    const auto callback = text.substr(start, end - start);
+    return nso::is_nintendo_auth_callback(callback) ? callback : std::string{};
+}
+
 std::string auth_callback_from_command_line() {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argv == nullptr) return {};
-
-    std::string callback;
-    for (int i = 1; i < argc; ++i) {
-        const auto value = wide_to_utf8(argv[i]);
-        if (nso::is_nintendo_auth_callback(value)) {
-            callback = value;
-            break;
+    if (argv != nullptr) {
+        for (int i = 1; i < argc; ++i) {
+            if (const auto callback = extract_auth_callback(wide_to_utf8(argv[i]));
+                !callback.empty()) {
+                LocalFree(argv);
+                return callback;
+            }
         }
+        LocalFree(argv);
     }
-    LocalFree(argv);
-    return callback;
+
+    // Some browser/shell protocol launches do not survive argv tokenisation in
+    // exactly the form we registered. Scan the raw command line as a fallback.
+    return extract_auth_callback(wide_to_utf8(GetCommandLineW()));
 }
 #endif
 
