@@ -31,18 +31,6 @@ constexpr char kNxapiDisclosure[] =
     "https://github.com/samuelthomas2774/nxapi-znca-api\n\n"
     "Continue with Nintendo Account sign-in?";
 
-constexpr char kManualLoginMessage[] =
-    "Automatic return from the browser is unavailable on this system. "
-    "Nintendo's sign-in page is open in your browser. Sign in, then "
-    "right-click or copy the link behind “Select this person” and paste the "
-    "complete redirect link below:";
-
-constexpr char kPendingLoginMessage[] =
-    "NSO Album Sync is waiting for Nintendo to return from your browser. "
-    "Normally you only need to click “Select this person” in the browser.\n\n"
-    "If the browser did not return to NSO Album Sync, paste the complete "
-    "redirect link here as a manual fallback. Cancel to stop this sign-in.";
-
 std::string current_time_text() {
     const auto now = std::time(nullptr);
     std::tm local_time{};
@@ -289,20 +277,9 @@ void App::sign_in_or_out() {
     }
 
     if (auth_pending_) {
-        const auto redirect = ui_.prompt(
-            "Complete Nintendo Account Sign-In", kPendingLoginMessage);
-        if (redirect.empty()) {
-            auth_pending_ = false;
-            unregister_nintendo_auth_protocol();
-            clear_nintendo_auth_callback();
-            {
-                std::lock_guard state_lock(state_mutex_);
-                status_ = "Sign-in cancelled";
-            }
-            update_menu();
-            return;
-        }
-        complete_pending_login(redirect);
+        ui_.notify(
+            "Nintendo Sign-In",
+            "A Nintendo Account sign-in is already waiting in your browser.");
         return;
     }
 
@@ -316,35 +293,28 @@ void App::sign_in_or_out() {
     }
 
     clear_nintendo_auth_callback();
-    const bool automatic_callback = register_nintendo_auth_protocol();
+    if (!register_nintendo_auth_protocol()) {
+        const std::string message =
+            "Automatic Nintendo Account browser return could not be registered. "
+            "Close any other app using the Nintendo Switch App sign-in link and try again.";
+        {
+            std::lock_guard state_lock(state_mutex_);
+            status_ = message;
+        }
+        update_menu();
+        ui_.notify("Nintendo Sign-In", message);
+        return;
+    }
 
     try {
         const auto authorize_url = auth_.authorize_url();
         auth_pending_ = true;
         {
             std::lock_guard state_lock(state_mutex_);
-            status_ = automatic_callback
-                ? "Waiting for Nintendo Account sign-in in your browser…"
-                : "Waiting for the Nintendo Account redirect link…";
+            status_ = "Waiting for Nintendo Account sign-in in your browser…";
         }
         update_menu();
         open_url(authorize_url);
-
-        if (automatic_callback) return;
-
-        const auto redirect = ui_.prompt(
-            "Nintendo Account Sign-In", kManualLoginMessage);
-        if (redirect.empty()) {
-            auth_pending_ = false;
-            unregister_nintendo_auth_protocol();
-            {
-                std::lock_guard state_lock(state_mutex_);
-                status_ = "Sign-in cancelled";
-            }
-            update_menu();
-            return;
-        }
-        complete_pending_login(redirect);
     } catch (const std::exception& error) {
         auth_pending_ = false;
         unregister_nintendo_auth_protocol();
