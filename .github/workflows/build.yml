@@ -46,11 +46,12 @@ jobs:
           Copy-Item $exe dist/nso-album-sync.exe
           $test = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
           if ($test.ExitCode -ne 0) { throw "Self-test failed: $($test.ExitCode)" }
+          Compress-Archive -Path dist/nso-album-sync.exe -DestinationPath dist/nso-album-sync-windows.zip
 
       - uses: actions/upload-artifact@v7
         with:
           name: nso-album-sync-windows
-          path: dist/nso-album-sync.exe
+          path: dist/nso-album-sync-windows.zip
           if-no-files-found: error
 
   macos:
@@ -120,9 +121,9 @@ jobs:
 
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent --zlibCompressionLevel 9 \
-            "$app" dist/nso-album-sync-macOS.zip
+            "$app" dist/nso-album-sync-macos.zip
 
-          size="$(stat -f%z dist/nso-album-sync-macOS.zip)"
+          size="$(stat -f%z dist/nso-album-sync-macos.zip)"
           if (( size > 20 * 1024 * 1024 )); then
             echo "macOS archive is larger than 20 MiB" >&2
             exit 1
@@ -131,7 +132,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: nso-album-sync-macos
-          path: dist/nso-album-sync-macOS.zip
+          path: dist/nso-album-sync-macos.zip
           if-no-files-found: error
 
   linux:
@@ -164,7 +165,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             binutils build-essential cmake curl file ninja-build \
             libssl-dev libsecret-1-dev libpulse0 libasound2-dev libgtk-3-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev zip
 
       - name: Build
         shell: bash
@@ -223,11 +224,12 @@ jobs:
 
           chmod +x dist/nso-album-sync.AppImage
           dist/nso-album-sync.AppImage --self-test
+          (cd dist && zip -9 nso-album-sync-linux.zip nso-album-sync.AppImage)
 
       - uses: actions/upload-artifact@v7
         with:
           name: nso-album-sync-linux
-          path: dist/nso-album-sync.AppImage
+          path: dist/nso-album-sync-linux.zip
           if-no-files-found: error
 
   release:
@@ -245,9 +247,9 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           files: |
-            release-artifacts/nso-album-sync-windows/nso-album-sync.exe
-            release-artifacts/nso-album-sync-macos/nso-album-sync-macOS.zip
-            release-artifacts/nso-album-sync-linux/nso-album-sync.AppImage
+            release-artifacts/nso-album-sync-windows/nso-album-sync-windows.zip
+            release-artifacts/nso-album-sync-macos/nso-album-sync-macos.zip
+            release-artifacts/nso-album-sync-linux/nso-album-sync-linux.zip
           draft: true
           prerelease: false
           generate_release_notes: true
