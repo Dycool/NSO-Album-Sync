@@ -243,7 +243,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
 
     add_menu_item(
         impl->menu,
-        @"Sync Album Now",
+        @"Sync Now",
         SyncNow,
         false,
         state.signed_in,
@@ -289,7 +289,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
     [impl->menu addItem:[NSMenuItem separatorItem]];
     add_menu_item(
         impl->menu,
-        @"Start on Login",
+        @"Start on Boot",
         ToggleStartOnBoot,
         state.start_on_boot,
         true,
@@ -312,7 +312,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
     [impl->menu addItem:[NSMenuItem separatorItem]];
     add_menu_item(
         impl->menu,
-        @"Quit NSO Album Sync",
+        @"Exit",
         Exit,
         false,
         true,
