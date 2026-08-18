@@ -197,7 +197,7 @@ std::string prompt_box(const std::string& title, const std::string& text,
         }
     }
 
-    std::string result;
+    std::string result = initial;
     if (state.accepted) {
         const int n = GetWindowTextLengthW(state.edit);
         std::wstring value(static_cast<std::size_t>(n) + 1, L'\0');

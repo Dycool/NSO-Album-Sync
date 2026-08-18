@@ -503,7 +503,7 @@ std::string PlatformUi::prompt(
     GtkWidget* entry = nullptr;
     auto* dialog = create_dialog(title, message, true, initial, &entry);
 
-    std::string result;
+    std::string result = initial;
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK && entry != nullptr) {
         result = gtk_entry_get_text(GTK_ENTRY(entry));
     }

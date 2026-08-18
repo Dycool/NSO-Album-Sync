@@ -458,7 +458,7 @@ std::string PlatformUi::prompt(
     const std::string& title,
     const std::string& message,
     const std::string& initial) {
-    __block std::string result;
+    __block std::string result = initial;
 
     void (^show_prompt)(void) = ^{
         const bool is_proxy = title == "HTTP Proxy";
