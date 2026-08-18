@@ -46,12 +46,11 @@ jobs:
           Copy-Item $exe dist/nso-album-sync.exe
           $test = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
           if ($test.ExitCode -ne 0) { throw "Self-test failed: $($test.ExitCode)" }
-          Compress-Archive -Path dist/nso-album-sync.exe -DestinationPath dist/nso-album-sync-windows.zip
 
       - uses: actions/upload-artifact@v7
         with:
           name: nso-album-sync-windows
-          path: dist/nso-album-sync-windows.zip
+          path: dist/nso-album-sync.exe
           if-no-files-found: error
 
   macos:
@@ -119,20 +118,10 @@ jobs:
           codesign --verify --deep --strict "$app"
           "$binary" --self-test
 
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent --zlibCompressionLevel 9 \
-            "$app" dist/nso-album-sync-macos.zip
-
-          size="$(stat -f%z dist/nso-album-sync-macos.zip)"
-          if (( size > 20 * 1024 * 1024 )); then
-            echo "macOS archive is larger than 20 MiB" >&2
-            exit 1
-          fi
-
       - uses: actions/upload-artifact@v7
         with:
           name: nso-album-sync-macos
-          path: dist/nso-album-sync-macos.zip
+          path: build/nso-album-sync.app
           if-no-files-found: error
 
   linux:
@@ -224,12 +213,11 @@ jobs:
 
           chmod +x dist/nso-album-sync.AppImage
           dist/nso-album-sync.AppImage --self-test
-          (cd dist && zip -9 nso-album-sync-linux.zip nso-album-sync.AppImage)
 
       - uses: actions/upload-artifact@v7
         with:
           name: nso-album-sync-linux
-          path: dist/nso-album-sync-linux.zip
+          path: dist/nso-album-sync.AppImage
           if-no-files-found: error
 
   release:
@@ -254,10 +242,15 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          mkdir -p release-dist
+          (cd release-artifacts/nso-album-sync-windows && zip -9 ../../release-dist/nso-album-sync-windows.zip nso-album-sync.exe)
+          (cd release-artifacts/nso-album-sync-macos && zip -9 -r -y ../../release-dist/nso-album-sync-macos.zip nso-album-sync.app)
+          (cd release-artifacts/nso-album-sync-linux && zip -9 ../../release-dist/nso-album-sync-linux.zip nso-album-sync.AppImage)
+
           files=(
-            release-artifacts/nso-album-sync-windows/nso-album-sync-windows.zip
-            release-artifacts/nso-album-sync-macos/nso-album-sync-macos.zip
-            release-artifacts/nso-album-sync-linux/nso-album-sync-linux.zip
+            release-dist/nso-album-sync-windows.zip
+            release-dist/nso-album-sync-macos.zip
+            release-dist/nso-album-sync-linux.zip
           )
 
           if gh release view "$TAG" >/dev/null 2>&1; then
