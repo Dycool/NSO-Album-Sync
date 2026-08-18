@@ -15,7 +15,7 @@ struct AppConfig {
     std::string user_nickname = "Nintendo Switch Player";
     std::string destination_folder;
 
-    bool auto_sync = true;
+    bool auto_sync = false;
     int auto_sync_setting_version = 1;
     bool notifications = false;
     bool discord_presence = false;

@@ -252,7 +252,9 @@ void App::complete_pending_login(const std::string& redirect_url_or_code) {
         update_menu();
         start_operational_workers();
         wake_workers();
-        queue_sync(false);
+        if (config.discord_presence) {
+            request_presence_refresh();
+        }
     } catch (const std::exception& error) {
         const std::string message = error.what();
         const bool wrong_state =
@@ -519,11 +521,8 @@ int App::run() {
         if (!had_session) sign_in_or_out();
         start_workers();
         const auto config = config_.snapshot();
-        // v1.0.0 always performed one immediate startup sync for an existing
-        // account, regardless of whether the recurring timer was enabled. It
-        // was treated like a foreground/manual sync for notification behavior.
-        if (had_session && !config.session_token.empty()) {
-            queue_sync(false);
+        if (config.discord_presence && !config.session_token.empty()) {
+            request_presence_refresh();
         }
     };
 
@@ -546,6 +545,9 @@ int App::run() {
         }
         update_menu();
         sleep_cv_.notify_all();
+        if (config.auto_sync && !config.session_token.empty()) {
+            queue_sync(false);
+        }
         if (config.notifications) {
             ui_.notify(
                 "NSO Album Sync",

@@ -272,7 +272,7 @@ void ConfigManager::load() {
             // explicitly saved AutoSyncEnabled/autoSync value. Preserve that
             // behavior across the C++ config migration.
             config_.auto_sync = bool_with_legacy_key(
-                json, "autoSync", "AutoSyncEnabled", config_.auto_sync);
+                json, "autoSync", "AutoSyncEnabled", false);
             config_.auto_sync_setting_version = 1;
             config_.notifications = bool_with_legacy_key(
                 json, "notifications", "NotificationsEnabled", false);
