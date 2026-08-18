@@ -43,7 +43,6 @@ jobs:
         run: |
           cmake -S . -B build `
             -A x64 `
-            -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
             -DNSO_STATIC_RUNTIME=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -213,7 +212,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build curl libssl-dev libsecret-1-dev \
+            cmake ninja-build curl libssl-dev libsecret-1-dev libpulse0 \
             libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Configure CMake
