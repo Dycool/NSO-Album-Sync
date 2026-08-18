@@ -23,6 +23,7 @@ struct MediaItem {
     std::string type;
     std::string content_uri;
     std::string thumbnail_uri;
+    std::int64_t content_length = 0;
     std::int64_t captured_at = 0;
     std::int64_t uploaded_at = 0;
     std::int64_t expires_at = 0;
