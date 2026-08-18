@@ -55,7 +55,8 @@ std::string SplatNetClient::ensure_bullet_token_locked(
         std::string("User-Agent: ") + kDefaultUserAgent,
     };
 
-    const auto response = http_.post(kBulletTokensUrl, "{}", headers, 15);
+    const auto response = http_.post(
+        kBulletTokensUrl, "{}", headers, "application/json", 15);
     if (response.status != 200 && response.status != 201) {
         return {};
     }
@@ -105,8 +106,8 @@ SplatNetPresence SplatNetClient::fetch_presence(
             }},
         });
 
-        const auto response =
-            http_.post(kGraphQLUrl, request_body.dump(), headers, 10);
+        const auto response = http_.post(
+            kGraphQLUrl, request_body.dump(), headers, "application/json", 10);
         if (response.status == 200) {
             const auto json = Json::parse(response.text());
             if (const auto* data = json.find("data"); data != nullptr) {
@@ -182,8 +183,8 @@ SplatNetPresence SplatNetClient::fetch_presence(
             }},
         });
 
-        const auto response =
-            http_.post(kGraphQLUrl, schedule_request.dump(), headers, 10);
+        const auto response = http_.post(
+            kGraphQLUrl, schedule_request.dump(), headers, "application/json", 10);
         if (response.status == 200) {
             const auto json = Json::parse(response.text());
             if (const auto* data = json.find("data"); data != nullptr) {
