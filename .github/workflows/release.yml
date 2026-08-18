@@ -21,7 +21,7 @@ env:
 jobs:
   tag:
     name: Tag
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release: v')
+    if: "github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release: v')"
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -60,7 +60,7 @@ jobs:
 
   windows:
     name: Windows
-    if: github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')
+    if: "github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -99,7 +99,7 @@ jobs:
 
   macos:
     name: macOS
-    if: github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')
+    if: "github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')"
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
@@ -182,7 +182,7 @@ jobs:
 
   linux:
     name: Linux
-    if: github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')
+    if: "github.ref != 'refs/heads/main' || !startsWith(github.event.head_commit.message, 'release: v')"
     runs-on: ubuntu-24.04
     container: ubuntu:22.04
     steps:
