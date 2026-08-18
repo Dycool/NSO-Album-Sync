@@ -524,6 +524,9 @@ int App::run() {
         if (config.discord_presence && !config.session_token.empty()) {
             request_presence_refresh();
         }
+        if (config.auto_sync && !config.session_token.empty()) {
+            queue_sync(true);
+        }
     };
 
     callbacks.sync_now = [this] {
