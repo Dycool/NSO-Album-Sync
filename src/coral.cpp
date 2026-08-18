@@ -41,7 +41,9 @@ std::string upper(std::string text) {
 }
 
 std::string coral_url(const char* path) {
-    return std::string(kCoralBaseUrl) + path;
+    std::string url(kCoralBaseUrl);
+    url.append(path);
+    return url;
 }
 
 std::string session_hash(const std::string& session_token) {
