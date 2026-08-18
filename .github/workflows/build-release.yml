@@ -18,11 +18,8 @@ concurrency:
 
 env:
   BUILD_TYPE: Release
-  # These are normal repository variables, not secrets. Discord gates the SDK
-  # download lookup behind the Developer Portal, so CI uses the direct official
-  # archive URL copied from there.
-  DISCORD_SOCIAL_SDK_URL: ${{ vars.DISCORD_SOCIAL_SDK_URL }}
-  DISCORD_SOCIAL_SDK_SHA256: ${{ vars.DISCORD_SOCIAL_SDK_SHA256 }}
+  DISCORD_SDK_REPOSITORY: Dycool/NSO-Album-Sync-SDK
+  DISCORD_SDK_REF: main
 
 jobs:
   build-windows:
@@ -31,6 +28,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Checkout private Discord Social SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
 
       - name: Configure CMake
         shell: pwsh
@@ -83,6 +90,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Checkout private Discord Social SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
 
       - name: Install build dependencies
         shell: bash
@@ -181,6 +198,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Checkout private Discord Social SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
 
       - name: Install build dependencies
         shell: bash
