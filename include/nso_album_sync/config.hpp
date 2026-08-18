@@ -8,6 +8,8 @@
 
 namespace nso {
 
+inline constexpr std::uint64_t kDiscordApplicationId = 1538902170433495172ULL;
+
 struct AppConfig {
     std::string session_token;
     std::string user_nickname = "Nintendo Switch Player";
@@ -25,7 +27,7 @@ struct AppConfig {
 
     std::string proxy_url;
     std::string nxapi_auth_client_id = "eJ8TDme0c-Z4czx5SvZabA";
-    std::uint64_t discord_application_id = 637692124539650048ULL;
+    std::uint64_t discord_application_id = kDiscordApplicationId;
 };
 
 class ConfigManager {
