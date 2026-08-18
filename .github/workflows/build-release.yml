@@ -17,13 +17,7 @@ concurrency:
 env:
   BUILD_TYPE: Release
   DISCORD_SDK_REPOSITORY: Dycool/NSO-Album-Sync-SDK
-  # Immutable private build input for Discord Social SDK 1.10.18687.
   DISCORD_SDK_REF: 21aa7516c44e2856d1fe0927f0c13c092182e2b7
-  # Build OpenSSL ourselves on macOS so every static object honors the same
-  # deployment target as the app instead of inheriting the runner's Homebrew
-  # bottle minimum OS version.
-  OPENSSL_VERSION: 3.6.3
-  OPENSSL_SHA256: 243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1
 
 jobs:
   build-windows:
@@ -63,9 +57,6 @@ jobs:
           $exe = (Resolve-Path "build/$env:BUILD_TYPE/nso-album-sync.exe").Path
           Copy-Item $exe "dist/nso-album-sync.exe"
 
-          # The Windows release intentionally remains one executable. Verify
-          # that both the lazy-loaded Discord runtime and third-party notices
-          # were actually embedded as RCDATA resources before publishing it.
           Add-Type @"
           using System;
           using System.Runtime.InteropServices;
@@ -104,10 +95,6 @@ jobs:
             [void][NsoResourceCheck]::FreeLibrary($module)
           }
 
-          # PowerShell does not reliably wait for GUI-subsystem executables or
-          # populate $LASTEXITCODE for them. Wait explicitly and inspect the
-          # actual process exit code so a successful self-test cannot look like
-          # a failure merely because $LASTEXITCODE is $null.
           $selfTest = Start-Process `
             -FilePath $exe `
             -ArgumentList "--self-test" `
@@ -137,7 +124,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: macOS Apple Silicon (20 MiB maximum)
+    name: macOS 15 Apple Silicon (20 MiB maximum)
     runs-on: macos-15
     steps:
       - name: Checkout repository
@@ -155,33 +142,7 @@ jobs:
 
       - name: Install build dependencies
         shell: bash
-        run: brew install cmake ninja
-
-      - name: Build macOS 11-compatible ARM64 OpenSSL
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="openssl-${OPENSSL_VERSION}.tar.gz"
-          curl -fL --retry 3 -o "$archive" \
-            "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/${archive}"
-          echo "${OPENSSL_SHA256}  ${archive}" | shasum -a 256 -c -
-          tar -xzf "$archive"
-
-          prefix="$PWD/openssl-install"
-          (
-            cd "openssl-${OPENSSL_VERSION}"
-            export MACOSX_DEPLOYMENT_TARGET=11.0
-            ./Configure darwin64-arm64-cc \
-              -Os no-shared no-tests no-apps \
-              --prefix="$prefix" \
-              --openssldir="$prefix/ssl"
-            make -j"$(sysctl -n hw.ncpu)"
-            make install_sw
-          )
-
-          test -d "$prefix/include/openssl"
-          test -s "$prefix/lib/libssl.a" || test -s "$prefix/lib64/libssl.a"
-          test -s "$prefix/lib/libcrypto.a" || test -s "$prefix/lib64/libcrypto.a"
+        run: brew install cmake ninja openssl@3
 
       - name: Configure CMake
         shell: bash
@@ -190,14 +151,14 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
             -DCMAKE_CXX_FLAGS_RELEASE="-Oz -DNDEBUG" \
             -DCMAKE_OBJCXX_FLAGS_RELEASE="-Oz -DNDEBUG" \
-            -DOPENSSL_ROOT_DIR="$PWD/openssl-install" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
             -DOPENSSL_USE_STATIC_LIBS=TRUE \
             -DNSO_STATIC_RUNTIME=ON
 
-      - name: Build, thin and package Apple Silicon app
+      - name: Build, slim and package Apple Silicon app
         shell: bash
         run: |
           set -euo pipefail
@@ -212,13 +173,8 @@ jobs:
           test -x "$binary"
           test -f "$framework"
           test -s "$notices"
-
-          echo "App architecture before packaging: $(lipo -archs "$binary")"
           [[ "$(lipo -archs "$binary")" == "arm64" ]]
 
-          # The official Discord framework is Universal 2. The release itself
-          # is Apple Silicon-only, so retaining its Intel slice would waste
-          # roughly half the largest bundled native dependency.
           sdk_archs="$(lipo -archs "$framework")"
           echo "Discord framework architectures before thinning: $sdk_archs"
           [[ "$sdk_archs" == *arm64* ]]
@@ -228,11 +184,23 @@ jobs:
           fi
           [[ "$(lipo -archs "$framework")" == "arm64" ]]
 
-          # Headers and development-only metadata are not needed to execute the
-          # bundled framework. Keep Resources/Info.plist and nested runtimes.
+          # This app only uses Discord Rich Presence. Discord documents Krisp
+          # as optional and removable for size-sensitive distributions.
+          rm -rf "$framework_root/Versions/A/Frameworks/libdiscord_krisp.dylib"
+          rm -rf "$framework_root/Versions/A/Resources/Krisp"
+          find "$framework_root" -type f \( -iname '*krisp*' -o -iname '*.kef' -o -iname '*.kw' \) -delete
+          if find "$framework_root" \( -iname '*krisp*' -o -iname '*.kef' -o -iname '*.kw' \) -print -quit | grep -q .; then
+            echo "Krisp payload remained in the macOS framework" >&2
+            exit 1
+          fi
+
           rm -f "$framework_root/Headers"
           rm -rf "$framework_root/Versions/A/Headers"
+          rm -rf "$framework_root/Versions/A/_CodeSignature"
           find "$framework_root" -type d -name '*.dSYM' -prune -exec rm -rf {} + 2>/dev/null || true
+
+          codesign --remove-signature "$binary" 2>/dev/null || true
+          codesign --remove-signature "$framework" 2>/dev/null || true
 
           binary_before="$(stat -f%z "$binary")"
           framework_before="$(stat -f%z "$framework")"
@@ -243,12 +211,16 @@ jobs:
           echo "macOS app binary: $binary_before -> $binary_after bytes"
           echo "ARM64 Discord framework: $framework_before -> $framework_after bytes"
 
+          if otool -L "$framework" | grep -qi krisp; then
+            echo "Discord core framework unexpectedly hard-links Krisp" >&2
+            exit 1
+          fi
+
           otool -L "$binary"
           otool -L "$binary" | grep -q "discord_partner_sdk.framework"
           vtool -show-build "$binary"
-          vtool -show-build "$binary" | grep -Eq 'minos[[:space:]]+11\.0([[:space:]]|$)'
+          vtool -show-build "$binary" | grep -Eq 'minos[[:space:]]+15\.0([[:space:]]|$)'
 
-          # Free/local ad-hoc signing after all binary/framework modifications.
           codesign --force --deep --sign - --timestamp=none "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv --verbose=2 "$app" 2>&1
@@ -265,8 +237,6 @@ jobs:
           echo "Largest files in macOS app:"
           du -ah "$app" | sort -h | tail -n 20
 
-          # 20 MiB is a release requirement, not a soft target. Never publish a
-          # macOS archive that exceeds it.
           max_bytes=$((20 * 1024 * 1024))
           if (( zip_bytes > max_bytes )); then
             echo "macOS release ZIP exceeds the hard 20 MiB limit." >&2
@@ -379,15 +349,9 @@ jobs:
           Terminal=false
           DESKTOP
 
-          # Explicitly stage the private runtime and license notices. The app's
-          # RPATH includes ../lib once linuxdeploy places the executable in
-          # AppDir/usr/bin.
           cp build/libdiscord_partner_sdk.so AppDir/usr/lib/libdiscord_partner_sdk.so
           cp THIRD-PARTY-NOTICES.txt \
             AppDir/usr/share/doc/nso-album-sync/THIRD-PARTY-NOTICES.txt
-
-          # linuxdeploy resolves the desktop Icon= entry by basename. Give the
-          # staged SVG the same basename instead of the repository's icon.svg.
           cp icon.svg nso-album-sync.svg
 
           deploy="tools/linuxdeploy-x86_64.AppImage"
