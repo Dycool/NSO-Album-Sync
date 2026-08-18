@@ -1,0 +1,26 @@
+name: Retag
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  retag:
+    if: "github.event.head_commit.message == 'ci: move v1.1.0 tag'"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move v1.1.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: 98564535bb20216f7665257dca1787fb80ecf89b
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api \
+            --method PATCH \
+            "repos/$GITHUB_REPOSITORY/git/refs/tags/v1.1.0" \
+            -f sha="$TARGET_SHA" \
+            -F force=true
