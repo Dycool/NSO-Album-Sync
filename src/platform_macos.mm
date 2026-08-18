@@ -233,15 +233,11 @@ void rebuild_menu(PlatformUi::Impl* impl) {
 
     [impl->menu removeAllItems];
 
-    add_status_item(impl->menu, "Nintendo Switch Online · Album Sync", true);
     add_status_item(
         impl->menu,
         state.signed_in
             ? "Connected as " + state.nickname
             : "Not signed in");
-    add_status_item(
-        impl->menu,
-        "Status: " + (state.status.empty() ? std::string("Ready") : state.status));
     add_status_item(impl->menu, "Last sync: " + state.last_sync);
     [impl->menu addItem:[NSMenuItem separatorItem]];
 
@@ -471,9 +467,7 @@ std::string PlatformUi::prompt(
         auto* field = [[NSTextField alloc]
             initWithFrame:NSMakeRect(0, 0, 500, 26)];
         field.stringValue = ns_string(initial);
-        field.placeholderString = [ns_string(title) containsString:@"Nintendo"]
-            ? @"npf71b963c1b7b6d119://auth#session_token_code=…"
-            : @"Optional value";
+        field.placeholderString = @"Optional value";
         alert.accessoryView = field;
 
         if ([alert runModal] == NSAlertFirstButtonReturn) {
