@@ -623,7 +623,7 @@ int App::run() {
         const auto current = config_.snapshot();
         const auto proxy = ui_.prompt(
             "HTTP Proxy",
-            "Optional. Enter a proxy URL, or leave this blank to connect directly.",
+            "Enter a proxy URL.",
             current.proxy_url);
         const auto normalized = trim(proxy);
         config_.update([&](AppConfig& value) {
