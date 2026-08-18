@@ -154,7 +154,8 @@ void dispatch_menu_action(PlatformUi::Impl* impl, NSInteger command) {
     (void)center;
     (void)notification;
     completionHandler(
-        UNNotificationPresentationOptionAlert |
+        UNNotificationPresentationOptionList |
+        UNNotificationPresentationOptionBanner |
         UNNotificationPresentationOptionSound);
 }
 @end
