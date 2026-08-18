@@ -62,11 +62,6 @@ std::string extract_parameter(const std::string& input, const std::string& name)
     return url_decode_component(value);
 }
 
-std::string extract_session_token_code(const std::string& input) {
-    const auto code = extract_parameter(input, "session_token_code");
-    return code.empty() ? input : code;
-}
-
 }  // namespace
 
 std::string NintendoAuthManager::authorize_url() {
@@ -85,30 +80,32 @@ std::string NintendoAuthManager::authorize_url() {
            "&theme=login_form";
 }
 
-AuthResult NintendoAuthManager::complete_login(const std::string& redirect_url_or_code) {
+AuthResult NintendoAuthManager::complete_login(const std::string& callback_url) {
     if (pkce_verifier_.empty() || oauth_state_.empty()) {
         throw std::runtime_error("Nintendo sign-in session expired. Open the sign-in page again.");
     }
 
-    if (is_nintendo_auth_callback(redirect_url_or_code)) {
-        const auto returned_state = extract_parameter(redirect_url_or_code, "state");
-        if (returned_state.empty() || returned_state != oauth_state_) {
-            throw std::runtime_error("Nintendo sign-in callback had an invalid OAuth state.");
-        }
-
-        const auto error = extract_parameter(redirect_url_or_code, "error");
-        if (!error.empty()) {
-            throw std::runtime_error(error == "access_denied"
-                ? "Nintendo Account sign-in was cancelled."
-                : "Nintendo Account sign-in failed: " + error);
-        }
-
-        if (extract_parameter(redirect_url_or_code, "session_token_code").empty()) {
-            throw std::runtime_error("Nintendo sign-in callback did not include a session token code.");
-        }
+    if (!is_nintendo_auth_callback(callback_url)) {
+        throw std::runtime_error("Nintendo sign-in did not return through the registered browser callback.");
     }
 
-    const auto code = extract_session_token_code(redirect_url_or_code);
+    const auto returned_state = extract_parameter(callback_url, "state");
+    if (returned_state.empty() || returned_state != oauth_state_) {
+        throw std::runtime_error("Nintendo sign-in callback had an invalid OAuth state.");
+    }
+
+    const auto error = extract_parameter(callback_url, "error");
+    if (!error.empty()) {
+        throw std::runtime_error(error == "access_denied"
+            ? "Nintendo Account sign-in was cancelled."
+            : "Nintendo Account sign-in failed: " + error);
+    }
+
+    const auto code = extract_parameter(callback_url, "session_token_code");
+    if (code.empty()) {
+        throw std::runtime_error("Nintendo sign-in callback did not include a session token code.");
+    }
+
     const auto session_token = exchange_code(code, pkce_verifier_);
     pkce_verifier_.clear();
     oauth_state_.clear();
