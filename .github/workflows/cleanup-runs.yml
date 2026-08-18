@@ -1,0 +1,55 @@
+name: Cleanup Runs
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    if: "github.event.head_commit.message == 'ci: clean workflow runs'"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t runs < <(
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+              --jq '.workflow_runs[].id'
+          )
+
+          for run_id in "${runs[@]}"; do
+            [[ "$run_id" == "$CURRENT_RUN_ID" ]] && continue
+
+            status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status' 2>/dev/null || true)"
+            if [[ -z "$status" ]]; then
+              continue
+            fi
+
+            if [[ "$status" != "completed" ]]; then
+              gh api --method POST \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/force-cancel" \
+                >/dev/null 2>&1 || true
+
+              for _ in {1..30}; do
+                status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status' 2>/dev/null || true)"
+                [[ -z "$status" || "$status" == "completed" ]] && break
+                sleep 2
+              done
+            fi
+
+            gh api --method DELETE \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+              >/dev/null 2>&1 || true
+          done
+
+          echo "Deleted all deletable workflow runs except this cleanup run."
