@@ -268,7 +268,27 @@ std::map<std::string, std::string> read_response_headers(HINTERNET request) {
     return result;
 }
 
-std::vector<unsigned char> read_response_body(HINTERNET request) {
+void enforce_declared_response_limit(
+    const std::map<std::string, std::string>& headers,
+    std::size_t max_response_bytes) {
+    if (max_response_bytes == 0) return;
+    const auto content_length = headers.find("content-length");
+    if (content_length == headers.end()) return;
+    try {
+        const auto declared = std::stoull(content_length->second);
+        if (declared > max_response_bytes) {
+            throw std::runtime_error("HTTP response exceeded configured size limit");
+        }
+    } catch (const std::invalid_argument&) {
+        throw std::runtime_error("Invalid Content-Length header");
+    } catch (const std::out_of_range&) {
+        throw std::runtime_error("Invalid Content-Length header");
+    }
+}
+
+std::vector<unsigned char> read_response_body(
+    HINTERNET request,
+    std::size_t max_response_bytes) {
     std::vector<unsigned char> body;
 
     for (;;) {
@@ -281,8 +301,15 @@ std::vector<unsigned char> read_response_body(HINTERNET request) {
             break;
         }
 
+        const auto count = static_cast<std::size_t>(available);
+        if (max_response_bytes != 0 &&
+            (body.size() > max_response_bytes ||
+             count > max_response_bytes - body.size())) {
+            throw std::runtime_error("HTTP response exceeded configured size limit");
+        }
+
         const auto start = body.size();
-        body.resize(start + available);
+        body.resize(start + count);
 
         DWORD read = 0;
         if (!WinHttpReadData(
@@ -338,7 +365,8 @@ HttpResponse HttpClient::request(
     const std::vector<std::string>& headers,
     const std::vector<unsigned char>& body,
     const std::string& content_type,
-    long timeout_seconds) const {
+    long timeout_seconds,
+    std::size_t max_response_bytes) const {
     const auto destination = parse_url(url);
 
     std::wstring proxy;
@@ -438,15 +466,18 @@ HttpResponse HttpClient::request(
     HttpResponse response;
     response.status = static_cast<long>(status);
     response.headers = read_response_headers(request.get());
-    response.body = read_response_body(request.get());
+    enforce_declared_response_limit(response.headers, max_response_bytes);
+    response.body = read_response_body(request.get(), max_response_bytes);
     return response;
 }
 
 HttpResponse HttpClient::get(
     const std::string& url,
     const std::vector<std::string>& headers,
-    long timeout_seconds) const {
-    return request("GET", url, headers, {}, "", timeout_seconds);
+    long timeout_seconds,
+    std::size_t max_response_bytes) const {
+    return request(
+        "GET", url, headers, {}, "", timeout_seconds, max_response_bytes);
 }
 
 HttpResponse HttpClient::post(
