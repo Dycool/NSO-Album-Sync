@@ -87,8 +87,14 @@ if(NOT EXISTS "${NSO_DISCORD_SOCIAL_SDK_ROOT}/include/discordpp.h" OR
     )
 endif()
 
+set(NSO_THIRD_PARTY_NOTICES "${CMAKE_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt")
+if(NOT EXISTS "${NSO_THIRD_PARTY_NOTICES}")
+    message(FATAL_ERROR "THIRD-PARTY-NOTICES.txt is required for release packaging")
+endif()
+
 set(NSO_DISCORD_SDK_INCLUDE_DIR "${NSO_DISCORD_SOCIAL_SDK_ROOT}/include")
 set(NSO_DISCORD_SDK_RESOURCE_ID 201)
+set(NSO_THIRD_PARTY_NOTICES_RESOURCE_ID 202)
 set(NSO_DISCORD_SDK_IS_FRAMEWORK FALSE)
 
 if(WIN32)
@@ -177,13 +183,15 @@ if(WIN32)
         @ONLY
     )
 
-    # Keep the Windows release as one .exe. The signed Discord runtime is
-    # embedded as RCDATA, extracted only when Rich Presence is first used, and
-    # loaded before the delay-import thunk resolves discord_partner_sdk.dll.
+    # Keep the Windows release as one .exe. The Discord runtime and required
+    # third-party notices are both embedded as RCDATA resources. The runtime is
+    # extracted only when Rich Presence is first used.
     file(TO_CMAKE_PATH "${NSO_DISCORD_SDK_RUNTIME}" NSO_DISCORD_SDK_RUNTIME_RC)
+    file(TO_CMAKE_PATH "${NSO_THIRD_PARTY_NOTICES}" NSO_THIRD_PARTY_NOTICES_RC)
     set(NSO_DISCORD_SDK_RC "${CMAKE_CURRENT_BINARY_DIR}/discord-social-sdk.rc")
     file(WRITE "${NSO_DISCORD_SDK_RC}"
-        "${NSO_DISCORD_SDK_RESOURCE_ID} RCDATA \"${NSO_DISCORD_SDK_RUNTIME_RC}\"\n")
+        "${NSO_DISCORD_SDK_RESOURCE_ID} RCDATA \"${NSO_DISCORD_SDK_RUNTIME_RC}\"\n"
+        "${NSO_THIRD_PARTY_NOTICES_RESOURCE_ID} RCDATA \"${NSO_THIRD_PARTY_NOTICES_RC}\"\n")
 
     list(APPEND NSO_SOURCES
         src/auth_callback_windows.cpp
@@ -198,6 +206,7 @@ elseif(APPLE)
     set(NSO_MACOS_ICON "${CMAKE_SOURCE_DIR}/app.icns")
     set_source_files_properties(
         "${NSO_MACOS_ICON}"
+        "${NSO_THIRD_PARTY_NOTICES}"
         PROPERTIES MACOSX_PACKAGE_LOCATION "Resources"
     )
     list(APPEND NSO_SOURCES
@@ -206,6 +215,7 @@ elseif(APPLE)
         src/platform_macos.mm
         src/secure_store_macos.mm
         "${NSO_MACOS_ICON}"
+        "${NSO_THIRD_PARTY_NOTICES}"
     )
 else()
     list(APPEND NSO_SOURCES
@@ -251,6 +261,7 @@ target_compile_definitions(
     PRIVATE
         NSO_DISCORD_SOCIAL_SDK_VERSION="${NSO_DISCORD_SOCIAL_SDK_VERSION}"
         NSO_DISCORD_SDK_RESOURCE_ID=${NSO_DISCORD_SDK_RESOURCE_ID}
+        NSO_THIRD_PARTY_NOTICES_RESOURCE_ID=${NSO_THIRD_PARTY_NOTICES_RESOURCE_ID}
 )
 target_link_libraries(nso-album-sync PRIVATE "${NSO_DISCORD_SDK_LINK_LIBRARY}")
 
@@ -353,7 +364,7 @@ elseif(APPLE)
                 --strict
                 --verbose=2
                 "$<TARGET_BUNDLE_DIR:nso-album-sync>"
-            COMMENT "Bundling Discord Social SDK framework and locally code-signing NSO Album Sync.app"
+            COMMENT "Bundling Discord Social SDK framework, notices, and locally code-signing NSO Album Sync.app"
             VERBATIM
         )
     else()
@@ -381,7 +392,7 @@ elseif(APPLE)
                 --strict
                 --verbose=2
                 "$<TARGET_BUNDLE_DIR:nso-album-sync>"
-            COMMENT "Bundling Discord Social SDK and locally code-signing NSO Album Sync.app"
+            COMMENT "Bundling Discord Social SDK, notices, and locally code-signing NSO Album Sync.app"
             VERBATIM
         )
     endif()
@@ -427,3 +438,9 @@ install(
     RUNTIME DESTINATION bin
     BUNDLE DESTINATION .
 )
+if(NOT WIN32 AND NOT APPLE)
+    install(
+        FILES "${NSO_THIRD_PARTY_NOTICES}"
+        DESTINATION share/doc/nso-album-sync
+    )
+endif()
