@@ -111,13 +111,11 @@ void App::invalidate_session(const std::string& reason) {
     auth_.clear_cached_tokens();
     config_.clear_session();
     config_.update([](AppConfig& config) {
-        config.user_nickname = "Nintendo Switch Player";
-        config.last_sync = "Never";
+        config.user_nickname.clear();
     });
     discord_.clear();
     {
         std::lock_guard state_lock(state_mutex_);
-        last_sync_ = "Never";
         status_ = reason;
     }
     update_menu();
@@ -152,10 +150,10 @@ void App::sync_now(bool background) {
             if (result.new_downloads > 0) {
                 ui_.notify(
                     "NSO Album Sync",
-                    std::to_string(result.new_downloads) +
+                    "Synced " + std::to_string(result.new_downloads) +
                         (result.new_downloads == 1
-                             ? " new capture downloaded."
-                             : " new captures downloaded."));
+                             ? " new capture to your album folder!"
+                             : " new captures to your album folder!"));
             } else if (!background) {
                 ui_.notify(
                     "NSO Album Sync",
@@ -278,13 +276,11 @@ void App::sign_in_or_out() {
         auth_.clear_cached_tokens();
         config_.clear_session();
         config_.update([](AppConfig& config) {
-            config.user_nickname = "Nintendo Switch Player";
-            config.last_sync = "Never";
+            config.user_nickname.clear();
         });
         discord_.clear();
         {
             std::lock_guard state_lock(state_mutex_);
-            last_sync_ = "Never";
             status_ = "Signed out";
         }
         update_menu();
@@ -405,9 +401,23 @@ void App::presence_loop() {
 
 void App::auto_sync_loop() {
     while (!stopping_) {
-        const auto config = config_.snapshot();
+        auto config = config_.snapshot();
+
+        // v1.0.0 only ran the recurring timer while auto-sync was enabled and
+        // an account was signed in. Wait indefinitely otherwise, then start a
+        // fresh interval when the setting/account becomes active.
+        if (!config.auto_sync || config.session_token.empty()) {
+            std::unique_lock sleep_lock(sleep_mutex_);
+            sleep_cv_.wait(sleep_lock, [this] {
+                if (stopping_) return true;
+                const auto state = config_.snapshot();
+                return state.auto_sync && !state.session_token.empty();
+            });
+            continue;
+        }
+
         const auto interval = std::chrono::minutes(
-            std::max(15, config.sync_interval_minutes));
+            std::max(1, config.sync_interval_minutes));
         std::unique_lock sleep_lock(sleep_mutex_);
         const auto wake_reason = sleep_cv_.wait_for(sleep_lock, interval);
         sleep_lock.unlock();
@@ -489,8 +499,11 @@ int App::run() {
         if (!had_session) sign_in_or_out();
         start_workers();
         const auto config = config_.snapshot();
-        if (had_session && !config.session_token.empty() && config.auto_sync) {
-            queue_sync(true);
+        // v1.0.0 always performed one immediate startup sync for an existing
+        // account, regardless of whether the recurring timer was enabled. It
+        // was treated like a foreground/manual sync for notification behavior.
+        if (had_session && !config.session_token.empty()) {
+            queue_sync(false);
         }
     };
 
@@ -510,20 +523,17 @@ int App::run() {
         if (config.notifications) {
             ui_.notify(
                 "NSO Album Sync",
-                config.auto_sync ? "Auto-sync enabled." : "Auto-sync disabled.");
+                config.auto_sync
+                    ? "Auto-sync enabled (refreshes every hour)."
+                    : "Auto-sync disabled.");
         }
     };
 
     callbacks.toggle_notifications = [this] {
-        const auto config = config_.update([](AppConfig& value) {
+        config_.update([](AppConfig& value) {
             value.notifications = !value.notifications;
         });
         update_menu();
-        if (config.notifications) {
-            ui_.notify(
-                "NSO Album Sync",
-                "Notifications are enabled and working.");
-        }
     };
 
     callbacks.toggle_discord = [this] {

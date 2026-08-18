@@ -8,7 +8,7 @@ A lightweight native tray/menu-bar app that keeps the recent Nintendo Switch Onl
 
 ## Features
 
-- **Album sync on demand**, plus opt-in background auto-sync (60 minutes by default). Recurring Nintendo requests are disabled until the user explicitly enables them.
+- **v1.0.0 sync behavior**: auto-sync is enabled by default at a 60-minute interval, an existing signed-in account always gets one immediate startup sync, and a successful sign-in always triggers the first sync. Disabling auto-sync stops only the recurring timer; manual/startup sync still works.
 - **Nintendo USB-compatible layout**: `Album/<Game Name>/YYYYMMDDHHMMSS00_c.jpg` / `.mp4`.
 - **Existing-album detection and restoration** so already-backed-up captures are skipped and locally deleted cloud captures can be restored.
 - **Title ID and localized-folder matching** to keep using existing Portuguese, Japanese, English, custom, and other localized game folders.
@@ -37,8 +37,8 @@ Rich Presence is disabled by default. When enabled, NSO Album Sync polls Nintend
 
 The release is intentionally kept to **one download per operating system**:
 
-- **Windows:** `nso-album-sync.exe` — x64 Windows. Tagged releases require Authenticode signing credentials; CI refuses to publish an unsigned tagged Windows build.
-- **macOS:** `nso-album-sync-macOS.zip` — one **Universal 2** app containing both Apple Silicon (`arm64`) and Intel (`x86_64`) code. Tagged releases require a Developer ID signature and Apple notarization; ordinary local/CI builds remain ad-hoc signed.
+- **Windows:** `nso-album-sync.exe` — x64 Windows. No paid Authenticode certificate is required by the build/release workflow.
+- **macOS:** `nso-album-sync-macOS.zip` — one **Universal 2** app containing both Apple Silicon (`arm64`) and Intel (`x86_64`) code. The final app is locally/ad-hoc codesigned and verified with `codesign --sign -`; no Apple Developer membership or notarization is required by the workflow.
 - **Linux:** `nso-album-sync.AppImage` — x64 Linux.
 
 ARM64 Windows and ARM64 Linux release variants are intentionally not produced. The macOS architecture-specific builds exist only as short-lived CI slices used to create the single Universal 2 application; they are not separate release downloads.
@@ -51,7 +51,7 @@ Release downloads and SHA-256 checksums are available on the [Releases](https://
 2. Read and accept the nxapi third-party disclosure.
 3. Nintendo's sign-in page opens in your normal browser. Sign in and click **Select this person**. The browser normally returns directly to NSO Album Sync and authentication completes automatically.
 4. If automatic return cannot be registered because another application owns Nintendo's callback scheme, NSO Album Sync shows the original manual redirect-link field instead of replacing that application's handler.
-5. After authentication, the app performs the user-requested first sync and then stays in the tray/menu bar. Recurring auto-sync and Discord presence are opt-in; use the menu to enable them and change the album folder, notifications, proxy, or startup behavior.
+5. After authentication, the app performs the first album sync and then stays in the tray/menu bar. Auto-sync follows v1.0.0 behavior and is enabled by default at 60 minutes; Discord Rich Presence remains opt-in and disabled by default.
 
 By default captures are saved under the user's Pictures directory in `Nintendo Switch Album/Album/...` unless another destination is selected.
 
@@ -64,9 +64,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-On macOS, CMake ad-hoc signs the generated `.app` after every local build by default (`NSO_MACOS_CODESIGN_IDENTITY=-`) and immediately verifies the signature. Release CI combines the arm64 and x86_64 executables with `lipo`; tagged releases are only published when Developer ID signing and notarization credentials are configured.
+On macOS, CMake ad-hoc signs the generated `.app` after every local build by default (`NSO_MACOS_CODESIGN_IDENTITY=-`) and immediately verifies the signature. Release CI combines the arm64 and x86_64 executables with `lipo`, then locally/ad-hoc signs the final Universal 2 bundle again with `codesign --sign -` and verifies it. No paid Apple Developer certificate or notarization credentials are required.
 
-For Windows tagged releases, configure `WINDOWS_CERTIFICATE_BASE64` and `WINDOWS_CERTIFICATE_PASSWORD`. For macOS tagged releases, configure `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`. Code signing substantially reduces SmartScreen/Gatekeeper warnings, but no project can guarantee reputation-based scanners will never warn about a newly published binary.
+Windows releases are built without a forced Authenticode signing requirement. This keeps the project free to build and release; Windows SmartScreen can still show reputation-based warnings for unsigned/new binaries.
 
 ## License
 

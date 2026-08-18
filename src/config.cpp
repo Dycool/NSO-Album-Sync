@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 
 #ifndef _WIN32
@@ -232,18 +233,11 @@ void ConfigManager::load() {
                 json, "userNickname", "UserNickname", config_.user_nickname);
             config_.destination_folder = string_with_legacy_key(
                 json, "destinationFolder", "DestinationFolder", config_.destination_folder);
-            const auto auto_sync_setting_version =
-                json.integer("autoSyncSettingVersion", 0);
-            if (auto_sync_setting_version >= 1) {
-                config_.auto_sync = bool_with_legacy_key(
-                    json, "autoSync", "AutoSyncEnabled", false);
-            } else {
-                // Recurring Nintendo requests require explicit opt-in. Older
-                // builds enabled this by default, so do not treat that saved
-                // default as consent after upgrading.
-                config_.auto_sync = false;
-                needs_config_rewrite = true;
-            }
+            // v1.0.0 defaulted auto-sync to enabled and respected an
+            // explicitly saved AutoSyncEnabled/autoSync value. Preserve that
+            // behavior across the C++ config migration.
+            config_.auto_sync = bool_with_legacy_key(
+                json, "autoSync", "AutoSyncEnabled", config_.auto_sync);
             config_.auto_sync_setting_version = 1;
             config_.notifications = bool_with_legacy_key(
                 json, "notifications", "NotificationsEnabled", false);
@@ -265,8 +259,8 @@ void ConfigManager::load() {
             config_.sync_interval_minutes = static_cast<int>(std::clamp<std::int64_t>(
                 integer_with_legacy_key(
                     json, "syncIntervalMinutes", "SyncIntervalMinutes", 60),
-                15,
-                10'080));
+                1,
+                (std::numeric_limits<int>::max)()));
             config_.last_sync = display_last_sync(string_with_legacy_key(
                 json, "lastSync", "LastSyncTime", "Never"));
             config_.proxy_url = string_with_legacy_key(

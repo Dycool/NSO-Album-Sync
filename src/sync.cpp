@@ -8,9 +8,12 @@
 #endif
 
 #include <chrono>
+#include <cctype>
+#include <cstdint>
 #include <ctime>
 #include <fstream>
 #include <set>
+#include <utility>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -29,6 +32,140 @@ bool should_cancel(const std::function<bool()>& cancelled) {
 
 void throw_if_cancelled(const std::function<bool()>& cancelled) {
     if (should_cancel(cancelled)) throw std::runtime_error("Sync cancelled");
+}
+
+void append_utf8(std::string& output, std::uint32_t code_point) {
+    if (code_point <= 0x7f) {
+        output.push_back(static_cast<char>(code_point));
+    } else if (code_point <= 0x7ff) {
+        output.push_back(static_cast<char>(0xc0 | (code_point >> 6)));
+        output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+    } else if (code_point <= 0xffff) {
+        output.push_back(static_cast<char>(0xe0 | (code_point >> 12)));
+        output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3f)));
+        output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+    } else {
+        output.push_back(static_cast<char>(0xf0 | (code_point >> 18)));
+        output.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3f)));
+        output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3f)));
+        output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+    }
+}
+
+std::pair<std::uint32_t, std::size_t> decode_utf8(
+    const std::string& text,
+    std::size_t offset) {
+    const auto first = static_cast<unsigned char>(text[offset]);
+    if (first < 0x80) return {first, 1};
+
+    auto continuation = [&](std::size_t index) -> int {
+        if (index >= text.size()) return -1;
+        const auto byte = static_cast<unsigned char>(text[index]);
+        return (byte & 0xc0) == 0x80 ? (byte & 0x3f) : -1;
+    };
+
+    if ((first & 0xe0) == 0xc0) {
+        const int b1 = continuation(offset + 1);
+        if (b1 >= 0) return {((first & 0x1fU) << 6U) | static_cast<unsigned>(b1), 2};
+    } else if ((first & 0xf0) == 0xe0) {
+        const int b1 = continuation(offset + 1);
+        const int b2 = continuation(offset + 2);
+        if (b1 >= 0 && b2 >= 0) {
+            return {((first & 0x0fU) << 12U) |
+                        (static_cast<unsigned>(b1) << 6U) |
+                        static_cast<unsigned>(b2),
+                    3};
+        }
+    } else if ((first & 0xf8) == 0xf0) {
+        const int b1 = continuation(offset + 1);
+        const int b2 = continuation(offset + 2);
+        const int b3 = continuation(offset + 3);
+        if (b1 >= 0 && b2 >= 0 && b3 >= 0) {
+            return {((first & 0x07U) << 18U) |
+                        (static_cast<unsigned>(b1) << 12U) |
+                        (static_cast<unsigned>(b2) << 6U) |
+                        static_cast<unsigned>(b3),
+                    4};
+        }
+    }
+    return {first, 1};
+}
+
+std::string normalize_for_matching_v1(const std::string& text) {
+    std::string normalized;
+    normalized.reserve(text.size());
+
+    for (std::size_t offset = 0; offset < text.size();) {
+        const auto [code_point, width] = decode_utf8(text, offset);
+        offset += width;
+
+        if (code_point >= 0x0300 && code_point <= 0x036f) continue;
+
+        if (code_point < 0x80) {
+            const auto character = static_cast<unsigned char>(code_point);
+            if (std::isalnum(character)) {
+                normalized.push_back(static_cast<char>(std::tolower(character)));
+            }
+            continue;
+        }
+
+        char latin = '\0';
+        switch (code_point) {
+            case 0x00c0: case 0x00c1: case 0x00c2: case 0x00c3: case 0x00c4: case 0x00c5:
+            case 0x00e0: case 0x00e1: case 0x00e2: case 0x00e3: case 0x00e4: case 0x00e5:
+                latin = 'a'; break;
+            case 0x00c7: case 0x00e7: latin = 'c'; break;
+            case 0x00c8: case 0x00c9: case 0x00ca: case 0x00cb:
+            case 0x00e8: case 0x00e9: case 0x00ea: case 0x00eb:
+                latin = 'e'; break;
+            case 0x00cc: case 0x00cd: case 0x00ce: case 0x00cf:
+            case 0x00ec: case 0x00ed: case 0x00ee: case 0x00ef:
+                latin = 'i'; break;
+            case 0x00d1: case 0x00f1: latin = 'n'; break;
+            case 0x00d2: case 0x00d3: case 0x00d4: case 0x00d5: case 0x00d6: case 0x00d8:
+            case 0x00f2: case 0x00f3: case 0x00f4: case 0x00f5: case 0x00f6: case 0x00f8:
+                latin = 'o'; break;
+            case 0x00d9: case 0x00da: case 0x00db: case 0x00dc:
+            case 0x00f9: case 0x00fa: case 0x00fb: case 0x00fc:
+                latin = 'u'; break;
+            case 0x00dd: case 0x0178: case 0x00fd: case 0x00ff:
+                latin = 'y'; break;
+            default: break;
+        }
+        if (latin != '\0') {
+            normalized.push_back(latin);
+            continue;
+        }
+
+        // .NET v1 kept non-Latin letters/digits after Unicode decomposition.
+        // Preserve their UTF-8 representation so exact Japanese and other
+        // localized aliases continue to compare instead of collapsing to empty.
+        append_utf8(normalized, code_point);
+    }
+    return normalized;
+}
+
+std::string sanitize_folder_v1(const std::string& text) {
+    if (trim(text).empty()) return "Other";
+    std::string clean;
+    clean.reserve(text.size());
+    for (const unsigned char character : text) {
+        if (character < 0x20) continue;
+        switch (character) {
+            case '<': case '>': case ':': case '"': case '/':
+            case '\\': case '|': case '?': case '*':
+                continue;
+            default:
+                clean.push_back(static_cast<char>(character));
+                break;
+        }
+    }
+    clean = trim(std::move(clean));
+    return clean.empty() ? "Other" : clean;
+}
+
+bool equal_v1_name(const std::string& left, const std::string& right) {
+    return lower(left) == lower(right);
 }
 
 std::string capture_timestamp_prefix(std::int64_t timestamp) {
@@ -96,7 +233,7 @@ std::unordered_map<std::string, std::string> learn_title_folders(
         const auto existing_folder =
             existing.folder_by_timestamp_prefix.find(lower(prefix));
         if (existing_folder != existing.folder_by_timestamp_prefix.end()) {
-            folders[item.title_id] = existing_folder->second;
+            folders[lower(item.title_id)] = existing_folder->second;
         }
     }
     return folders;
@@ -144,40 +281,74 @@ void preserve_capture_timestamp(
 std::string SyncEngine::resolve_game_folder(
     const std::filesystem::path& album_directory,
     const std::string& app_name) const {
-    const auto sanitized_name = sanitize_folder(app_name);
-    if (!std::filesystem::exists(album_directory)) return sanitized_name;
+    const auto default_clean = sanitize_folder_v1(app_name);
+    if (!std::filesystem::exists(album_directory) || trim(app_name).empty()) {
+        return default_clean;
+    }
 
-    const auto normalized_app_name = normalize_title(app_name);
-    std::vector<std::string> aliases{app_name};
-    for (const auto& group : game_alias_groups()) {
-        bool group_matches = false;
-        for (const auto& alias : group) {
-            if (normalize_title(alias) == normalized_app_name) {
-                group_matches = true;
+    try {
+        struct DirectoryName {
+            std::string original;
+            std::string normalized;
+        };
+        std::vector<DirectoryName> directories;
+        for (const auto& directory : std::filesystem::directory_iterator(album_directory)) {
+            if (!directory.is_directory()) continue;
+            const auto name = directory.path().filename().string();
+            directories.push_back({name, normalize_for_matching_v1(name)});
+        }
+
+        const auto normalized_app_name = normalize_for_matching_v1(app_name);
+        std::vector<std::string> synonyms{app_name};
+        for (const auto& group : game_alias_groups()) {
+            bool group_matches = false;
+            for (const auto& alias : group) {
+                if (normalize_for_matching_v1(alias) == normalized_app_name) {
+                    group_matches = true;
+                    break;
+                }
+            }
+            if (group_matches) {
+                synonyms = group;
                 break;
             }
         }
-        if (group_matches) {
-            aliases = group;
-            break;
+
+        // Match v1.0.0 ordering: sanitized exact match first, then normalized
+        // exact match for every known localization/synonym.
+        for (const auto& synonym : synonyms) {
+            const auto clean_synonym = sanitize_folder_v1(synonym);
+            const auto normalized_synonym = normalize_for_matching_v1(synonym);
+
+            for (const auto& directory : directories) {
+                if (equal_v1_name(directory.original, clean_synonym)) {
+                    return directory.original;
+                }
+            }
+            for (const auto& directory : directories) {
+                if (directory.normalized == normalized_synonym) {
+                    return directory.original;
+                }
+            }
         }
+
+        // v1's final fallback only fuzzed the API title itself, not every alias.
+        if (!normalized_app_name.empty()) {
+            for (const auto& directory : directories) {
+                if (directory.normalized.size() >= 6 &&
+                    normalized_app_name.size() >= 6 &&
+                    (directory.normalized.find(normalized_app_name) != std::string::npos ||
+                     normalized_app_name.find(directory.normalized) != std::string::npos)) {
+                    return directory.original;
+                }
+            }
+        }
+    } catch (...) {
+        // v1 treated local folder enumeration/matching failures as non-fatal and
+        // simply fell back to the sanitized API title.
     }
 
-    for (const auto& directory : std::filesystem::directory_iterator(album_directory)) {
-        if (!directory.is_directory()) continue;
-        const auto existing_name = directory.path().filename().string();
-        const auto normalized_existing = normalize_title(existing_name);
-        for (const auto& alias : aliases) {
-            const auto normalized_alias = normalize_title(alias);
-            const bool exact_match = normalized_existing == normalized_alias;
-            const bool fuzzy_match =
-                normalized_existing.size() >= 6 && normalized_alias.size() >= 6 &&
-                (normalized_existing.find(normalized_alias) != std::string::npos ||
-                 normalized_alias.find(normalized_existing) != std::string::npos);
-            if (exact_match || fuzzy_match) return existing_name;
-        }
-    }
-    return sanitized_name;
+    return default_clean;
 }
 
 SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
@@ -214,7 +385,7 @@ SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
         }
 
         std::string game_folder;
-        if (const auto known_folder = title_folders.find(item.title_id);
+        if (const auto known_folder = title_folders.find(lower(item.title_id));
             known_folder != title_folders.end()) {
             game_folder = known_folder->second;
         } else {
