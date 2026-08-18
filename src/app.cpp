@@ -477,7 +477,13 @@ int App::run() {
         }
     };
 
-    callbacks.sync_now = [this] { queue_sync(false); };
+    callbacks.sync_now = [this] {
+        queue_sync(false);
+        const auto config = config_.snapshot();
+        if (config.discord_presence && !config.session_token.empty()) {
+            presence_cv_.notify_all();
+        }
+    };
 
     callbacks.toggle_auto = [this] {
         const auto config = config_.update([](AppConfig& value) {
