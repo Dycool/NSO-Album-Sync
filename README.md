@@ -30,7 +30,9 @@
 3. Choose your album folder if you do not want the default Pictures folder.
 4. Leave the app running in the tray/menu bar. Auto-sync runs every 60 minutes by default.
 
-Discord Rich Presence is optional and disabled by default.
+Discord Rich Presence is optional and disabled by default. It requires the Discord desktop client to be running.
+
+Release builds target **Windows 10+ x64**, **macOS 11+ Universal 2**, and **Linux x64 with glibc 2.35+**.
 
 ---
 
@@ -43,9 +45,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-The app uses only the desktop Rich Presence path; it does not use a Discord client secret, bot token or Discord OAuth login. Official CI obtains the SDK from a private build-dependency cache rather than committing Discord SDK files to this public repository.
+The app uses Discord's desktop Rich Presence path with the public NSO Album Sync application ID. It does not use a Discord client secret, bot token or Discord OAuth login. Official CI obtains the SDK from a private build-dependency cache rather than committing Discord SDK files to this public repository.
 
-Windows builds are unsigned. macOS builds use local/ad-hoc codesigning and do not require an Apple Developer membership.
+Windows builds are unsigned. macOS builds use local/ad-hoc codesigning and do not require an Apple Developer membership. Required third-party runtime notices are included in release packages and are also available in [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
 
 ---
 
@@ -53,10 +55,10 @@ Windows builds are unsigned. macOS builds use local/ad-hoc codesigning and do no
 
 NSO Album Sync uses the third-party [`nxapi-znca-api`](https://github.com/samuelthomas2774/nxapi-znca-api) service for Nintendo Switch Online request attestation and Coral request/response encryption.
 
-The app shows a disclosure before sign-in because Nintendo Account/Coral authentication data and Coral API traffic are processed by that service. nxapi authentication tokens are kept in memory only, while reusable Nintendo/Coral credentials are stored in the operating system credential store when available.
+The app shows a disclosure before sign-in because the Nintendo Account `id_token`, Nintendo Account ID, birthday, country and language required by Coral, the Coral access token, and Coral API requests/responses used by the app are processed by that service. nxapi authentication tokens are kept in memory only, while reusable Nintendo/Coral credentials are stored in the operating system credential store when available.
 
 ---
 
 ## 📄 License
 
-Licensed under the [MIT License](LICENSE).
+Licensed under the [MIT License](LICENSE). Third-party runtime notices are listed in [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
