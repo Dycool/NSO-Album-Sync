@@ -100,22 +100,23 @@ if(WIN32)
     set(NSO_DISCORD_SDK_RUNTIME
         "${NSO_DISCORD_SOCIAL_SDK_ROOT}/bin/release/discord_partner_sdk.dll")
 elseif(APPLE)
-    # Discord Social SDK 1.10+ packages macOS as a framework. Keep the older
-    # dylib path as a local-build fallback, but official CI uses the framework.
+    # Discord Social SDK 1.10+ packages macOS as a versioned framework. Prefer
+    # the real versioned Mach-O binary so a cache populated through GitHub's web
+    # uploader still works even if the framework symlinks became marker files.
     set(NSO_DISCORD_SDK_FRAMEWORK
         "${NSO_DISCORD_SOCIAL_SDK_ROOT}/lib/release/discord_partner_sdk.framework")
     set(NSO_DISCORD_SDK_FRAMEWORK_BINARY
         "${NSO_DISCORD_SDK_FRAMEWORK}/discord_partner_sdk")
     set(NSO_DISCORD_SDK_FRAMEWORK_VERSIONED_BINARY
         "${NSO_DISCORD_SDK_FRAMEWORK}/Versions/A/discord_partner_sdk")
-    if(EXISTS "${NSO_DISCORD_SDK_FRAMEWORK_BINARY}")
-        set(NSO_DISCORD_SDK_IS_FRAMEWORK TRUE)
-        set(NSO_DISCORD_SDK_LINK_LIBRARY "${NSO_DISCORD_SDK_FRAMEWORK_BINARY}")
-        set(NSO_DISCORD_SDK_RUNTIME "${NSO_DISCORD_SDK_FRAMEWORK}")
-    elseif(EXISTS "${NSO_DISCORD_SDK_FRAMEWORK_VERSIONED_BINARY}")
+    if(EXISTS "${NSO_DISCORD_SDK_FRAMEWORK_VERSIONED_BINARY}")
         set(NSO_DISCORD_SDK_IS_FRAMEWORK TRUE)
         set(NSO_DISCORD_SDK_LINK_LIBRARY
             "${NSO_DISCORD_SDK_FRAMEWORK_VERSIONED_BINARY}")
+        set(NSO_DISCORD_SDK_RUNTIME "${NSO_DISCORD_SDK_FRAMEWORK}")
+    elseif(EXISTS "${NSO_DISCORD_SDK_FRAMEWORK_BINARY}")
+        set(NSO_DISCORD_SDK_IS_FRAMEWORK TRUE)
+        set(NSO_DISCORD_SDK_LINK_LIBRARY "${NSO_DISCORD_SDK_FRAMEWORK_BINARY}")
         set(NSO_DISCORD_SDK_RUNTIME "${NSO_DISCORD_SDK_FRAMEWORK}")
     else()
         set(NSO_DISCORD_SDK_LINK_LIBRARY
@@ -305,6 +306,8 @@ elseif(APPLE)
     find_program(NSO_CODESIGN_EXECUTABLE codesign REQUIRED)
     find_program(NSO_DITTO_EXECUTABLE ditto REQUIRED)
     if(NSO_DISCORD_SDK_IS_FRAMEWORK)
+        set(NSO_BUNDLED_DISCORD_FRAMEWORK
+            "$<TARGET_BUNDLE_DIR:nso-album-sync>/Contents/Frameworks/discord_partner_sdk.framework")
         add_custom_command(
             TARGET nso-album-sync
             POST_BUILD
@@ -313,11 +316,29 @@ elseif(APPLE)
                 "$<TARGET_BUNDLE_DIR:nso-album-sync>/Contents/Frameworks"
             COMMAND
                 "${CMAKE_COMMAND}" -E rm -rf
-                "$<TARGET_BUNDLE_DIR:nso-album-sync>/Contents/Frameworks/discord_partner_sdk.framework"
+                "${NSO_BUNDLED_DISCORD_FRAMEWORK}"
             COMMAND
                 "${NSO_DITTO_EXECUTABLE}"
                 "${NSO_DISCORD_SDK_RUNTIME}"
-                "$<TARGET_BUNDLE_DIR:nso-album-sync>/Contents/Frameworks/discord_partner_sdk.framework"
+                "${NSO_BUNDLED_DISCORD_FRAMEWORK}"
+            # A GitHub web upload represents framework symlinks as their link
+            # target text. Recreate the canonical framework links in the app.
+            COMMAND "${CMAKE_COMMAND}" -E rm -f
+                "${NSO_BUNDLED_DISCORD_FRAMEWORK}/Versions/Current"
+                "${NSO_BUNDLED_DISCORD_FRAMEWORK}/Frameworks"
+                "${NSO_BUNDLED_DISCORD_FRAMEWORK}/Headers"
+                "${NSO_BUNDLED_DISCORD_FRAMEWORK}/Resources"
+                "${NSO_BUNDLED_DISCORD_FRAMEWORK}/discord_partner_sdk"
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink
+                "A" "${NSO_BUNDLED_DISCORD_FRAMEWORK}/Versions/Current"
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink
+                "Versions/Current/Frameworks" "${NSO_BUNDLED_DISCORD_FRAMEWORK}/Frameworks"
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink
+                "Versions/Current/Headers" "${NSO_BUNDLED_DISCORD_FRAMEWORK}/Headers"
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink
+                "Versions/Current/Resources" "${NSO_BUNDLED_DISCORD_FRAMEWORK}/Resources"
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink
+                "Versions/Current/discord_partner_sdk" "${NSO_BUNDLED_DISCORD_FRAMEWORK}/discord_partner_sdk"
             COMMAND
                 "${NSO_CODESIGN_EXECUTABLE}"
                 --force
