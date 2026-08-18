@@ -30,6 +30,8 @@ struct AppConfig {
     std::uint64_t discord_application_id = kDiscordApplicationId;
 };
 
+std::string default_album_folder();
+
 class ConfigManager {
 public:
     ConfigManager();

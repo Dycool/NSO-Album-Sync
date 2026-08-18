@@ -62,6 +62,7 @@ std::filesystem::path config_directory() {
            ".config" / "NSOAlbumSync";
 #endif
 }
+}  // namespace
 
 std::string default_album_folder() {
 #ifdef _WIN32
@@ -121,6 +122,8 @@ std::string default_album_folder() {
     return (base / "Pictures" / "Nintendo Switch").string();
 #endif
 }
+
+namespace {
 
 std::string string_with_legacy_key(
     const Json& json,
