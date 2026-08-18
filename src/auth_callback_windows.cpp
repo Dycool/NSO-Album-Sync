@@ -18,6 +18,8 @@ constexpr wchar_t kUserSchemeKey[] =
 constexpr wchar_t kCommandSuffix[] = L"\\shell\\open\\command";
 constexpr wchar_t kHandlerDescription[] =
     L"URL:NSO Album Sync Nintendo Account callback";
+constexpr wchar_t kTrayClass[] = L"NSOAlbumSyncTray";
+constexpr ULONG_PTR kAuthCallbackCopyDataId = 0x4E534F41u;
 
 bool g_created_handler = false;
 
@@ -208,6 +210,33 @@ void unregister_nintendo_auth_protocol() {
     }
     RegDeleteTreeW(HKEY_CURRENT_USER, kUserSchemeKey);
     g_created_handler = false;
+}
+
+bool forward_nintendo_auth_callback_to_running_instance(const std::string& url) {
+    if (!is_nintendo_auth_callback(url)) {
+        return false;
+    }
+
+    HWND target = FindWindowExW(HWND_MESSAGE, nullptr, kTrayClass, nullptr);
+    if (target == nullptr) {
+        return false;
+    }
+
+    COPYDATASTRUCT data{};
+    data.dwData = kAuthCallbackCopyDataId;
+    data.cbData = static_cast<DWORD>(url.size() + 1);
+    data.lpData = const_cast<char*>(url.c_str());
+
+    DWORD_PTR handled = 0;
+    const LRESULT sent = SendMessageTimeoutW(
+        target,
+        WM_COPYDATA,
+        0,
+        reinterpret_cast<LPARAM>(&data),
+        SMTO_ABORTIFHUNG | SMTO_BLOCK,
+        2000,
+        &handled);
+    return sent != 0 && handled != 0;
 }
 
 }  // namespace nso
