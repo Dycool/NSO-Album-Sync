@@ -50,7 +50,7 @@ jobs:
         shell: pwsh
         run: cmake --build build --config $env:BUILD_TYPE --parallel
 
-      - name: Stage Windows executable
+      - name: Stage and verify Windows executable
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -58,10 +58,56 @@ jobs:
           $exe = (Resolve-Path "build/$env:BUILD_TYPE/nso-album-sync.exe").Path
           Copy-Item $exe "dist/nso-album-sync.exe"
 
+          # The Windows release intentionally remains one executable. Verify
+          # that both the lazy-loaded Discord runtime and third-party notices
+          # were actually embedded as RCDATA resources before publishing it.
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NsoResourceCheck {
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr LoadLibraryExW(string fileName, IntPtr file, uint flags);
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "FindResourceW", SetLastError = true)]
+              public static extern IntPtr FindResource(IntPtr module, IntPtr name, IntPtr type);
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern uint SizeofResource(IntPtr module, IntPtr resource);
+              [DllImport("kernel32.dll")]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          "@
+
+          $module = [NsoResourceCheck]::LoadLibraryExW($exe, [IntPtr]::Zero, 0x2)
+          if ($module -eq [IntPtr]::Zero) { throw "Could not inspect staged executable resources" }
+          try {
+            $rtRcData = [IntPtr]10
+            foreach ($expected in @(
+              @{ Id = 201; Minimum = 1MB; Name = "Discord runtime" },
+              @{ Id = 202; Minimum = 1KB; Name = "third-party notices" }
+            )) {
+              $resource = [NsoResourceCheck]::FindResource(
+                $module, [IntPtr]$expected.Id, $rtRcData)
+              if ($resource -eq [IntPtr]::Zero) {
+                throw "Missing embedded $($expected.Name) resource $($expected.Id)"
+              }
+              $resourceSize = [NsoResourceCheck]::SizeofResource($module, $resource)
+              if ($resourceSize -lt $expected.Minimum) {
+                throw "Embedded $($expected.Name) resource is unexpectedly small ($resourceSize bytes)"
+              }
+              Write-Host "$($expected.Name) resource: $resourceSize bytes"
+            }
+          } finally {
+            [void][NsoResourceCheck]::FreeLibrary($module)
+          }
+
+          $files = @(Get-ChildItem dist -File)
+          if ($files.Count -ne 1 -or $files[0].Name -ne "nso-album-sync.exe") {
+            throw "Windows distribution must contain exactly one executable"
+          }
+
           $size = (Get-Item $exe).Length
           Write-Host ("Application executable size: {0:N2} MB" -f ($size / 1MB))
-          if ($size -gt 10MB) {
-            Write-Warning "Application executable is above the 10 MB target."
+          if ($size -gt 15MB) {
+            Write-Warning "Application executable is above the 15 MB target."
           }
 
       - name: Upload Windows build
@@ -110,6 +156,7 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DCMAKE_OSX_ARCHITECTURES="${{ matrix.cmake_arch }}" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
             -DOPENSSL_USE_STATIC_LIBS=TRUE \
             -DNSO_STATIC_RUNTIME=ON
@@ -121,8 +168,28 @@ jobs:
           cmake --build build --parallel
           app="build/nso-album-sync.app"
           binary="$app/Contents/MacOS/nso-album-sync"
-          codesign --verify --strict --verbose=2 "$app"
-          lipo -archs "$binary"
+          framework="$app/Contents/Frameworks/discord_partner_sdk.framework/Versions/A/discord_partner_sdk"
+          notices="$app/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+
+          test -x "$binary"
+          test -f "$framework"
+          test -s "$notices"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+          app_archs="$(lipo -archs "$binary")"
+          echo "Slice executable architectures: $app_archs"
+          [[ "$app_archs" == *"${{ matrix.cmake_arch }}"* ]]
+
+          sdk_archs="$(lipo -archs "$framework")"
+          echo "Discord framework architectures: $sdk_archs"
+          [[ "$sdk_archs" == *arm64* ]]
+          [[ "$sdk_archs" == *x86_64* ]]
+
+          otool -L "$binary"
+          otool -L "$binary" | grep -q "discord_partner_sdk.framework"
+          vtool -show-build "$binary"
+          vtool -show-build "$binary" | grep -Eq 'minos[[:space:]]+11\.0([[:space:]]|$)'
+
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent "$app" dist/slice.zip
 
@@ -168,10 +235,26 @@ jobs:
             "$x64_app/Contents/MacOS/nso-album-sync" \
             -output "$app/Contents/MacOS/nso-album-sync"
 
-          archs="$(lipo -archs "$app/Contents/MacOS/nso-album-sync")"
+          binary="$app/Contents/MacOS/nso-album-sync"
+          framework="$app/Contents/Frameworks/discord_partner_sdk.framework/Versions/A/discord_partner_sdk"
+          notices="$app/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+
+          archs="$(lipo -archs "$binary")"
           echo "Universal executable architectures: $archs"
           [[ "$archs" == *arm64* ]]
           [[ "$archs" == *x86_64* ]]
+          test -f "$framework"
+          test -s "$notices"
+
+          sdk_archs="$(lipo -archs "$framework")"
+          echo "Bundled Discord framework architectures: $sdk_archs"
+          [[ "$sdk_archs" == *arm64* ]]
+          [[ "$sdk_archs" == *x86_64* ]]
+
+          otool -L "$binary"
+          otool -L "$binary" | grep -q "discord_partner_sdk.framework"
+          vtool -show-build "$binary"
+          vtool -show-build "$binary" | grep -Eq 'minos[[:space:]]+11\.0([[:space:]]|$)'
 
           # Free/local ad-hoc signing: no Apple Developer membership,
           # certificate, notarization, or paid signing service is required.
@@ -182,6 +265,8 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$app" \
             dist/nso-album-sync-macOS.zip
 
+          test "$(find dist -maxdepth 1 -type f -name '*.zip' | wc -l | tr -d ' ')" = "1"
+
       - name: Upload macOS Universal build
         uses: actions/upload-artifact@v7
         with:
@@ -190,10 +275,18 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: Linux x64 AppImage
+    name: Linux x64 AppImage (glibc 2.35 baseline)
     runs-on: ubuntu-24.04
+    container: ubuntu:22.04
 
     steps:
+      - name: Install checkout prerequisites
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git
+
       - name: Checkout repository
         uses: actions/checkout@v6
 
@@ -210,10 +303,12 @@ jobs:
       - name: Install build dependencies
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build curl libssl-dev libsecret-1-dev libpulse0 \
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils cmake curl file ninja-build libssl-dev libsecret-1-dev libpulse0 \
             libgtk-3-dev libayatana-appindicator3-dev
+          getconf GNU_LIBC_VERSION
+          test "$(getconf GNU_LIBC_VERSION | awk '{print $2}')" = "2.35"
 
       - name: Configure CMake
         shell: bash
@@ -224,15 +319,33 @@ jobs:
             -DNSO_STATIC_RUNTIME=ON \
             -DNSO_ENABLE_LINUX_TRAY=ON
 
-      - name: Build
-        shell: bash
-        run: cmake --build build --parallel
-
-      - name: Build AppImage
+      - name: Build and verify native runtime
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist tools
+          cmake --build build --parallel
+          test -x build/nso-album-sync
+          test -s build/libdiscord_partner_sdk.so
+
+          echo "Native executable dependencies:"
+          LD_LIBRARY_PATH="$PWD/build" ldd build/nso-album-sync
+          LD_LIBRARY_PATH="$PWD/build" ldd build/nso-album-sync | grep -q "libdiscord_partner_sdk.so"
+
+          highest_glibc="$({ objdump -T build/nso-album-sync; objdump -T build/libdiscord_partner_sdk.so; } \
+            | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' \
+            | sort -V | tail -n 1)"
+          echo "Highest directly required GLIBC symbol version: ${highest_glibc:-none}"
+          if [ -n "$highest_glibc" ] && \
+             [ "$(printf '%s\n%s\n' "$highest_glibc" '2.35' | sort -V | tail -n 1)" != "2.35" ]; then
+            echo "Linux binary requires glibc newer than the declared 2.35 baseline" >&2
+            exit 1
+          fi
+
+      - name: Build and inspect AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist tools AppDir/usr/lib AppDir/usr/share/doc/nso-album-sync
 
           cat > nso-album-sync.desktop <<'DESKTOP'
           [Desktop Entry]
@@ -244,6 +357,13 @@ jobs:
           Categories=Utility;Photography;
           Terminal=false
           DESKTOP
+
+          # Explicitly stage the private runtime and license notices. The app's
+          # RPATH includes ../lib once linuxdeploy places the executable in
+          # AppDir/usr/bin.
+          cp build/libdiscord_partner_sdk.so AppDir/usr/lib/libdiscord_partner_sdk.so
+          cp THIRD-PARTY-NOTICES.txt \
+            AppDir/usr/share/doc/nso-album-sync/THIRD-PARTY-NOTICES.txt
 
           # linuxdeploy resolves the desktop Icon= entry by basename. Give the
           # staged SVG the same basename instead of the repository's icon.svg.
@@ -272,6 +392,20 @@ jobs:
           size="$(stat -c%s dist/nso-album-sync.AppImage)"
           python3 -c 'import sys; s=int(sys.argv[1]); print(f"AppImage size: {s/1024/1024:.2f} MB")' "$size"
 
+          rm -rf appimage-inspect
+          mkdir appimage-inspect
+          (
+            cd appimage-inspect
+            ../dist/nso-album-sync.AppImage --appimage-extract >/dev/null
+          )
+          root="appimage-inspect/squashfs-root"
+          test -x "$root/usr/bin/nso-album-sync"
+          test -s "$root/usr/lib/libdiscord_partner_sdk.so"
+          test -s "$root/usr/share/doc/nso-album-sync/THIRD-PARTY-NOTICES.txt"
+          LD_LIBRARY_PATH="$root/usr/lib" ldd "$root/usr/bin/nso-album-sync"
+          LD_LIBRARY_PATH="$root/usr/lib" ldd "$root/usr/bin/nso-album-sync" \
+            | grep -q "libdiscord_partner_sdk.so"
+
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v7
         with:
@@ -279,9 +413,17 @@ jobs:
           path: dist/nso-album-sync.AppImage
           if-no-files-found: error
 
+  release-gate:
+    name: Release gate
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Confirm all release builds passed
+        run: echo "Windows, macOS, and Linux release artifacts passed packaging checks."
+
   release:
     name: GitHub Release
-    needs: [build-windows, build-macos, build-linux]
+    needs: [release-gate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
