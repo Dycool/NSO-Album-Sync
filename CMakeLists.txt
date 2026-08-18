@@ -28,7 +28,7 @@ set(
 )
 set(
     NSO_DISCORD_SOCIAL_SDK_VERSION
-    "1.10.18369"
+    "1.10.18687"
     CACHE STRING
     "Discord Social SDK version used for Rich Presence"
 )
@@ -73,29 +73,18 @@ if(NOT WIN32)
 endif()
 find_package(PkgConfig QUIET)
 
-# Rich Presence uses Discord's current Social SDK only. The SDK's direct
-# desktop Rich Presence transport does not use OAuth, access tokens, bot
-# tokens, client secrets, or Client::Connect().
+# Rich Presence uses Discord's current Social SDK only. CI checks out the
+# private SDK cache directly at NSO_DISCORD_SOCIAL_SDK_ROOT. Local builds can
+# point this variable at an official SDK extracted from the Developer Portal.
+# The desktop Rich Presence path does not use Discord OAuth, bot tokens,
+# client secrets, or Client::Connect().
 if(NOT EXISTS "${NSO_DISCORD_SOCIAL_SDK_ROOT}/include/discordpp.h" OR
    NOT EXISTS "${NSO_DISCORD_SOCIAL_SDK_ROOT}/include/cdiscord.h")
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    execute_process(
-        COMMAND
-            "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/scripts/fetch-discord-social-sdk.py"
-            --version "${NSO_DISCORD_SOCIAL_SDK_VERSION}"
-            --destination "${CMAKE_SOURCE_DIR}/third_party"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        RESULT_VARIABLE NSO_DISCORD_SDK_FETCH_RESULT
-        COMMAND_ECHO STDOUT
+    message(FATAL_ERROR
+        "Discord Social SDK ${NSO_DISCORD_SOCIAL_SDK_VERSION} was not found at "
+        "${NSO_DISCORD_SOCIAL_SDK_ROOT}. Extract the official standalone C++ SDK "
+        "there or set -DNSO_DISCORD_SOCIAL_SDK_ROOT=<path>."
     )
-    if(NOT NSO_DISCORD_SDK_FETCH_RESULT EQUAL 0)
-        message(FATAL_ERROR
-            "Could not obtain Discord Social SDK ${NSO_DISCORD_SOCIAL_SDK_VERSION}. "
-            "Download the official DiscordSocialSdk-${NSO_DISCORD_SOCIAL_SDK_VERSION}.zip "
-            "archive from the Discord Developer Portal and place it in third_party/."
-        )
-    endif()
 endif()
 
 set(NSO_DISCORD_SDK_INCLUDE_DIR "${NSO_DISCORD_SOCIAL_SDK_ROOT}/include")
@@ -111,14 +100,22 @@ if(WIN32)
     set(NSO_DISCORD_SDK_RUNTIME
         "${NSO_DISCORD_SOCIAL_SDK_ROOT}/bin/release/discord_partner_sdk.dll")
 elseif(APPLE)
-    # Social SDK 1.10+ ships macOS as a framework; retain a dylib fallback so
-    # local builds with an older manually extracted compatible SDK still work.
+    # Discord Social SDK 1.10+ packages macOS as a framework. Keep the older
+    # dylib path as a local-build fallback, but official CI uses the framework.
     set(NSO_DISCORD_SDK_FRAMEWORK
         "${NSO_DISCORD_SOCIAL_SDK_ROOT}/lib/release/discord_partner_sdk.framework")
-    if(EXISTS "${NSO_DISCORD_SDK_FRAMEWORK}/discord_partner_sdk")
+    set(NSO_DISCORD_SDK_FRAMEWORK_BINARY
+        "${NSO_DISCORD_SDK_FRAMEWORK}/discord_partner_sdk")
+    set(NSO_DISCORD_SDK_FRAMEWORK_VERSIONED_BINARY
+        "${NSO_DISCORD_SDK_FRAMEWORK}/Versions/A/discord_partner_sdk")
+    if(EXISTS "${NSO_DISCORD_SDK_FRAMEWORK_BINARY}")
+        set(NSO_DISCORD_SDK_IS_FRAMEWORK TRUE)
+        set(NSO_DISCORD_SDK_LINK_LIBRARY "${NSO_DISCORD_SDK_FRAMEWORK_BINARY}")
+        set(NSO_DISCORD_SDK_RUNTIME "${NSO_DISCORD_SDK_FRAMEWORK}")
+    elseif(EXISTS "${NSO_DISCORD_SDK_FRAMEWORK_VERSIONED_BINARY}")
         set(NSO_DISCORD_SDK_IS_FRAMEWORK TRUE)
         set(NSO_DISCORD_SDK_LINK_LIBRARY
-            "${NSO_DISCORD_SDK_FRAMEWORK}/discord_partner_sdk")
+            "${NSO_DISCORD_SDK_FRAMEWORK_VERSIONED_BINARY}")
         set(NSO_DISCORD_SDK_RUNTIME "${NSO_DISCORD_SDK_FRAMEWORK}")
     else()
         set(NSO_DISCORD_SDK_LINK_LIBRARY
@@ -131,56 +128,12 @@ else()
     set(NSO_DISCORD_SDK_RUNTIME "${NSO_DISCORD_SDK_LINK_LIBRARY}")
 endif()
 
-# Discord's standalone archive has used the paths above for its documented C++
-# layout. If a point release rearranges the archive, locate the release binary
-# rather than silently falling back to a system-wide Discord library.
-if(NOT EXISTS "${NSO_DISCORD_SDK_LINK_LIBRARY}")
-    if(WIN32)
-        file(GLOB_RECURSE NSO_DISCORD_LINK_CANDIDATES
-            "${NSO_DISCORD_SOCIAL_SDK_ROOT}/*discord_partner_sdk.lib")
-        file(GLOB_RECURSE NSO_DISCORD_RUNTIME_CANDIDATES
-            "${NSO_DISCORD_SOCIAL_SDK_ROOT}/*discord_partner_sdk.dll")
-    elseif(APPLE)
-        file(GLOB_RECURSE NSO_DISCORD_FRAMEWORK_CANDIDATES
-            "${NSO_DISCORD_SOCIAL_SDK_ROOT}/*discord_partner_sdk.framework/discord_partner_sdk")
-        if(NSO_DISCORD_FRAMEWORK_CANDIDATES)
-            list(FILTER NSO_DISCORD_FRAMEWORK_CANDIDATES EXCLUDE REGEX "/debug/")
-        endif()
-        if(NSO_DISCORD_FRAMEWORK_CANDIDATES)
-            list(GET NSO_DISCORD_FRAMEWORK_CANDIDATES 0 NSO_DISCORD_SDK_LINK_LIBRARY)
-            get_filename_component(NSO_DISCORD_SDK_RUNTIME
-                "${NSO_DISCORD_SDK_LINK_LIBRARY}" DIRECTORY)
-            set(NSO_DISCORD_SDK_IS_FRAMEWORK TRUE)
-        else()
-            file(GLOB_RECURSE NSO_DISCORD_LINK_CANDIDATES
-                "${NSO_DISCORD_SOCIAL_SDK_ROOT}/*libdiscord_partner_sdk.dylib")
-        endif()
-    else()
-        file(GLOB_RECURSE NSO_DISCORD_LINK_CANDIDATES
-            "${NSO_DISCORD_SOCIAL_SDK_ROOT}/*libdiscord_partner_sdk.so")
-    endif()
-
-    if(NSO_DISCORD_LINK_CANDIDATES AND NOT NSO_DISCORD_SDK_IS_FRAMEWORK)
-        list(FILTER NSO_DISCORD_LINK_CANDIDATES EXCLUDE REGEX "/debug/")
-        if(NSO_DISCORD_LINK_CANDIDATES)
-            list(GET NSO_DISCORD_LINK_CANDIDATES 0 NSO_DISCORD_SDK_LINK_LIBRARY)
-            if(NOT WIN32)
-                set(NSO_DISCORD_SDK_RUNTIME "${NSO_DISCORD_SDK_LINK_LIBRARY}")
-            endif()
-        endif()
-    endif()
-    if(WIN32 AND NSO_DISCORD_RUNTIME_CANDIDATES)
-        list(FILTER NSO_DISCORD_RUNTIME_CANDIDATES EXCLUDE REGEX "/debug/")
-        if(NSO_DISCORD_RUNTIME_CANDIDATES)
-            list(GET NSO_DISCORD_RUNTIME_CANDIDATES 0 NSO_DISCORD_SDK_RUNTIME)
-        endif()
-    endif()
-endif()
-
 if(NOT EXISTS "${NSO_DISCORD_SDK_LINK_LIBRARY}" OR
    NOT EXISTS "${NSO_DISCORD_SDK_RUNTIME}")
     message(FATAL_ERROR
-        "Discord Social SDK ${NSO_DISCORD_SOCIAL_SDK_VERSION} is missing the runtime/link library for this platform"
+        "Discord Social SDK ${NSO_DISCORD_SOCIAL_SDK_VERSION} is missing the "
+        "release runtime/link library required for this platform under "
+        "${NSO_DISCORD_SOCIAL_SDK_ROOT}."
     )
 endif()
 
@@ -223,8 +176,9 @@ if(WIN32)
         @ONLY
     )
 
-    # Keep the Windows release as one .exe: embed Discord's signed runtime as
-    # RCDATA and delay-load it after extracting it to the user's temp folder.
+    # Keep the Windows release as one .exe. The signed Discord runtime is
+    # embedded as RCDATA, extracted only when Rich Presence is first used, and
+    # loaded before the delay-import thunk resolves discord_partner_sdk.dll.
     file(TO_CMAKE_PATH "${NSO_DISCORD_SDK_RUNTIME}" NSO_DISCORD_SDK_RUNTIME_RC)
     set(NSO_DISCORD_SDK_RC "${CMAKE_CURRENT_BINARY_DIR}/discord-social-sdk.rc")
     file(WRITE "${NSO_DISCORD_SDK_RC}"
