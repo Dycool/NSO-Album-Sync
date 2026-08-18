@@ -40,6 +40,7 @@ private:
     std::atomic<bool> explicit_exit_{false};
     std::atomic<bool> auth_pending_{false};
     std::atomic<bool> operational_workers_started_{false};
+    std::atomic<bool> presence_refresh_requested_{false};
     std::atomic<std::uint64_t> account_generation_{0};
 
     std::thread sync_thread_;
@@ -65,6 +66,7 @@ private:
     void update_menu();
     void sync_now(bool background);
     void queue_sync(bool background);
+    void request_presence_refresh();
     void sign_in_or_out();
     void complete_pending_login(const std::string& redirect_url_or_code);
     void invalidate_session(const std::string& reason);
