@@ -13,13 +13,16 @@
 #include <ctime>
 #include <fstream>
 #include <set>
-#include <utility>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace nso {
 namespace {
+
+constexpr std::int64_t kMaxMediaDownloadBytes = 256LL * 1024LL * 1024LL;
 
 struct ExistingAlbumIndex {
     std::set<std::string> filenames_and_prefixes;
@@ -32,6 +35,76 @@ bool should_cancel(const std::function<bool()>& cancelled) {
 
 void throw_if_cancelled(const std::function<bool()>& cancelled) {
     if (should_cancel(cancelled)) throw std::runtime_error("Sync cancelled");
+}
+
+bool ends_with_ascii(const std::string& value, std::string_view suffix) {
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool safe_media_url(const std::string& url) {
+    constexpr std::string_view kHttpsPrefix = "https://";
+    if (url.size() <= kHttpsPrefix.size() ||
+        url.compare(0, kHttpsPrefix.size(), kHttpsPrefix) != 0) {
+        return false;
+    }
+
+    const auto authority_start = kHttpsPrefix.size();
+    const auto authority_end = url.find_first_of("/?#", authority_start);
+    auto authority = url.substr(
+        authority_start,
+        authority_end == std::string::npos
+            ? std::string::npos
+            : authority_end - authority_start);
+    if (authority.empty() || authority.find('@') != std::string::npos) return false;
+
+    // Nintendo media should be addressed by a public HTTPS hostname. Reject
+    // literal IPs and non-standard ports so a corrupted upstream response
+    // cannot turn the downloader into a convenient localhost/LAN fetcher.
+    if (authority.front() == '[') return false;
+    if (const auto port = authority.rfind(':'); port != std::string::npos) {
+        if (authority.substr(port + 1) != "443") return false;
+        authority.resize(port);
+    }
+    if (authority.empty()) return false;
+
+    auto host = lower(std::move(authority));
+    while (!host.empty() && host.back() == '.') host.pop_back();
+    if (host.empty() || host.find('.') == std::string::npos) return false;
+
+    bool could_be_ipv4 = true;
+    for (const unsigned char character : host) {
+        if (!std::isdigit(character) && character != '.') {
+            could_be_ipv4 = false;
+            break;
+        }
+    }
+    if (could_be_ipv4) return false;
+
+    for (const unsigned char character : host) {
+        if (!std::isalnum(character) && character != '-' && character != '.') {
+            return false;
+        }
+    }
+
+    return host != "localhost" &&
+           !ends_with_ascii(host, ".localhost") &&
+           !ends_with_ascii(host, ".local") &&
+           !ends_with_ascii(host, ".localdomain") &&
+           !ends_with_ascii(host, ".internal") &&
+           !ends_with_ascii(host, ".lan") &&
+           !ends_with_ascii(host, ".home");
+}
+
+void validate_media_item_for_download(const MediaItem& item) {
+    if (!safe_media_url(item.content_uri)) {
+        throw std::runtime_error(
+            "Nintendo media download URL was rejected because it is not a safe public HTTPS URL");
+    }
+    if (item.content_length <= 0 || item.content_length > kMaxMediaDownloadBytes) {
+        throw std::runtime_error(
+            "Nintendo media download size is missing or exceeds the 256 MiB safety limit");
+    }
 }
 
 void append_utf8(std::string& output, std::uint32_t code_point) {
@@ -384,6 +457,8 @@ SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
             continue;
         }
 
+        validate_media_item_for_download(item);
+
         std::string game_folder;
         if (const auto known_folder = title_folders.find(lower(item.title_id));
             known_folder != title_folders.end()) {
@@ -399,6 +474,13 @@ SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
         if (response.status / 100 != 2) {
             throw std::runtime_error(
                 "Media download failed (HTTP " + std::to_string(response.status) + ")");
+        }
+        if (response.body.size() != static_cast<std::size_t>(item.content_length)) {
+            throw std::runtime_error(
+                "Media download size did not match Nintendo's content length");
+        }
+        if (response.body.size() > static_cast<std::size_t>(kMaxMediaDownloadBytes)) {
+            throw std::runtime_error("Media download exceeded the 256 MiB safety limit");
         }
         throw_if_cancelled(cancelled);
 
