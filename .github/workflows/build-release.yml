@@ -390,7 +390,7 @@ jobs:
           chmod +x dist/nso-album-sync.AppImage
           file dist/nso-album-sync.AppImage
           size="$(stat -c%s dist/nso-album-sync.AppImage)"
-          python3 -c 'import sys; s=int(sys.argv[1]); print(f"AppImage size: {s/1024/1024:.2f} MB")' "$size"
+          echo "AppImage size: $(numfmt --to=iec-i --suffix=B "$size")"
 
           rm -rf appimage-inspect
           mkdir appimage-inspect
