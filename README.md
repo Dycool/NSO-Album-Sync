@@ -8,7 +8,7 @@
 
 🖼️ **Automatic album sync** — Downloads new screenshots and videos in the same `Album/<Game Name>/` layout used by Nintendo Switch USB transfers.
 
-🎮 **Discord Rich Presence** — Optionally shows the game you're currently playing, its artwork and play-time information on Discord.
+🎮 **Discord Rich Presence** — Optionally shows `Playing <Game Name>` with Nintendo Switch / Nintendo Switch 2 underneath and the game's artwork.
 
 🌍 **Localized game folders** — Reuses existing game folders across different languages instead of creating duplicates.
 
@@ -36,7 +36,7 @@ Discord Rich Presence is optional and disabled by default.
 
 ## 🔨 Building
 
-Requires **CMake 3.20+** and a **C++20** compiler.
+Requires **CMake 3.20+**, **Python 3** and a **C++20** compiler. CMake fetches the official Discord Social SDK used for Rich Presence automatically; no Discord secret, token or OAuth setup is used.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

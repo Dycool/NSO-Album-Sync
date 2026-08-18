@@ -6,3 +6,5 @@ out/
 CMakeUserPresets.json
 
 dist/
+third_party/discord_social_sdk/
+third_party/DiscordSocialSdk-*.zip
