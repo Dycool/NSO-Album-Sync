@@ -216,7 +216,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
 
     append_menu_item(
         impl->menu,
-        "Sync Album Now",
+        "Sync Now",
         &impl->callbacks.sync_now,
         state.signed_in);
     append_check_item(
@@ -248,7 +248,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
     append_separator(impl->menu);
     append_check_item(
         impl->menu,
-        "Start on Login",
+        "Start on Boot",
         state.start_on_boot,
         &impl->callbacks.toggle_start);
     append_menu_item(impl->menu, "HTTP Proxy…", &impl->callbacks.proxy);
@@ -258,7 +258,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         &impl->callbacks.sign_in_out);
 
     append_separator(impl->menu);
-    append_menu_item(impl->menu, "Quit NSO Album Sync", &impl->callbacks.exit);
+    append_menu_item(impl->menu, "Exit", &impl->callbacks.exit);
     gtk_widget_show_all(impl->menu);
 }
 
