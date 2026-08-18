@@ -155,6 +155,24 @@ HWND make_control(
     return control;
 }
 
+int measure_text_height(const std::wstring& text, int width) {
+    HDC dc = GetDC(nullptr);
+    if (dc == nullptr) return 180;
+
+    HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    HGDIOBJ previous = SelectObject(dc, font);
+    RECT bounds{0, 0, width, 0};
+    DrawTextW(
+        dc,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        &bounds,
+        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_EDITCONTROL | DT_CALCRECT);
+    SelectObject(dc, previous);
+    ReleaseDC(nullptr, dc);
+    return std::max(1L, bounds.bottom - bounds.top);
+}
+
 LRESULT CALLBACK prompt_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* state = reinterpret_cast<PromptState*>(
         GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -357,13 +375,28 @@ bool disclosure_box(const std::string& title, const std::string& text) {
     wc.lpszClassName = kDisclosureClass;
     RegisterClassW(&wc);
 
+    constexpr int client_width = 540;
+    constexpr int margin = 16;
+    constexpr int content_width = client_width - (margin * 2);
+    constexpr int button_height = 28;
+    constexpr int button_gap = 8;
+    constexpr int bottom_margin = 16;
+    constexpr int row_gap = 14;
+    constexpr int source_width = 96;
+    constexpr int button_width = 82;
+
+    const auto message = wide(text);
+    const int text_height = measure_text_height(message, content_width);
+    const int button_y = margin + text_height + row_gap;
+    const int client_height = button_y + button_height + bottom_margin;
+
     DisclosureState state;
     HWND window = centered_dialog(
         WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
         kDisclosureClass,
         wide(title),
-        620,
-        310,
+        client_width,
+        client_height,
         instance,
         &state);
     if (!window) return false;
@@ -372,13 +405,17 @@ bool disclosure_box(const std::string& title, const std::string& text) {
         instance,
         window,
         L"STATIC",
-        wide(text),
+        message,
         SS_LEFT | SS_NOPREFIX,
-        18,
-        17,
-        584,
-        222,
+        margin,
+        margin,
+        content_width,
+        text_height + 2,
         0);
+
+    const int cancel_x = client_width - margin - button_width;
+    const int continue_x = cancel_x - button_gap - button_width;
+    const int source_x = continue_x - button_gap - source_width;
 
     make_control(
         instance,
@@ -386,10 +423,10 @@ bool disclosure_box(const std::string& title, const std::string& text) {
         L"BUTTON",
         L"View Source",
         WS_TABSTOP,
-        318,
-        258,
-        100,
-        28,
+        source_x,
+        button_y,
+        source_width,
+        button_height,
         kDisclosureSourceButton);
     make_control(
         instance,
@@ -397,10 +434,10 @@ bool disclosure_box(const std::string& title, const std::string& text) {
         L"BUTTON",
         L"Continue",
         WS_TABSTOP | BS_DEFPUSHBUTTON,
-        426,
-        258,
-        84,
-        28,
+        continue_x,
+        button_y,
+        button_width,
+        button_height,
         IDOK);
     make_control(
         instance,
@@ -408,10 +445,10 @@ bool disclosure_box(const std::string& title, const std::string& text) {
         L"BUTTON",
         L"Cancel",
         WS_TABSTOP,
-        518,
-        258,
-        84,
-        28,
+        cancel_x,
+        button_y,
+        button_width,
+        button_height,
         IDCANCEL);
 
     ShowWindow(window, SW_SHOW);
