@@ -10,7 +10,6 @@ namespace nso {
 namespace {
 
 constexpr char kNookLinkBaseUrl[] = "https://web.sd.lp1.acbaa.srv.nintendo.net";
-constexpr char kNookLinkDplUrl[] = "https://dpl.sd.lp1.acbaa.srv.nintendo.net";
 constexpr char kSmashWorldBaseUrl[] = "https://app.smashbros.nintendo.net";
 constexpr char kSplatNet2BaseUrl[] = "https://app.splatoon2.nintendo.net";
 constexpr char kWebServiceUserAgent[] =
@@ -124,75 +123,6 @@ std::vector<std::string> bootstrap_headers(
     };
 }
 
-std::vector<std::string> nooklink_bootstrap_headers(
-    const std::string& web_service_token,
-    const std::string& language) {
-    // The working nso-worker-backend path carries two NookLink-specific
-    // compatibility quirks that are required for Nintendo to issue _gtoken:
-    // disable DNT for this initial document and explicitly opt out of app
-    // analytics. It also uses the same iPhone WebService UA as nxapi's
-    // embedded WebService window. Subsequent API calls use _gtoken instead of
-    // the GameWebServiceToken.
-    std::vector<std::string> headers = {
-        "Upgrade-Insecure-Requests: 1",
-        std::string("User-Agent: ") + kNxapiWebServiceUserAgent,
-        "x-appplatform: android",
-        "x-appcolorscheme: DARK",
-        "x-gamewebtoken: " + web_service_token,
-        "dnt: 0",
-        "x-isappanalyticsoptedin: false",
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language: " + language,
-        "X-Requested-With: com.nintendo.znca",
-    };
-#ifdef _WIN32
-    // WinHTTP normally follows redirects before callers can inspect the
-    // intermediate response. NookLink can issue _gtoken on that response, so
-    // ask our Windows transport to return redirects to this client instead.
-    headers.emplace_back("X-NSO-Internal-Manual-Redirect: 1");
-#endif
-    return headers;
-}
-
-bool is_redirect_status(long status) {
-    return status == 301 || status == 302 || status == 303 ||
-        status == 307 || status == 308;
-}
-
-bool has_nooklink_origin(const std::string& url, const char* origin) {
-    const std::string prefix(origin);
-    if (url.compare(0, prefix.size(), prefix) != 0) return false;
-    if (url.size() == prefix.size()) return true;
-    const char next = url[prefix.size()];
-    return next == '/' || next == '?' || next == '#';
-}
-
-std::string resolve_nooklink_redirect(
-    const std::string& current_url,
-    const std::string& location) {
-    if (location.empty()) return {};
-
-    std::string candidate;
-    if (location.rfind("https://", 0) == 0) {
-        candidate = location;
-    } else if (location.front() == '/') {
-        const char* current_origin = has_nooklink_origin(current_url, kNookLinkDplUrl)
-            ? kNookLinkDplUrl
-            : kNookLinkBaseUrl;
-        candidate = std::string(current_origin) + location;
-    } else {
-        // Nintendo's NookLink redirects are normally absolute or root-relative.
-        // Do not broaden this into a generic URL resolver for an auth flow.
-        return {};
-    }
-
-    if (!has_nooklink_origin(candidate, kNookLinkBaseUrl) &&
-        !has_nooklink_origin(candidate, kNookLinkDplUrl)) {
-        return {};
-    }
-    return candidate;
-}
-
 std::string rank_value(const Json& player, const char* key, const char* short_name) {
     const auto* rank = player.find(key);
     if (!rank || !rank->is_object()) return {};
@@ -236,48 +166,30 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
 
     try {
         if (session.cookie.empty()) {
-            std::string gtoken;
-            // Coral/NookLink deployments have used both web.sd and dpl.sd as
-            // the initial document origin. The authenticated JSON API remains
-            // on web.sd, so start from each known Nintendo origin and follow a
-            // small, strictly NookLink-only redirect chain until _gtoken is
-            // issued. This mirrors the working backend's manual redirect/cookie
-            // handling without exposing any configuration to the user.
-            const char* bootstrap_origins[] = {
-                kNookLinkBaseUrl,
-                kNookLinkDplUrl,
-            };
-            for (const auto* origin : bootstrap_origins) {
-                std::string url = launch_url(origin, language, country);
-                for (int redirect = 0; redirect < 4; ++redirect) {
-                    const auto bootstrap = http_.get(
-                        url,
-                        nooklink_bootstrap_headers(web_service_token, language),
-                        10,
-                        4 * 1024 * 1024);
-                    if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) {
-                        break;
-                    }
+            // Match nxapi's direct NookLink client exactly. The Worker has
+            // browser/reverse-proxy-specific NookLink quirks (iPhone UA, DNT
+            // handling and manual cookie capture) that do not belong in this
+            // native HTTP client. nxapi launches web.sd directly with the
+            // Android WebView UA and reads _gtoken from the final 200 response.
+            const auto bootstrap = http_.get(
+                launch_url(kNookLinkBaseUrl, language, country),
+                bootstrap_headers(web_service_token, language),
+                10,
+                4 * 1024 * 1024);
+            if (bootstrap.status != 200) return {};
 
-                    gtoken = cookie_value(bootstrap, "_gtoken");
-                    if (!gtoken.empty()) break;
-                    if (!is_redirect_status(bootstrap.status)) break;
-
-                    const auto next = resolve_nooklink_redirect(
-                        url, header_value(bootstrap, "location"));
-                    if (next.empty() || next == url) break;
-                    url = next;
-                }
-                if (!gtoken.empty()) break;
-            }
+            const auto gtoken = cookie_value(bootstrap, "_gtoken");
             if (gtoken.empty()) return {};
             session.source_token = web_service_token;
             session.cookie = "_gtoken=" + gtoken;
             session.expires_at = std::chrono::system_clock::now() + kSessionTtl;
         }
 
+        // NookLink's authenticated API keeps the same Android WebView UA used
+        // for bootstrap. Its API Accept-Language is fixed to en-GB in nxapi;
+        // the Nintendo Account locale is only used in the launch URL.
         const std::vector<std::string> api_headers = {
-            std::string("User-Agent: ") + kNxapiWebServiceUserAgent,
+            std::string("User-Agent: ") + kWebServiceUserAgent,
             "Cookie: " + session.cookie,
             "Upgrade-Insecure-Requests: 1",
             "dnt: 1",
@@ -320,7 +232,7 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                 std::string(kNookLinkBaseUrl) + "/api/sd/v1/auth_token",
                 auth_body.dump(),
                 api_headers,
-                "application/json",
+                "",
                 10);
             if (auth_response.status == 401 || auth_response.status == 403) {
                 std::lock_guard lock(mutex_);
@@ -337,9 +249,13 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
             auto profile_headers = api_headers;
             profile_headers.push_back("Authorization: Bearer " + session.auth_token);
 
+            // nxapi's authenticated NookLink user client deliberately uses
+            // en-GB for profile endpoints even when the Nintendo Account locale
+            // is not one of NookLink's supported API languages.
+            constexpr char kNookLinkProfileLanguage[] = "en-GB";
             const auto user_profile_response = http_.get(
                 std::string(kNookLinkBaseUrl) + "/api/sd/v1/users/" + session.user_id +
-                    "/profile?language=" + language,
+                    "/profile?language=" + kNookLinkProfileLanguage,
                 profile_headers,
                 10,
                 4 * 1024 * 1024);
@@ -361,7 +277,7 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
             if (!land_id.empty()) {
                 const auto island_response = http_.get(
                     std::string(kNookLinkBaseUrl) + "/api/sd/v1/lands/" + land_id +
-                        "/profile?language=" + language,
+                        "/profile?language=" + kNookLinkProfileLanguage,
                     profile_headers,
                     10,
                     4 * 1024 * 1024);
