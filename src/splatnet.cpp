@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,10 @@ namespace {
 constexpr char kBaseUrl[] = "https://api.lp1.av5ja.srv.nintendo.net";
 constexpr char kUserAgent[] =
     "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
+constexpr char kSplatNetResourcePrefix[] =
+    "https://api.lp1.av5ja.srv.nintendo.net/resources/prod/";
+constexpr char kSplatoon3InkAssetPrefix[] =
+    "https://splatoon3.ink/assets/splatnet/";
 // Current production SplatNet 3 metadata tracked by
 // nintendoapis/nintendo-app-versions. Keep this version/hash pair together.
 constexpr char kWebViewVersion[] = "10.0.0-4787c271";
@@ -42,6 +47,34 @@ std::vector<std::string> bootstrap_headers(const std::string& token) {
         "Accept-Language: en-GB,en-US;q=0.8",
         "X-Requested-With: com.nintendo.znca",
     };
+}
+
+std::string discord_weapon_image_url(const std::string& signed_url) {
+    const std::string prefix(kSplatNetResourcePrefix);
+    if (signed_url.compare(0, prefix.size(), prefix) != 0) {
+        // Discord Social SDK permits an external image URL up to 300 chars. If
+        // Nintendo ever returns an already-short URL, it is safe to use it as-is.
+        return signed_url.size() <= 300 ? signed_url : std::string{};
+    }
+
+    auto end = signed_url.find_first_of("?#", prefix.size());
+    if (end == std::string::npos) end = signed_url.size();
+    if (end <= prefix.size()) return {};
+
+    const auto resource_path = signed_url.substr(prefix.size(), end - prefix.size());
+    if (resource_path.find("..") != std::string::npos) return {};
+    if (std::any_of(
+            resource_path.begin(), resource_path.end(),
+            [](unsigned char c) { return std::isspace(c) != 0; })) {
+        return {};
+    }
+
+    // SplatNet signs its image URLs with very long Expires/Signature/Key-Pair-Id
+    // query strings. splatoon3.ink mirrors the same public resources using the
+    // normalized path after /resources/prod/, producing a stable URL comfortably
+    // below Discord's 300-character asset limit without forwarding the signature.
+    const auto mirrored = std::string(kSplatoon3InkAssetPrefix) + resource_path;
+    return mirrored.size() <= 300 ? mirrored : std::string{};
 }
 
 }  // namespace
@@ -164,7 +197,7 @@ SplatNetPresence SplatNetClient::fetch_presence(const std::string& web_service_t
         if (const auto* weapon = player->find("weapon"); weapon && weapon->is_object()) {
             presence.weapon_name = weapon->string("name");
             if (const auto* image = weapon->find("image"); image && image->is_object()) {
-                presence.stage_image_uri = image->string("url");
+                presence.stage_image_uri = discord_weapon_image_url(image->string("url"));
             }
         }
         if (const auto* history = data->find("playHistory"); history && history->is_object()) {
