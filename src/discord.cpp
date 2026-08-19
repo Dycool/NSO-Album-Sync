@@ -244,26 +244,21 @@ void DiscordPresence::update(const NintendoPresence& presence) {
         activity.SetTimestamps(timestamps);
     }
 
-    if (is_valid_discord_image_url(presence.custom_image_uri)) {
+    // Coral's current-game artwork is always the primary image. Game-service
+    // enrichment (weapon/avatar/fighter/etc.) is supplementary and therefore
+    // belongs in Discord's small-image slot instead of replacing the game art.
+    if (is_valid_discord_image_url(presence.image_uri) ||
+        is_valid_discord_image_url(presence.custom_image_uri)) {
         discordpp::ActivityAssets assets;
-        assets.SetLargeImage(presence.custom_image_uri);
-        assets.SetLargeText(presence.game_name);
         if (is_valid_discord_image_url(presence.image_uri)) {
-            assets.SetSmallImage(presence.image_uri);
-            assets.SetSmallText(presence.console_name().empty()
-                                    ? presence.game_name
-                                    : presence.console_name());
+            assets.SetLargeImage(presence.image_uri);
+            assets.SetLargeText(presence.game_name);
+            if (is_valid_discord_image_url(presence.shop_uri)) {
+                assets.SetLargeUrl(presence.shop_uri);
+            }
         }
-        if (is_valid_discord_image_url(presence.shop_uri)) {
-            assets.SetLargeUrl(presence.shop_uri);
-        }
-        activity.SetAssets(assets);
-    } else if (is_valid_discord_image_url(presence.image_uri)) {
-        discordpp::ActivityAssets assets;
-        assets.SetLargeImage(presence.image_uri);
-        assets.SetLargeText(presence.game_name);
-        if (is_valid_discord_image_url(presence.shop_uri)) {
-            assets.SetLargeUrl(presence.shop_uri);
+        if (is_valid_discord_image_url(presence.custom_image_uri)) {
+            assets.SetSmallImage(presence.custom_image_uri);
         }
         activity.SetAssets(assets);
     }
