@@ -12,11 +12,11 @@ constexpr char kUserAgent[] =
     "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
 constexpr char kLanguage[] = "en-GB";
 constexpr char kCountry[] = "GB";
-// imink's current published webview metadata maps this version to the full
-// HistoryRecordQuery SHA-256 below. Keep the pair together.
-constexpr char kWebViewVersion[] = "6.0.0-30a1464a";
+// Current production SplatNet 3 metadata tracked by
+// nintendoapis/nintendo-app-versions. Keep this version/hash pair together.
+constexpr char kWebViewVersion[] = "10.0.0-4787c271";
 constexpr char kHistoryRecordQuery[] =
-    "f09666535a18dfe2a0953018a8e7138204fb9d007cc32bd2c85f3e0f7c1cc6ba";
+    "a654ecc80161a7ca5c38761c1d9e502d405eae764e2d343618b9c74b1dc0a80f";
 constexpr auto kBulletTtl = std::chrono::minutes(100);
 
 std::vector<std::string> bootstrap_headers(const std::string& token) {
@@ -111,7 +111,7 @@ SplatNetPresence SplatNetClient::fetch_presence(const std::string& web_service_t
             std::string("Accept-Language: ") + (language.empty() ? kLanguage : language),
         };
         const auto response = http_.post(std::string(kBaseUrl) + "/api/graphql", body.dump(), headers, "application/json", 10);
-        if (response.status == 401) clear_cache();
+        if (response.status == 401 || response.status == 403) clear_cache();
         if (response.status != 200) return {};
 
         const auto root = Json::parse(response.text());
