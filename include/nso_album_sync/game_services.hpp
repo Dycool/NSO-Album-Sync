@@ -30,14 +30,13 @@ struct AnimalCrossingPresence {
     bool active = false;
 
     std::string format_state() const {
-        if (island_name.empty()) return {};
-        std::string state = island_name;
-        if (!native_fruit.empty()) state += " • " + native_fruit;
-        return state;
+        return island_name;
     }
 
     std::string format_details() const {
-        return resident_name;
+        if (resident_name.empty()) return island_name;
+        if (island_name.empty()) return resident_name;
+        return resident_name + " • " + island_name;
     }
 };
 
