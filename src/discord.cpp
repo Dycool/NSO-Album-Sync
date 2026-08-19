@@ -44,7 +44,7 @@ bool ensure_embedded_discord_sdk_loaded() {
             RT_RCDATA);
         if (resource == nullptr) return false;
 
-        const HGLOBAL data_handle = LoadResource(executable);
+        const HGLOBAL data_handle = LoadResource(executable, resource);
         if (data_handle == nullptr) return false;
         const auto* data = static_cast<const unsigned char*>(LockResource(data_handle));
         const DWORD size = SizeofResource(executable, resource);
