@@ -275,6 +275,8 @@ void DiscordPresence::update(const NintendoPresence& presence) {
     activity.SetName(presence.game_name);
     activity.SetStatusDisplayType(discordpp::StatusDisplayTypes::Name);
 
+    const bool animal_crossing = is_animal_crossing_presence(presence);
+
     if (!presence.custom_details.empty()) {
         activity.SetDetails(presence.custom_details);
     } else {
@@ -284,15 +286,17 @@ void DiscordPresence::update(const NintendoPresence& presence) {
         }
     }
 
-    if (!presence.custom_state.empty()) {
-        auto state = presence.custom_state;
-        if (is_animal_crossing_presence(presence)) {
-            const auto playtime_description = presence.discord_state();
-            if (!playtime_description.empty()) {
-                state += " • " + playtime_description;
-            }
-        }
-        activity.SetState(state);
+    // Animal Crossing uses its one-shot NookLink enrichment for the identity
+    // line (resident • island), while the second line stays fresh from Coral.
+    // Other games continue to use their game-specific custom state normally.
+    if (animal_crossing && !presence.custom_details.empty()) {
+        const auto playtime_description = presence.discord_state();
+        activity.SetState(
+            playtime_description.empty()
+                ? presence.console_name()
+                : playtime_description);
+    } else if (!presence.custom_state.empty()) {
+        activity.SetState(presence.custom_state);
     } else {
         activity.SetState(presence.console_name());
     }
