@@ -90,9 +90,9 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
             session_expires_at_ = std::chrono::system_clock::now() + kSessionTtl;
         }
 
-        // Match the working backend: after the first GWT-authenticated document,
-        // navigate with Nintendo's session cookie only. Do not keep injecting the
-        // GameWebServiceToken into ordinary Zelda Notes requests.
+        // Match the working WebView session model: only the initial top-level
+        // navigation carries the GameWebServiceToken. Subsequent navigation is
+        // authenticated by Nintendo's service cookie.
         const auto page = http_.get(
             std::string(kBaseUrl) + "/title-select",
             {
@@ -105,12 +105,9 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
             10, 8 * 1024 * 1024);
         if (page.status == 401 || page.status == 403) clear_cache();
 
-        // Ben Lawrence's zelda-notes-types project confirms the dedicated
-        // Zelda Notes service exists, but its repository is not reliably
-        // retrievable from this build environment. More importantly, neither
-        // nxapi nor our working backend exposes a stable self "current location"
-        // endpoint. A successful title-select session is therefore deliberately
-        // not turned into invented Discord activity.
+        // Zelda Notes does not currently expose a verified stable self-presence
+        // endpoint analogous to SplatNet's player records. A valid service
+        // session must therefore not be converted into a guessed map location.
         return {};
     } catch (...) {
         return {};

@@ -14,7 +14,7 @@ constexpr char kSmashWorldBaseUrl[] = "https://app.smashbros.nintendo.net";
 constexpr char kSplatNet2BaseUrl[] = "https://app.splatoon2.nintendo.net";
 constexpr char kWebServiceUserAgent[] =
     "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
-constexpr char kNxapiWebServiceUserAgent[] =
+constexpr char kSmashWorldUserAgent[] =
     "Mozilla/5.0 (iPhone; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Mobile/15E148 Safari/604.1";
 constexpr char kLanguage[] = "en-GB";
 constexpr char kCountry[] = "GB";
@@ -128,7 +128,7 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
 
     try {
         if (session.cookie.empty()) {
-            const auto bootstrap = http_.get(launch_url(kNookLinkBaseUrl), bootstrap_headers(web_service_token, kNxapiWebServiceUserAgent), 10, 4 * 1024 * 1024);
+            const auto bootstrap = http_.get(launch_url(kNookLinkBaseUrl), bootstrap_headers(web_service_token), 10, 4 * 1024 * 1024);
             if (bootstrap.status != 200) return {};
             const auto gtoken = cookie_value(bootstrap, "_gtoken");
             if (gtoken.empty()) return {};
@@ -138,7 +138,7 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
         }
 
         const std::vector<std::string> api_headers = {
-            std::string("User-Agent: ") + kNxapiWebServiceUserAgent,
+            std::string("User-Agent: ") + kWebServiceUserAgent,
             "Cookie: " + session.cookie,
             "Accept: application/json, text/plain, */*",
             std::string("Accept-Language: ") + kLanguage,
@@ -211,7 +211,7 @@ SmashBrosPresence GameServicesClient::fetch_smash_presence(const std::string& we
     }
 
     try {
-        const auto bootstrap = http_.get(launch_url(kSmashWorldBaseUrl), bootstrap_headers(web_service_token, kNxapiWebServiceUserAgent), 10, 8 * 1024 * 1024);
+        const auto bootstrap = http_.get(launch_url(kSmashWorldBaseUrl), bootstrap_headers(web_service_token, kSmashWorldUserAgent), 10, 8 * 1024 * 1024);
         if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
         auto cookie = cookie_value(bootstrap, "super_smash_session");
         if (!cookie.empty()) cookie = "super_smash_session=" + cookie;
@@ -223,9 +223,9 @@ SmashBrosPresence GameServicesClient::fetch_smash_presence(const std::string& we
             std::lock_guard lock(mutex_);
             sessions_["smash"] = session;
         }
-        // There is no verified structured self/GSP endpoint in nxapi or the
-        // working backend. Successfully bootstrapping Smash World is therefore
-        // not enough to fabricate fighter/GSP activity for Discord.
+        // No stable structured self/GSP endpoint is exposed by nxapi or by the
+        // working WebView proxy. A successful session bootstrap alone must not
+        // be presented as fighter/GSP activity.
     } catch (...) {
     }
     return {};
