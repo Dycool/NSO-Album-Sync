@@ -29,6 +29,7 @@ namespace nso {
 namespace {
 
 constexpr auto kCallbackPumpInterval = std::chrono::milliseconds(100);
+constexpr std::size_t kDiscordActivityImageMaxLength = 300;
 
 #ifdef _WIN32
 bool ensure_embedded_discord_sdk_loaded() {
@@ -93,7 +94,7 @@ bool ensure_embedded_discord_sdk_loaded() {
 #endif
 
 bool is_valid_discord_image_url(const std::string& url) {
-    if (url.empty() || url.size() > 512) return false;
+    if (url.empty() || url.size() > kDiscordActivityImageMaxLength) return false;
     if (url.rfind("https://", 0) != 0) return false;
     for (char c : url) {
         if (std::isspace(static_cast<unsigned char>(c))) return false;
