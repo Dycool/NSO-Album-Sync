@@ -16,13 +16,15 @@ constexpr char kWebServiceUserAgent[] =
     "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
 constexpr char kSmashWorldUserAgent[] =
     "Mozilla/5.0 (iPhone; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Mobile/15E148 Safari/604.1";
-constexpr char kLanguage[] = "en-GB";
-constexpr char kCountry[] = "GB";
 constexpr char kBlancoVersion[] = "2.1.1";
 constexpr auto kSessionTtl = std::chrono::minutes(90);
 
-std::string launch_url(const char* base) {
-    return std::string(base) + "/?lang=" + kLanguage + "&na_country=" + kCountry + "&na_lang=" + kLanguage;
+std::string launch_url(
+    const char* base,
+    const std::string& language,
+    const std::string& country) {
+    return std::string(base) + "/?lang=" + language +
+        "&na_country=" + country + "&na_lang=" + language;
 }
 
 std::string header_value(const HttpResponse& response, const std::string& key) {
@@ -36,7 +38,8 @@ std::string cookie_value(const HttpResponse& response, const std::string& name) 
     const std::string needle = name + "=";
     auto pos = cookies.find(needle);
     while (pos != std::string::npos) {
-        if (pos == 0 || cookies[pos - 1] == ' ' || cookies[pos - 1] == ',' || cookies[pos - 1] == ';' || cookies[pos - 1] == '\n') {
+        if (pos == 0 || cookies[pos - 1] == ' ' || cookies[pos - 1] == ',' ||
+            cookies[pos - 1] == ';' || cookies[pos - 1] == '\n') {
             pos += needle.size();
             auto end = cookies.find_first_of(";,\r\n", pos);
             if (end == std::string::npos) end = cookies.size();
@@ -52,20 +55,29 @@ std::string first_session_cookie(const HttpResponse& response) {
     if (cookies.empty()) return {};
     std::size_t start = 0;
     while (start < cookies.size()) {
-        while (start < cookies.size() && (cookies[start] == ' ' || cookies[start] == ',' || cookies[start] == '\n' || cookies[start] == '\r')) ++start;
+        while (start < cookies.size() &&
+               (cookies[start] == ' ' || cookies[start] == ',' ||
+                cookies[start] == '\n' || cookies[start] == '\r')) {
+            ++start;
+        }
         const auto eq = cookies.find('=', start);
         if (eq == std::string::npos) break;
         const auto name = cookies.substr(start, eq - start);
         std::string lower = name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
         if (lower.find("session") != std::string::npos || lower == "a5_token") {
             auto end = cookies.find_first_of(";,\r\n", eq + 1);
             if (end == std::string::npos) end = cookies.size();
             return name + "=" + cookies.substr(eq + 1, end - eq - 1);
         }
-        const auto next = cookies.find(',', eq + 1);
-        if (next == std::string::npos) break;
-        start = next + 1;
+        const auto next_comma = cookies.find(',', eq + 1);
+        const auto next_line = cookies.find('\n', eq + 1);
+        if (next_comma == std::string::npos && next_line == std::string::npos) break;
+        if (next_comma == std::string::npos) start = next_line + 1;
+        else if (next_line == std::string::npos) start = next_comma + 1;
+        else start = std::min(next_comma, next_line) + 1;
     }
     return {};
 }
@@ -82,7 +94,10 @@ std::string html_attribute(const std::string& body, const std::string& name) {
     return {};
 }
 
-std::vector<std::string> bootstrap_headers(const std::string& web_service_token, const char* user_agent = kWebServiceUserAgent) {
+std::vector<std::string> bootstrap_headers(
+    const std::string& web_service_token,
+    const std::string& language,
+    const char* user_agent = kWebServiceUserAgent) {
     return {
         "Upgrade-Insecure-Requests: 1",
         std::string("User-Agent: ") + user_agent,
@@ -91,7 +106,7 @@ std::vector<std::string> bootstrap_headers(const std::string& web_service_token,
         "x-gamewebtoken: " + web_service_token,
         "dnt: 1",
         "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        std::string("Accept-Language: ") + kLanguage,
+        "Accept-Language: " + language,
         "X-Requested-With: com.nintendo.znca",
     };
 }
@@ -102,7 +117,11 @@ std::string rank_value(const Json& player, const char* key, const char* short_na
     if (rank->boolean("is_x", false)) return std::string(short_name) + " X";
     auto name = rank->string("name");
     if (name.empty()) return {};
-    if (name == "S+") name += std::to_string(rank->integer("s_plus_number", 0));
+    if (name == "S+") {
+        auto number = rank->integer("s_plus_number", -1);
+        if (number < 0) number = rank->integer("number", -1);
+        if (number >= 0) name += std::to_string(number);
+    }
     return std::string(short_name) + " " + name;
 }
 
@@ -115,12 +134,17 @@ void GameServicesClient::clear_cache() {
     sessions_.clear();
 }
 
-AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const std::string& web_service_token) {
+AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
+    const std::string& web_service_token) {
     if (web_service_token.empty()) return {};
 
     ServiceSession session;
+    std::string language;
+    std::string country;
     {
         std::lock_guard lock(mutex_);
+        language = language_;
+        country = country_;
         const auto it = sessions_.find("nooklink");
         if (it != sessions_.end() && it->second.source_token == web_service_token &&
             std::chrono::system_clock::now() < it->second.expires_at) {
@@ -130,7 +154,11 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
 
     try {
         if (session.cookie.empty()) {
-            const auto bootstrap = http_.get(launch_url(kNookLinkBaseUrl), bootstrap_headers(web_service_token), 10, 4 * 1024 * 1024);
+            const auto bootstrap = http_.get(
+                launch_url(kNookLinkBaseUrl, language, country),
+                bootstrap_headers(web_service_token, language),
+                10,
+                4 * 1024 * 1024);
             if (bootstrap.status != 200) return {};
             const auto gtoken = cookie_value(bootstrap, "_gtoken");
             if (gtoken.empty()) return {};
@@ -143,12 +171,16 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
             std::string("User-Agent: ") + kWebServiceUserAgent,
             "Cookie: " + session.cookie,
             "Accept: application/json, text/plain, */*",
-            std::string("Accept-Language: ") + kLanguage,
+            "Accept-Language: " + language,
             std::string("Origin: ") + kNookLinkBaseUrl,
             "X-Blanco-Version: " + std::string(kBlancoVersion),
         };
 
-        const auto users_response = http_.get(std::string(kNookLinkBaseUrl) + "/api/sd/v1/users", api_headers, 10, 4 * 1024 * 1024);
+        const auto users_response = http_.get(
+            std::string(kNookLinkBaseUrl) + "/api/sd/v1/users",
+            api_headers,
+            10,
+            4 * 1024 * 1024);
         if (users_response.status == 401 || users_response.status == 403) {
             std::lock_guard lock(mutex_);
             sessions_.erase("nooklink");
@@ -172,9 +204,12 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
 
         if (!session.user_id.empty() && session.auth_token.empty()) {
             const Json auth_body(Json::object{{"userId", session.user_id}});
-            auto auth_headers = api_headers;
-            auth_headers.push_back("Content-Type: application/json");
-            const auto auth_response = http_.post(std::string(kNookLinkBaseUrl) + "/api/sd/v1/auth_token", auth_body.dump(), auth_headers, "application/json", 10);
+            const auto auth_response = http_.post(
+                std::string(kNookLinkBaseUrl) + "/api/sd/v1/auth_token",
+                auth_body.dump(),
+                api_headers,
+                "application/json",
+                10);
             if (auth_response.status == 401 || auth_response.status == 403) {
                 std::lock_guard lock(mutex_);
                 sessions_.erase("nooklink");
@@ -191,8 +226,11 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
             profile_headers.push_back("Authorization: Bearer " + session.auth_token);
 
             const auto user_profile_response = http_.get(
-                std::string(kNookLinkBaseUrl) + "/api/sd/v1/users/" + session.user_id + "/profile?language=" + kLanguage,
-                profile_headers, 10, 4 * 1024 * 1024);
+                std::string(kNookLinkBaseUrl) + "/api/sd/v1/users/" + session.user_id +
+                    "/profile?language=" + language,
+                profile_headers,
+                10,
+                4 * 1024 * 1024);
             if (user_profile_response.status == 401 || user_profile_response.status == 403) {
                 std::lock_guard lock(mutex_);
                 sessions_.erase("nooklink");
@@ -210,8 +248,11 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
 
             if (!land_id.empty()) {
                 const auto island_response = http_.get(
-                    std::string(kNookLinkBaseUrl) + "/api/sd/v1/lands/" + land_id + "/profile?language=" + kLanguage,
-                    profile_headers, 10, 4 * 1024 * 1024);
+                    std::string(kNookLinkBaseUrl) + "/api/sd/v1/lands/" + land_id +
+                        "/profile?language=" + language,
+                    profile_headers,
+                    10,
+                    4 * 1024 * 1024);
                 if (island_response.status == 401 || island_response.status == 403) {
                     std::lock_guard lock(mutex_);
                     sessions_.erase("nooklink");
@@ -221,7 +262,8 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
                     const auto island_json = Json::parse(island_response.text());
                     const auto island_name = island_json.string("mVNm");
                     if (!island_name.empty()) presence.island_name = island_name;
-                    if (const auto* fruit = island_json.find("mFruit"); fruit && fruit->is_object()) {
+                    if (const auto* fruit = island_json.find("mFruit");
+                        fruit && fruit->is_object()) {
                         presence.native_fruit = fruit->string("name");
                     }
                 }
@@ -231,7 +273,9 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
         presence.active = !presence.resident_name.empty() || !presence.island_name.empty();
         {
             std::lock_guard lock(mutex_);
-            sessions_["nooklink"] = session;
+            if (language_ == language && country_ == country) {
+                sessions_["nooklink"] = session;
+            }
         }
         return presence;
     } catch (...) {
@@ -241,18 +285,30 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
     }
 }
 
-SmashBrosPresence GameServicesClient::fetch_smash_presence(const std::string& web_service_token) {
+SmashBrosPresence GameServicesClient::fetch_smash_presence(
+    const std::string& web_service_token) {
     if (web_service_token.empty()) return {};
+
     ServiceSession session;
+    std::string language;
+    std::string country;
     {
         std::lock_guard lock(mutex_);
+        language = language_;
+        country = country_;
         const auto it = sessions_.find("smash");
         if (it != sessions_.end() && it->second.source_token == web_service_token &&
-            std::chrono::system_clock::now() < it->second.expires_at) return {};
+            std::chrono::system_clock::now() < it->second.expires_at) {
+            return {};
+        }
     }
 
     try {
-        const auto bootstrap = http_.get(launch_url(kSmashWorldBaseUrl), bootstrap_headers(web_service_token, kSmashWorldUserAgent), 10, 8 * 1024 * 1024);
+        const auto bootstrap = http_.get(
+            launch_url(kSmashWorldBaseUrl, language, country),
+            bootstrap_headers(web_service_token, language, kSmashWorldUserAgent),
+            10,
+            8 * 1024 * 1024);
         if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
         auto cookie = cookie_value(bootstrap, "super_smash_session");
         if (!cookie.empty()) cookie = "super_smash_session=" + cookie;
@@ -262,7 +318,9 @@ SmashBrosPresence GameServicesClient::fetch_smash_presence(const std::string& we
             session.cookie = cookie;
             session.expires_at = std::chrono::system_clock::now() + kSessionTtl;
             std::lock_guard lock(mutex_);
-            sessions_["smash"] = session;
+            if (language_ == language && country_ == country) {
+                sessions_["smash"] = session;
+            }
         }
         // No stable structured self/GSP endpoint is exposed by nxapi or by the
         // working WebView proxy. A successful session bootstrap alone must not
@@ -272,20 +330,31 @@ SmashBrosPresence GameServicesClient::fetch_smash_presence(const std::string& we
     return {};
 }
 
-Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(const std::string& web_service_token) {
+Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(
+    const std::string& web_service_token) {
     if (web_service_token.empty()) return {};
 
     ServiceSession session;
+    std::string language;
+    std::string country;
     {
         std::lock_guard lock(mutex_);
+        language = language_;
+        country = country_;
         const auto it = sessions_.find("splatnet2");
         if (it != sessions_.end() && it->second.source_token == web_service_token &&
-            std::chrono::system_clock::now() < it->second.expires_at) session = it->second;
+            std::chrono::system_clock::now() < it->second.expires_at) {
+            session = it->second;
+        }
     }
 
     try {
         if (session.cookie.empty() || session.user_id.empty()) {
-            const auto bootstrap = http_.get(launch_url(kSplatNet2BaseUrl), bootstrap_headers(web_service_token), 10, 8 * 1024 * 1024);
+            const auto bootstrap = http_.get(
+                launch_url(kSplatNet2BaseUrl, language, country),
+                bootstrap_headers(web_service_token, language),
+                10,
+                8 * 1024 * 1024);
             if (bootstrap.status != 200) return {};
             const auto iksm = cookie_value(bootstrap, "iksm_session");
             const auto unique_id = html_attribute(bootstrap.text(), "data-unique-id");
@@ -300,13 +369,17 @@ Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(const std::string
             std::string("User-Agent: ") + kWebServiceUserAgent,
             "Cookie: " + session.cookie,
             "Accept: */*",
-            std::string("Accept-Language: ") + kLanguage + ",en-US;q=0.8",
+            "Accept-Language: " + language + ",en-US;q=0.8",
             std::string("Referer: ") + kSplatNet2BaseUrl + "/home",
             "X-Requested-With: XMLHttpRequest",
             "X-Timezone-Offset: 0",
             "X-Unique-Id: " + session.user_id,
         };
-        const auto response = http_.get(std::string(kSplatNet2BaseUrl) + "/api/records", headers, 10, 8 * 1024 * 1024);
+        const auto response = http_.get(
+            std::string(kSplatNet2BaseUrl) + "/api/records",
+            headers,
+            10,
+            8 * 1024 * 1024);
         if (response.status != 200) {
             if (response.status == 401 || response.status == 403) {
                 std::lock_guard lock(mutex_);
@@ -342,10 +415,13 @@ Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(const std::string
             if (i) presence.rank_name += " / ";
             presence.rank_name += ranks[i];
         }
-        presence.active = !presence.player_name.empty() || !presence.weapon_name.empty() || presence.player_level > 0;
+        presence.active = !presence.player_name.empty() ||
+            !presence.weapon_name.empty() || presence.player_level > 0;
         {
             std::lock_guard lock(mutex_);
-            sessions_["splatnet2"] = session;
+            if (language_ == language && country_ == country) {
+                sessions_["splatnet2"] = session;
+            }
         }
         return presence;
     } catch (...) {
