@@ -1,4 +1,5 @@
 #include "nso_album_sync/zeldanotes.hpp"
+#include "nso_album_sync/sse.hpp"
 
 #include <algorithm>
 #include <cctype>
