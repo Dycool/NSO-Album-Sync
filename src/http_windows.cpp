@@ -20,6 +20,8 @@
 namespace nso {
 namespace {
 
+constexpr char kManualRedirectHeader[] = "x-nso-internal-manual-redirect";
+
 class InternetHandle {
 public:
     InternetHandle() = default;
@@ -202,12 +204,21 @@ std::wstring proxy_server_from_url(const std::string& proxy_url) {
     return proxy;
 }
 
+bool is_internal_manual_redirect_header(const std::string& header) {
+    const auto separator = header.find(':');
+    auto name = separator == std::string::npos ? header : header.substr(0, separator);
+    name = lower(trim(std::move(name)));
+    return name == kManualRedirectHeader;
+}
+
 std::wstring build_headers(
     const std::vector<std::string>& headers,
     const std::string& content_type) {
     std::wstring result = L"Connection: close\r\nAccept-Encoding: identity\r\n";
 
     for (const auto& header : headers) {
+        // This header is an internal transport hint. Never send it to Nintendo.
+        if (is_internal_manual_redirect_header(header)) continue;
         result += utf8_to_wide(header);
         result += L"\r\n";
     }
@@ -429,6 +440,22 @@ HttpResponse HttpClient::request(
         flags));
     if (!request) {
         throw_winhttp_error("WinHttpOpenRequest");
+    }
+
+    const bool manual_redirect = std::any_of(
+        headers.begin(), headers.end(),
+        [](const std::string& header) {
+            return is_internal_manual_redirect_header(header);
+        });
+    if (manual_redirect) {
+        DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        if (!WinHttpSetOption(
+                request.get(),
+                WINHTTP_OPTION_REDIRECT_POLICY,
+                &redirect_policy,
+                sizeof(redirect_policy))) {
+            throw_winhttp_error("WinHttpSetOption(redirect policy)");
+        }
     }
 
     const auto additional_headers = build_headers(headers, content_type);
