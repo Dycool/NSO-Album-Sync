@@ -60,7 +60,12 @@ public:
         : http_(http),
           auth_(auth),
           nxapi_(nxapi),
-          cache_directory_(std::move(cache_directory)) {}
+          cache_directory_(std::move(cache_directory)) {
+        // NxapiClient now authenticates through the account-bound Worker broker.
+        // Bind the existing Nintendo auth manager so it can reuse a short-lived
+        // Nintendo access token without exposing nxapi OAuth credentials locally.
+        nxapi_.bind_nintendo_auth(auth_);
+    }
 
     std::vector<MediaItem> media_list(const std::string& session_token);
     NintendoPresence self_presence(const std::string& session_token);
