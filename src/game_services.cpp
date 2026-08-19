@@ -32,52 +32,60 @@ std::string header_value(const HttpResponse& response, const std::string& key) {
     return it == response.headers.end() ? std::string{} : it->second;
 }
 
-std::string cookie_value(const HttpResponse& response, const std::string& name) {
+std::vector<std::string> set_cookie_lines(const HttpResponse& response) {
     const auto cookies = header_value(response, "set-cookie");
     if (cookies.empty()) return {};
-    const std::string needle = name + "=";
-    auto pos = cookies.find(needle);
-    while (pos != std::string::npos) {
-        if (pos == 0 || cookies[pos - 1] == ' ' || cookies[pos - 1] == ',' ||
-            cookies[pos - 1] == ';' || cookies[pos - 1] == '\n') {
-            pos += needle.size();
-            auto end = cookies.find_first_of(";,\r\n", pos);
-            if (end == std::string::npos) end = cookies.size();
-            return cookies.substr(pos, end - pos);
+    std::vector<std::string> lines;
+    std::size_t start = 0;
+    while (start <= cookies.size()) {
+        const auto end = cookies.find('\n', start);
+        auto line = cookies.substr(
+            start,
+            end == std::string::npos ? std::string::npos : end - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) lines.push_back(std::move(line));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return lines;
+}
+
+std::string cookie_value(const HttpResponse& response, const std::string& name) {
+    const auto needle = name + "=";
+    for (const auto& line : set_cookie_lines(response)) {
+        std::size_t start = 0;
+        while (start < line.size() && std::isspace(static_cast<unsigned char>(line[start]))) {
+            ++start;
         }
-        pos = cookies.find(needle, pos + needle.size());
+        if (line.compare(start, needle.size(), needle) != 0) continue;
+        const auto value_start = start + needle.size();
+        auto end = line.find(';', value_start);
+        if (end == std::string::npos) end = line.size();
+        return line.substr(value_start, end - value_start);
     }
     return {};
 }
 
 std::string first_session_cookie(const HttpResponse& response) {
-    const auto cookies = header_value(response, "set-cookie");
-    if (cookies.empty()) return {};
-    std::size_t start = 0;
-    while (start < cookies.size()) {
-        while (start < cookies.size() &&
-               (cookies[start] == ' ' || cookies[start] == ',' ||
-                cookies[start] == '\n' || cookies[start] == '\r')) {
+    for (const auto& line : set_cookie_lines(response)) {
+        std::size_t start = 0;
+        while (start < line.size() && std::isspace(static_cast<unsigned char>(line[start]))) {
             ++start;
         }
-        const auto eq = cookies.find('=', start);
-        if (eq == std::string::npos) break;
-        const auto name = cookies.substr(start, eq - start);
-        std::string lower = name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-            return static_cast<char>(std::tolower(c));
-        });
-        if (lower.find("session") != std::string::npos || lower == "a5_token") {
-            auto end = cookies.find_first_of(";,\r\n", eq + 1);
-            if (end == std::string::npos) end = cookies.size();
-            return name + "=" + cookies.substr(eq + 1, end - eq - 1);
+        const auto eq = line.find('=', start);
+        if (eq == std::string::npos) continue;
+        const auto name = line.substr(start, eq - start);
+        auto lower_name = name;
+        std::transform(
+            lower_name.begin(), lower_name.end(), lower_name.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower_name.find("session") == std::string::npos && lower_name != "a5_token") {
+            continue;
         }
-        const auto next_comma = cookies.find(',', eq + 1);
-        const auto next_line = cookies.find('\n', eq + 1);
-        if (next_comma == std::string::npos && next_line == std::string::npos) break;
-        if (next_comma == std::string::npos) start = next_line + 1;
-        else if (next_line == std::string::npos) start = next_comma + 1;
-        else start = std::min(next_comma, next_line) + 1;
+        const auto value_start = eq + 1;
+        auto end = line.find(';', value_start);
+        if (end == std::string::npos) end = line.size();
+        return name + "=" + line.substr(value_start, end - value_start);
     }
     return {};
 }
@@ -97,7 +105,11 @@ std::string html_attribute(const std::string& body, const std::string& name) {
 std::vector<std::string> bootstrap_headers(
     const std::string& web_service_token,
     const std::string& language,
-    const char* user_agent = kWebServiceUserAgent) {
+    const char* user_agent = kWebServiceUserAgent,
+    bool use_account_accept_language = false) {
+    const auto accept_language = use_account_accept_language
+        ? language
+        : std::string("en-GB,en-US;q=0.8");
     return {
         "Upgrade-Insecure-Requests: 1",
         std::string("User-Agent: ") + user_agent,
@@ -106,7 +118,7 @@ std::vector<std::string> bootstrap_headers(
         "x-gamewebtoken: " + web_service_token,
         "dnt: 1",
         "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language: " + language,
+        "Accept-Language: " + accept_language,
         "X-Requested-With: com.nintendo.znca",
     };
 }
@@ -170,8 +182,10 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         const std::vector<std::string> api_headers = {
             std::string("User-Agent: ") + kWebServiceUserAgent,
             "Cookie: " + session.cookie,
+            "Upgrade-Insecure-Requests: 1",
+            "dnt: 1",
             "Accept: application/json, text/plain, */*",
-            "Accept-Language: " + language,
+            "Accept-Language: en-GB,en-US;q=0.8",
             std::string("Origin: ") + kNookLinkBaseUrl,
             "X-Blanco-Version: " + std::string(kBlancoVersion),
         };
@@ -306,7 +320,11 @@ SmashBrosPresence GameServicesClient::fetch_smash_presence(
     try {
         const auto bootstrap = http_.get(
             launch_url(kSmashWorldBaseUrl, language, country),
-            bootstrap_headers(web_service_token, language, kSmashWorldUserAgent),
+            bootstrap_headers(
+                web_service_token,
+                language,
+                kSmashWorldUserAgent,
+                true),
             10,
             8 * 1024 * 1024);
         if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
@@ -369,7 +387,7 @@ Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(
             std::string("User-Agent: ") + kWebServiceUserAgent,
             "Cookie: " + session.cookie,
             "Accept: */*",
-            "Accept-Language: " + language + ",en-US;q=0.8",
+            "Accept-Language: en-GB,en-US;q=0.8",
             std::string("Referer: ") + kSplatNet2BaseUrl + "/home",
             "X-Requested-With: XMLHttpRequest",
             "X-Timezone-Offset: 0",
