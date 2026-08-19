@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,12 @@ constexpr char kNxapiWebServiceUserAgent[] =
     "Mozilla/5.0 (iPhone; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Mobile/15E148 Safari/604.1";
 constexpr char kBlancoVersion[] = "2.1.1";
 constexpr auto kSessionTtl = std::chrono::minutes(90);
+
+void log_nooklink_failure(const std::string& stage) {
+    // Deliberately stage/status only. Never log GameWebServiceToken, _gtoken,
+    // per-user auth tokens, Nintendo user IDs, cookies or profile payloads.
+    std::cerr << "[NookLink RPC] " << stage << '\n';
+}
 
 std::string launch_url(
     const char* base,
@@ -148,7 +155,10 @@ void GameServicesClient::clear_cache() {
 
 AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
     const std::string& web_service_token) {
-    if (web_service_token.empty()) return {};
+    if (web_service_token.empty()) {
+        log_nooklink_failure("no GameWebServiceToken");
+        return {};
+    }
 
     ServiceSession session;
     std::string language;
@@ -176,10 +186,17 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                 bootstrap_headers(web_service_token, language),
                 10,
                 4 * 1024 * 1024);
-            if (bootstrap.status != 200) return {};
+            if (bootstrap.status != 200) {
+                log_nooklink_failure(
+                    "bootstrap HTTP " + std::to_string(bootstrap.status));
+                return {};
+            }
 
             const auto gtoken = cookie_value(bootstrap, "_gtoken");
-            if (gtoken.empty()) return {};
+            if (gtoken.empty()) {
+                log_nooklink_failure("bootstrap 200 but _gtoken is missing");
+                return {};
+            }
             session.source_token = web_service_token;
             session.cookie = "_gtoken=" + gtoken;
             session.expires_at = std::chrono::system_clock::now() + kSessionTtl;
@@ -206,14 +223,27 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
             10,
             4 * 1024 * 1024);
         if (users_response.status == 401 || users_response.status == 403) {
+            log_nooklink_failure(
+                "/users HTTP " + std::to_string(users_response.status));
             std::lock_guard lock(mutex_);
             sessions_.erase("nooklink");
             return {};
         }
-        if (users_response.status != 200) return {};
+        if (users_response.status != 200) {
+            log_nooklink_failure(
+                "/users HTTP " + std::to_string(users_response.status));
+            return {};
+        }
         const auto users_json = Json::parse(users_response.text());
         const auto* users = users_json.find("users");
-        if (!users || !users->is_array() || users->as_array().empty()) return {};
+        if (!users || !users->is_array()) {
+            log_nooklink_failure("/users response has no users array");
+            return {};
+        }
+        if (users->as_array().empty()) {
+            log_nooklink_failure("/users returned no linked NookLink residents");
+            return {};
+        }
         const auto& user = users->as_array().front();
 
         AnimalCrossingPresence presence;
@@ -235,6 +265,8 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                 "",
                 10);
             if (auth_response.status == 401 || auth_response.status == 403) {
+                log_nooklink_failure(
+                    "/auth_token HTTP " + std::to_string(auth_response.status));
                 std::lock_guard lock(mutex_);
                 sessions_.erase("nooklink");
                 return {};
@@ -242,6 +274,12 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
             if (auth_response.status / 100 == 2) {
                 const auto auth_json = Json::parse(auth_response.text());
                 session.auth_token = auth_json.string("token");
+                if (session.auth_token.empty()) {
+                    log_nooklink_failure("/auth_token response has no token");
+                }
+            } else {
+                log_nooklink_failure(
+                    "/auth_token HTTP " + std::to_string(auth_response.status));
             }
         }
 
@@ -260,6 +298,9 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                 10,
                 4 * 1024 * 1024);
             if (user_profile_response.status == 401 || user_profile_response.status == 403) {
+                log_nooklink_failure(
+                    "resident profile HTTP " +
+                    std::to_string(user_profile_response.status));
                 std::lock_guard lock(mutex_);
                 sessions_.erase("nooklink");
                 return {};
@@ -282,6 +323,9 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                     10,
                     4 * 1024 * 1024);
                 if (island_response.status == 401 || island_response.status == 403) {
+                    log_nooklink_failure(
+                        "island profile HTTP " +
+                        std::to_string(island_response.status));
                     std::lock_guard lock(mutex_);
                     sessions_.erase("nooklink");
                     return {};
@@ -299,6 +343,9 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         }
 
         presence.active = !presence.resident_name.empty() || !presence.island_name.empty();
+        if (!presence.active) {
+            log_nooklink_failure("/users returned no usable resident or island name");
+        }
         {
             std::lock_guard lock(mutex_);
             if (language_ == language && country_ == country) {
@@ -307,6 +354,7 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         }
         return presence;
     } catch (...) {
+        log_nooklink_failure("exception while parsing NookLink response");
         std::lock_guard lock(mutex_);
         sessions_.erase("nooklink");
         return {};
