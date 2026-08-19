@@ -28,6 +28,7 @@ public:
     ~HttpClient();
 
     void set_proxy(std::string proxy) { proxy_ = std::move(proxy); }
+    std::string proxy_url() const { return static_cast<std::string>(proxy_); }
 
     HttpResponse request(
         const std::string& method,
