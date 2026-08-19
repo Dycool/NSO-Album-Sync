@@ -94,11 +94,23 @@ public:
     SmashBrosPresence fetch_smash_presence(const std::string& web_service_token);
     Splatoon2Presence fetch_splatoon2_presence(const std::string& web_service_token);
 
+    void set_locale(const std::string& language, const std::string& country) {
+        const auto next_language = language.empty() ? std::string("en-GB") : language;
+        const auto next_country = country.empty() ? std::string("GB") : country;
+        std::lock_guard lock(mutex_);
+        if (language_ == next_language && country_ == next_country) return;
+        language_ = next_language;
+        country_ = next_country;
+        sessions_.clear();
+    }
+
     void clear_cache();
 
 private:
     HttpClient& http_;
     std::mutex mutex_;
+    std::string language_ = "en-GB";
+    std::string country_ = "GB";
 
     struct ServiceSession {
         std::string source_token;
