@@ -30,6 +30,7 @@ constexpr std::size_t kMaxScriptBytes = 2 * 1024 * 1024;
 constexpr std::size_t kMaxLocaleBytes = 2 * 1024 * 1024;
 constexpr std::size_t kMaxScriptsToInspect = 64;
 constexpr int kReconnectMaxSeconds = 30;
+constexpr long kActionTimeoutSeconds = 5;
 
 std::mutex g_bridge_mutex;
 ZeldaNotesClient* g_client = nullptr;
@@ -54,6 +55,55 @@ struct WebMetadata {
     bool protocol_ready() const {
         return !start_action.empty() && !end_action.empty() && !ack_action.empty();
     }
+};
+
+struct TowerRegion {
+    const char* label;
+    const char* localized_region_key;
+    const char* english_region;
+    double x;
+    double z;
+};
+
+// These are the verified Zelda Notes tower/Skyview Tower coordinates from the
+// captured Complete Guide dataset. They are intentionally tiny and stable: if
+// Nintendo moves the lazy POI chunks in a future Next deployment, we can still
+// turn live player coordinates into a coarse region instead of disabling the
+// entire feature. Dynamic Complete Guide data still wins for precise POIs.
+constexpr TowerRegion kTotkTowerRegions[] = {
+    {"Ex_Tower01", "Ex_MapRegion_HyrulePrairie", "Central Hyrule", -298.85, -142.85},
+    {"Ex_Tower02", "Ex_MapRegion_HyrulePrairie", "Central Hyrule", -1909.588, -1245.305},
+    {"Ex_Tower03", "Ex_MapRegion_Hebura", "Hebra", -2311.495, -3062.495},
+    {"Ex_Tower04", "Ex_MapRegion_Eldin", "Eldin", 1641.805, -1190.82},
+    {"Ex_Tower05", "Ex_MapRegion_Tamul", "Akkala", 3499.0, -2026.0},
+    {"Ex_Tower06", "Ex_MapRegion_Hateru", "Necluda", 1341.109, 1177.858},
+    {"Ex_Tower07", "Ex_MapRegion_Lanayru", "Lanayru", 2866.062, -581.1915},
+    {"Ex_Tower08", "Ex_MapRegion_HyrulePrairie", "Central Hyrule", -761.2766, 1019.228},
+    {"Ex_Tower09", "Ex_MapRegion_Gerudo", "Gerudo", -2438.851, 2182.764},
+    {"Ex_Tower10", "Ex_MapRegion_Gerudo", "Gerudo", -3960.877, 1305.596},
+    {"Ex_Tower11", "Ex_MapRegion_Hateru", "Necluda", 2420.0, 2754.891},
+    {"Ex_Tower12", "Ex_MapRegion_HyrulePrairie", "Central Hyrule", 343.6745, -3141.648},
+    {"Ex_Tower13", "Ex_MapRegion_Firone", "Faron", 604.8388, 2126.876},
+    {"Ex_Tower14", "Ex_MapRegion_Lanayru", "Lanayru", 3847.638, 1314.911},
+    {"Ex_Tower15", "Ex_MapRegion_Hebura", "Hebra", -3679.585, -2346.404},
+};
+
+constexpr TowerRegion kBotwTowerRegions[] = {
+    {"U_Tower01", "U_MapRegion_Hebura", "Hebra", -2173.0, -2034.0},
+    {"U_Tower02", "U_MapRegion_Hebura", "Hebra", -3613.748, -990.1647},
+    {"U_Tower03", "U_MapRegion_Gerudo", "Gerudo", -3666.0, 1828.6},
+    {"U_Tower04", "U_MapRegion_Gerudo", "Gerudo", -2306.836, 2437.32},
+    {"U_Tower05", "U_MapRegion_HyrulePrairie ", "Central Hyrule", 883.8843, -1605.71},
+    {"U_Tower06", "U_MapRegion_HyrulePrairie ", "Central Hyrule", -788.645, 442.0306},
+    {"U_Tower07", "U_MapRegion_HyrulePrairie ", "Central Hyrule", -560.0352, 1694.863},
+    {"U_Tower08", "U_MapRegion_Hateru", "Necluda", 1016.777, 1714.082},
+    {"U_Tower09", "U_MapRegion_Firone", "Faron", -31.81555, 2961.601},
+    {"U_Tower10", "U_MapRegion_Eldin", "Eldin", 2174.151, -1556.781},
+    {"U_Tower11", "U_MapRegion_Tamul", "Akkala", 3308.0, -1500.1},
+    {"U_Tower12", "U_MapRegion_Lanayru", "Lanayru", 2258.0, -109.0},
+    {"U_Tower13", "U_MapRegion_Hateru", "Necluda", 2735.5, 2133.5},
+    {"U_Tower14", "U_MapRegion_Firone", "Faron", 1331.203, 3273.723},
+    {"U_Tower15", "U_MapRegion_HyrulePrairie ", "Central Hyrule", -1755.3, -774.3},
 };
 
 std::string lower(std::string value) {
@@ -552,22 +602,30 @@ WebMetadata discover_web_metadata(
             if (metadata.ack_action.empty()) {
                 metadata.ack_action = find_server_reference(script, "sendAckAction");
             }
+            // POIs are deliberately best-effort. The full Complete Guide map is
+            // a lazy Next chunk in the captured deployment, so it may not appear
+            // among the initial route scripts. Coarse region/layer RPC does not
+            // depend on discovering this optional dataset.
             if (metadata.places.empty()) {
                 extract_map_dataset(script, game, metadata.places);
             }
         } catch (...) {
         }
-        if (metadata.protocol_ready() && !metadata.places.empty()) break;
     }
 
-    metadata.labels = fetch_labels(http, session, language, country);
+    try {
+        metadata.labels = fetch_labels(http, session, language, country);
+    } catch (...) {
+        // Region resolver has verified English fallbacks. Missing localization
+        // should reduce precision, never disable a healthy live map stream.
+    }
     return metadata;
 }
 
 bool action_succeeded(const HttpResponse& response) {
     if (response.status / 100 != 2) return false;
     const auto text = response.text();
-    return text.find("\"isSuccess\":true") != std::string::npos;
+    return text.empty() || text.find("\"isSuccess\":true") != std::string::npos;
 }
 
 bool send_server_action(
@@ -596,55 +654,8 @@ bool send_server_action(
         Json(arguments).dump(),
         headers,
         "text/plain;charset=UTF-8",
-        12);
+        kActionTimeoutSeconds);
     return action_succeeded(response);
-}
-
-std::pair<std::string, std::string> region_mapping(
-    ZeldaNotesGame game,
-    const std::string& tower_label) {
-    if (game == ZeldaNotesGame::TearsOfTheKingdom) {
-        if (tower_label == "Ex_Tower03" || tower_label == "Ex_Tower15") {
-            return {"Ex_MapRegion_Hebura", "Hebra"};
-        }
-        if (tower_label == "Ex_Tower04") return {"Ex_MapRegion_Eldin", "Eldin"};
-        if (tower_label == "Ex_Tower05") return {"Ex_MapRegion_Tamul", "Akkala"};
-        if (tower_label == "Ex_Tower06" || tower_label == "Ex_Tower11") {
-            return {"Ex_MapRegion_Hateru", "Necluda"};
-        }
-        if (tower_label == "Ex_Tower07" || tower_label == "Ex_Tower14") {
-            return {"Ex_MapRegion_Lanayru", "Lanayru"};
-        }
-        if (tower_label == "Ex_Tower09" || tower_label == "Ex_Tower10") {
-            return {"Ex_MapRegion_Gerudo", "Gerudo"};
-        }
-        if (tower_label == "Ex_Tower13") return {"Ex_MapRegion_Firone", "Faron"};
-        if (tower_label == "Ex_Tower01" || tower_label == "Ex_Tower02" ||
-            tower_label == "Ex_Tower08" || tower_label == "Ex_Tower12") {
-            return {"Ex_MapRegion_HyrulePrairie", "Central Hyrule"};
-        }
-    } else {
-        if (tower_label == "U_Tower01" || tower_label == "U_Tower02") {
-            return {"U_MapRegion_Hebura", "Hebra"};
-        }
-        if (tower_label == "U_Tower03" || tower_label == "U_Tower04") {
-            return {"U_MapRegion_Gerudo", "Gerudo"};
-        }
-        if (tower_label == "U_Tower10") return {"U_MapRegion_Eldin", "Eldin"};
-        if (tower_label == "U_Tower11") return {"U_MapRegion_Tamul", "Akkala"};
-        if (tower_label == "U_Tower12") return {"U_MapRegion_Lanayru", "Lanayru"};
-        if (tower_label == "U_Tower08" || tower_label == "U_Tower13") {
-            return {"U_MapRegion_Hateru", "Necluda"};
-        }
-        if (tower_label == "U_Tower09" || tower_label == "U_Tower14") {
-            return {"U_MapRegion_Firone", "Faron"};
-        }
-        if (tower_label == "U_Tower05" || tower_label == "U_Tower06" ||
-            tower_label == "U_Tower07" || tower_label == "U_Tower15") {
-            return {"U_MapRegion_HyrulePrairie ", "Central Hyrule"};
-        }
-    }
-    return {};
 }
 
 double horizontal_distance(
@@ -667,23 +678,26 @@ std::string resolve_region(
     const WebMetadata& metadata,
     ZeldaNotesGame game,
     const ZeldaNotesVector3& position) {
-    const MapPlace* nearest = nullptr;
+    const TowerRegion* towers = game == ZeldaNotesGame::TearsOfTheKingdom
+        ? kTotkTowerRegions
+        : kBotwTowerRegions;
+    const std::size_t tower_count = game == ZeldaNotesGame::TearsOfTheKingdom
+        ? std::size(kTotkTowerRegions)
+        : std::size(kBotwTowerRegions);
+
+    const TowerRegion* nearest = nullptr;
     double nearest_distance = (std::numeric_limits<double>::max)();
-    const auto tower_subcategory =
-        game == ZeldaNotesGame::TearsOfTheKingdom ? "skyviewTower" : "tower";
-    for (const auto& place : metadata.places) {
-        if (place.subcategory != tower_subcategory) continue;
-        const auto distance = horizontal_distance(position, place.position);
+    for (std::size_t i = 0; i < tower_count; ++i) {
+        ZeldaNotesVector3 tower_position{towers[i].x, 0.0, towers[i].z};
+        const auto distance = horizontal_distance(position, tower_position);
         if (distance < nearest_distance) {
             nearest_distance = distance;
-            nearest = &place;
+            nearest = &towers[i];
         }
     }
     if (nearest == nullptr) return {};
-    const auto mapping = region_mapping(game, nearest->message_label);
-    if (mapping.first.empty()) return {};
-    const auto localized = localized_label(metadata, mapping.first);
-    return localized.empty() ? mapping.second : localized;
+    const auto localized = localized_label(metadata, nearest->localized_region_key);
+    return localized.empty() ? nearest->english_region : localized;
 }
 
 struct DistanceThresholds {
@@ -751,9 +765,6 @@ ZeldaNotesResolvedLocation resolve_location(
         if (score < best.score) best = Candidate{&place, distance, score};
     }
 
-    // Keep the current POI around boundaries unless a new candidate is
-    // substantially closer. This prevents Discord from bouncing A/B/A/B while
-    // Link walks between two nearby map markers.
     if (previous.poi_uid != 0 && best.place != nullptr &&
         best.place->uid != previous.poi_uid) {
         for (const auto& place : metadata.places) {
@@ -999,7 +1010,7 @@ void ZeldaNotesClient::set_locale(
     const std::string& country) {
     const auto next_language = language.empty() ? std::string("en-GB") : language;
     const auto next_country = country.empty() ? std::string("GB") : country;
-    bool changed = false;
+    ZeldaNotesGame active_game = ZeldaNotesGame::Unknown;
     {
         std::lock_guard lock(mutex_);
         if (language_ == next_language && country_ == next_country) return;
@@ -1008,15 +1019,14 @@ void ZeldaNotesClient::set_locale(
         source_web_token_.clear();
         session_cookie_.clear();
         session_expires_at_ = {};
-        changed = true;
     }
-    if (changed) {
-        ZeldaNotesGame game;
-        {
-            std::lock_guard lock(live_mutex_);
-            game = live_game_;
-        }
-        if (game != ZeldaNotesGame::Unknown) set_active_game(game);
+    {
+        std::lock_guard lock(live_mutex_);
+        active_game = live_game_;
+    }
+    if (active_game != ZeldaNotesGame::Unknown) {
+        stop_live_session();
+        set_active_game(active_game);
     }
 }
 
@@ -1074,9 +1084,6 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(
         ensure_session(web_service_token);
     } catch (...) {
     }
-    // App's existing game-service path remains one-shot. The Discord renderer
-    // immediately tells this client which Zelda title Coral reported, at which
-    // point the independent live stream begins and pushes meaningful changes.
     return {};
 }
 
@@ -1149,6 +1156,7 @@ void ZeldaNotesClient::run_live_session(
     WebMetadata metadata;
 
     while (!live_stop_.load()) {
+        bool healthy_stream = false;
         try {
             if (!ensure_session(web_service_token)) {
                 throw std::runtime_error("Zelda Notes session bootstrap failed");
@@ -1165,15 +1173,12 @@ void ZeldaNotesClient::run_live_session(
             }
             if (session.empty()) throw std::runtime_error("Zelda Notes session unavailable");
 
-            if (!metadata.protocol_ready() || metadata.places.empty() || metadata.labels.empty()) {
+            if (!metadata.protocol_ready()) {
                 metadata = discover_web_metadata(
                     http_, game, session, language, country);
             }
             if (!metadata.protocol_ready()) {
                 throw std::runtime_error("Zelda Notes map-sync actions unavailable");
-            }
-            if (metadata.places.empty() || metadata.labels.empty()) {
-                throw std::runtime_error("Zelda Notes Complete Guide data unavailable");
             }
 
             const auto sse_url = std::string(kBaseUrl) +
@@ -1253,6 +1258,7 @@ void ZeldaNotesClient::run_live_session(
                             previous_location = {};
                             publish_live_presence({});
                         } else {
+                            healthy_stream = true;
                             const auto location = resolve_location(
                                 metadata, message.live_state, previous_location);
                             previous_location = location;
@@ -1290,7 +1296,7 @@ void ZeldaNotesClient::run_live_session(
                 protocol_failure = true;
             }
             if (protocol_failure) metadata = {};
-            backoff_seconds = 2;
+            if (healthy_stream) backoff_seconds = 2;
         } catch (const std::exception& error) {
             if (!live_stop_.load()) {
                 std::cerr << "[ZeldaNotes] Live map sync unavailable: "
