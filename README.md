@@ -55,7 +55,11 @@ Windows builds are unsigned. macOS builds use local/ad-hoc codesigning and do no
 
 NSO Album Sync uses the third-party [`nxapi-znca-api`](https://github.com/samuelthomas2774/nxapi-znca-api) service for Nintendo Switch Online request attestation and Coral request/response encryption.
 
-The app shows a disclosure before sign-in because the Nintendo Account `id_token`, Nintendo Account ID, birthday, country and language required by Coral, the Coral access token, and Coral API requests/responses used by the app are processed by that service. nxapi authentication tokens are kept in memory only, while reusable Nintendo/Coral credentials are stored in the operating system credential store when available.
+The app shows a disclosure before sign-in because the Nintendo Account `id_token`, Nintendo Account ID, birthday, country and language required by Coral, the Coral access token, and Coral API requests/responses used by the app are processed by that service.
+
+The desktop app does **not** authenticate directly to `nxapi-auth` and does not contain an nxapi client secret. A short-lived Nintendo Account access token is sent to the NSO Album Sync Cloudflare Worker to bind an account-specific native session. The Worker owns the confidential nxapi authentication flow and performs the required nxapi operations on behalf of the desktop app. nxapi OAuth access tokens, refresh tokens, client assertions and the shared secret are never returned to or persisted by the desktop app.
+
+Reusable Nintendo/Coral credentials continue to be stored in the operating system credential store when available. The native Worker broker credential is short-lived and memory-only; `nxapi-cache.json` contains only non-secret supported-version and rate-limit backoff state.
 
 ---
 
