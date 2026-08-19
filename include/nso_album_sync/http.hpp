@@ -12,10 +12,85 @@ namespace nso {
 inline constexpr std::size_t kDefaultGetResponseLimit =
     256ULL * 1024ULL * 1024ULL;
 
+// Response headers are map-like for existing callers, but Set-Cookie is the
+// one HTTP response field that cannot be safely collapsed. Both WinHTTP and
+// the OpenSSL transport feed headers through operator[]; preserving repeated
+// Set-Cookie assignments here keeps all Nintendo web-service session cookies
+// without requiring platform-specific cookie handling.
+class HttpResponseHeaders {
+public:
+    using Storage = std::map<std::string, std::string>;
+    using iterator = Storage::iterator;
+    using const_iterator = Storage::const_iterator;
+
+    class ValueProxy {
+    public:
+        ValueProxy(HttpResponseHeaders& owner, std::string key)
+            : owner_(owner), key_(std::move(key)) {}
+
+        ValueProxy& operator=(std::string value) {
+            owner_.assign(key_, std::move(value));
+            return *this;
+        }
+
+        ValueProxy& operator=(const char* value) {
+            owner_.assign(key_, value == nullptr ? std::string{} : std::string(value));
+            return *this;
+        }
+
+        operator const std::string&() const {
+            return owner_.value(key_);
+        }
+
+    private:
+        HttpResponseHeaders& owner_;
+        std::string key_;
+    };
+
+    ValueProxy operator[](std::string key) {
+        return ValueProxy(*this, std::move(key));
+    }
+
+    const std::string& operator[](const std::string& key) const {
+        return value(key);
+    }
+
+    iterator find(const std::string& key) { return values_.find(key); }
+    const_iterator find(const std::string& key) const { return values_.find(key); }
+    iterator begin() { return values_.begin(); }
+    const_iterator begin() const { return values_.begin(); }
+    const_iterator cbegin() const { return values_.cbegin(); }
+    iterator end() { return values_.end(); }
+    const_iterator end() const { return values_.end(); }
+    const_iterator cend() const { return values_.cend(); }
+    bool empty() const { return values_.empty(); }
+    std::size_t size() const { return values_.size(); }
+    void clear() { values_.clear(); }
+
+private:
+    void assign(const std::string& key, std::string value) {
+        auto it = values_.find(key);
+        if (key == "set-cookie" && it != values_.end() && !it->second.empty()) {
+            it->second.push_back('\n');
+            it->second += value;
+            return;
+        }
+        values_[key] = std::move(value);
+    }
+
+    const std::string& value(const std::string& key) const {
+        static const std::string empty_value;
+        const auto it = values_.find(key);
+        return it == values_.end() ? empty_value : it->second;
+    }
+
+    Storage values_;
+};
+
 struct HttpResponse {
     long status = 0;
     std::vector<unsigned char> body;
-    std::map<std::string, std::string> headers;
+    HttpResponseHeaders headers;
 
     std::string text() const {
         return std::string(body.begin(), body.end());
