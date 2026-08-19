@@ -14,31 +14,37 @@ inline constexpr std::uint64_t kSplatoon3GameServiceId = 4834290508791808ULL;
 inline constexpr std::uint64_t kSplatoon3GameServiceIdAlt = 4834290530795520ULL;
 
 struct SplatNetPresence {
-    std::string mode_name;
-    std::string rule_name;
-    std::string stage_name;
-    std::string stage_image_uri;
+    std::string player_name;
+    std::string player_id;
+    std::string title;
     std::string weapon_name;
+    std::string rank_name;
+    std::int64_t player_level = 0;
+    // Kept for the existing Discord asset handoff. This is the current weapon
+    // image returned by the authenticated player's record, not an inferred stage.
+    std::string stage_image_uri;
     bool active = false;
 
     std::string format_details() const {
-        if (!rule_name.empty() && !stage_name.empty()) {
-            return rule_name + " on " + stage_name;
-        }
-        if (!stage_name.empty()) return stage_name;
-        if (!rule_name.empty()) return rule_name;
-        return {};
+        if (!weapon_name.empty()) return "Weapon: " + weapon_name;
+        return title.empty() ? std::string{} : title;
     }
 
     std::string format_state() const {
-        if (!mode_name.empty()) return mode_name;
-        return {};
+        std::string state;
+        if (player_level > 0) state = "Level " + std::to_string(player_level);
+        if (!rank_name.empty()) {
+            if (!state.empty()) state += " • ";
+            state += rank_name;
+        }
+        if (state.empty() && !title.empty()) state = title;
+        return state;
     }
 };
 
 class SplatNetClient {
 public:
-    explicit SplatNetClient(HttpClient& http);
+    explicit SplatNetClient(HttpClient& http) : http_(http) {}
 
     SplatNetPresence fetch_presence(const std::string& web_service_token);
     void clear_cache();
@@ -46,11 +52,12 @@ public:
 private:
     HttpClient& http_;
     std::mutex mutex_;
+    std::string source_web_token_;
     std::string bullet_token_;
-    std::string cached_web_service_token_;
-    std::chrono::system_clock::time_point bullet_token_expiry_{};
+    std::string language_ = "en-GB";
+    std::chrono::system_clock::time_point bullet_expires_at_{};
 
-    std::string ensure_bullet_token_locked(const std::string& web_service_token);
+    std::string ensure_bullet_token(const std::string& web_service_token);
 };
 
 }  // namespace nso

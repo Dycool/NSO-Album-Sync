@@ -1,138 +1,120 @@
 #include "nso_album_sync/zeldanotes.hpp"
 
-#include <chrono>
-#include <exception>
+#include <algorithm>
+#include <cctype>
+#include <string>
 #include <vector>
 
 namespace nso {
 namespace {
 
-constexpr char kZeldaNotesBaseUrl[] =
-    "https://api.lp1.87abc152.srv.nintendo.net";
-constexpr char kDefaultWebViewVersion[] = "1.0.0";
-constexpr char kDefaultUserAgent[] =
-    "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36";
+constexpr char kBaseUrl[] = "https://api.lp1.87abc152.srv.nintendo.net";
+constexpr char kUserAgent[] =
+    "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
+constexpr char kLanguage[] = "en-GB";
+constexpr char kCountry[] = "GB";
+constexpr auto kSessionTtl = std::chrono::minutes(90);
 
-constexpr auto kTokenTtl = std::chrono::hours(2);
+std::string header_value(const HttpResponse& response, const std::string& key) {
+    const auto it = response.headers.find(key);
+    return it == response.headers.end() ? std::string{} : it->second;
+}
+
+std::string session_cookie(const HttpResponse& response) {
+    const auto cookies = header_value(response, "set-cookie");
+    if (cookies.empty()) return {};
+    std::size_t start = 0;
+    while (start < cookies.size()) {
+        while (start < cookies.size() && (cookies[start] == ' ' || cookies[start] == ',' || cookies[start] == '\r' || cookies[start] == '\n')) ++start;
+        const auto eq = cookies.find('=', start);
+        if (eq == std::string::npos) break;
+        auto name = cookies.substr(start, eq - start);
+        auto lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower == "a5_token" || lower.find("session") != std::string::npos) {
+            auto end = cookies.find_first_of(";,\r\n", eq + 1);
+            if (end == std::string::npos) end = cookies.size();
+            return name + "=" + cookies.substr(eq + 1, end - eq - 1);
+        }
+        const auto next = cookies.find(',', eq + 1);
+        if (next == std::string::npos) break;
+        start = next + 1;
+    }
+    return {};
+}
+
+std::vector<std::string> bootstrap_headers(const std::string& token) {
+    return {
+        "Upgrade-Insecure-Requests: 1",
+        std::string("User-Agent: ") + kUserAgent,
+        "x-appplatform: android",
+        "x-appcolorscheme: DARK",
+        "x-gamewebtoken: " + token,
+        "dnt: 1",
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        std::string("Accept-Language: ") + kLanguage,
+        "X-Requested-With: com.nintendo.znca",
+    };
+}
 
 }  // namespace
 
-ZeldaNotesClient::ZeldaNotesClient(HttpClient& http) : http_(http) {}
-
 void ZeldaNotesClient::clear_cache() {
     std::lock_guard lock(mutex_);
-    session_token_.clear();
-    cached_web_service_token_.clear();
-    token_expiry_ = {};
+    source_web_token_.clear();
+    session_cookie_.clear();
+    session_expires_at_ = {};
 }
 
-std::string ZeldaNotesClient::ensure_token_locked(
-    const std::string& web_service_token) {
-    const auto now = std::chrono::system_clock::now();
-    if (!session_token_.empty() &&
-        cached_web_service_token_ == web_service_token &&
-        now < token_expiry_) {
-        return session_token_;
-    }
-
-    session_token_ = web_service_token;
-    cached_web_service_token_ = web_service_token;
-    token_expiry_ = now + kTokenTtl;
-    return session_token_;
-}
-
-ZeldaPresence ZeldaNotesClient::fetch_presence(
-    const std::string& web_service_token) {
+ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_service_token) {
     if (web_service_token.empty()) return {};
 
-    std::string token;
-    {
-        std::lock_guard lock(mutex_);
-        token = ensure_token_locked(web_service_token);
-    }
-    if (token.empty()) return {};
-
-    const std::vector<std::string> headers = {
-        "X-Gamewebtoken: " + token,
-        "Authorization: Bearer " + token,
-        "Accept-Language: en-US",
-        std::string("X-Web-View-Ver: ") + kDefaultWebViewVersion,
-        "Content-Type: application/json",
-        std::string("User-Agent: ") + kDefaultUserAgent,
-    };
-
-    // Query Zelda Notes play data endpoint
     try {
-        const auto response = http_.get(
-            std::string(kZeldaNotesBaseUrl) + "/api/v1/play_data",
-            headers,
-            10);
-
-        if (response.status == 200) {
-            const auto json = Json::parse(response.text());
-            ZeldaPresence presence;
-            presence.active = true;
-
-            const auto game_title = json.string("gameTitle");
-            if (game_title.find("Breath of the Wild") != std::string::npos ||
-                game_title.find("ブレス オブ ザ ワイルド") != std::string::npos) {
-                presence.game = ZeldaGame::BreathOfTheWild;
-                presence.shrines_total = 120;
-            } else if (game_title.find("Tears of the Kingdom") != std::string::npos ||
-                       game_title.find("ティアーズ オブ ザ キングダム") != std::string::npos) {
-                presence.game = ZeldaGame::TearsOfTheKingdom;
-                presence.shrines_total = 152;
-            }
-
-            if (const auto* play_data = json.find("playData"); play_data != nullptr) {
-                presence.shrines_completed = static_cast<int>(
-                    play_data->integer("completedShrines", 0));
-                if (const auto total = play_data->integer("totalShrines", 0); total > 0) {
-                    presence.shrines_total = static_cast<int>(total);
-                }
-                presence.divine_beasts_completed = static_cast<int>(
-                    play_data->integer("completedDivineBeasts", 0));
-                presence.stamina_wheels = play_data->number("staminaWheels", 0.0);
-                presence.lightroots_completed = static_cast<int>(
-                    play_data->integer("activatedLightroots", 0));
-                if (const auto roots = play_data->integer("totalLightroots", 0); roots > 0) {
-                    presence.lightroots_total = static_cast<int>(roots);
-                }
-                presence.koroks_found = static_cast<int>(
-                    play_data->integer("collectedKoroks", 0));
-                presence.battery_cells = static_cast<int>(
-                    play_data->integer("batteryEnergyCells", 0));
-                presence.hearts = static_cast<int>(
-                    play_data->integer("hearts", 0));
-            }
-
-            if (const auto* nav = json.find("navigation"); nav != nullptr) {
-                const auto layer_str = nav->string("currentLayer");
-                if (layer_str == "SKY") {
-                    presence.layer = ZeldaLayer::Sky;
-                } else if (layer_str == "DEPTHS") {
-                    presence.layer = ZeldaLayer::Depths;
-                } else if (layer_str == "SURFACE") {
-                    presence.layer = ZeldaLayer::Surface;
-                }
-
-                presence.region_name = nav->string("currentRegion");
-                presence.location_name = nav->string("currentLocation");
-                presence.stage_image_uri = nav->string("imageUri");
-            }
-
-            if (const auto* event = json.find("activeEvent"); event != nullptr) {
-                presence.activity_name = event->string("title");
-            } else if (const auto* action = json.find("currentAction"); action != nullptr) {
-                presence.activity_name = action->string("name");
-            }
-
-            return presence;
+        std::string cookie;
+        {
+            std::lock_guard lock(mutex_);
+            if (source_web_token_ == web_service_token && !session_cookie_.empty() &&
+                std::chrono::system_clock::now() < session_expires_at_) cookie = session_cookie_;
         }
-    } catch (...) {
-    }
 
-    return {};
+        if (cookie.empty()) {
+            const auto bootstrap = http_.get(
+                std::string(kBaseUrl) + "/?lang=" + kLanguage + "&na_country=" + kCountry + "&na_lang=" + kLanguage,
+                bootstrap_headers(web_service_token), 10, 8 * 1024 * 1024);
+            if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
+            cookie = session_cookie(bootstrap);
+            if (cookie.empty()) return {};
+            std::lock_guard lock(mutex_);
+            source_web_token_ = web_service_token;
+            session_cookie_ = cookie;
+            session_expires_at_ = std::chrono::system_clock::now() + kSessionTtl;
+        }
+
+        // Match the working backend: after the first GWT-authenticated document,
+        // navigate with Nintendo's session cookie only. Do not keep injecting the
+        // GameWebServiceToken into ordinary Zelda Notes requests.
+        const auto page = http_.get(
+            std::string(kBaseUrl) + "/title-select",
+            {
+                std::string("User-Agent: ") + kUserAgent,
+                "Cookie: " + cookie,
+                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                std::string("Accept-Language: ") + kLanguage,
+                "X-Requested-With: com.nintendo.znca",
+            },
+            10, 8 * 1024 * 1024);
+        if (page.status == 401 || page.status == 403) clear_cache();
+
+        // Ben Lawrence's zelda-notes-types project confirms the dedicated
+        // Zelda Notes service exists, but its repository is not reliably
+        // retrievable from this build environment. More importantly, neither
+        // nxapi nor our working backend exposes a stable self "current location"
+        // endpoint. A successful title-select session is therefore deliberately
+        // not turned into invented Discord activity.
+        return {};
+    } catch (...) {
+        return {};
+    }
 }
 
 }  // namespace nso

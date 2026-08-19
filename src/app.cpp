@@ -390,19 +390,121 @@ void App::presence_loop() {
         const auto generation = account_generation_.load();
         const auto session_token = config.session_token;
         try {
-            const auto presence = coral_.self_presence(session_token);
+            auto presence = coral_.self_presence(session_token);
             config = config_.snapshot();
             if (!stopping_ && config.discord_presence &&
                 config.session_token == session_token &&
                 account_generation_.load() == generation) {
-                // Coral is the authoritative source for this account's own live
-                // Nintendo presence. Do not infer game-specific live activity from
-                // web-service profile data, completed match history, or rotation
-                // schedules. nxapi's detailed Splatoon 3 monitor obtains a target
-                // player's live vsMode/onlineState from SplatNet 3's friend list;
-                // a self-only account cannot reproduce that without a second
-                // Nintendo account monitoring the player as a friend.
                 if (presence.is_playing()) {
+                    if (presence.game_name.find("Splatoon 3") != std::string::npos ||
+                        presence.game_name.find("スプラトゥーン3") != std::string::npos) {
+                        try {
+                            const auto web_token = coral_.get_web_service_token(
+                                session_token, kSplatoon3GameServiceId);
+                            if (!web_token.empty()) {
+                                const auto splat_presence =
+                                    splatnet_.fetch_presence(web_token);
+                                if (splat_presence.active) {
+                                    presence.custom_details =
+                                        splat_presence.format_details();
+                                    presence.custom_state =
+                                        splat_presence.format_state();
+                                    if (!splat_presence.stage_image_uri.empty()) {
+                                        presence.custom_image_uri =
+                                            splat_presence.stage_image_uri;
+                                    }
+                                }
+                            }
+                        } catch (...) {
+                        }
+                    } else if (presence.game_name.find("Zelda") != std::string::npos ||
+                               presence.game_name.find("ゼルダ") != std::string::npos) {
+                        try {
+                            const auto web_token = coral_.get_web_service_token(
+                                session_token, kZeldaNotesGameServiceId);
+                            if (!web_token.empty()) {
+                                const auto zelda_presence =
+                                    zeldanotes_.fetch_presence(web_token);
+                                if (zelda_presence.active) {
+                                    const auto state_str =
+                                        zelda_presence.format_state();
+                                    const auto details_str =
+                                        zelda_presence.format_details();
+                                    if (!state_str.empty()) {
+                                        presence.custom_state = state_str;
+                                    }
+                                    if (!details_str.empty()) {
+                                        presence.custom_details = details_str;
+                                    }
+                                    if (!zelda_presence.stage_image_uri.empty()) {
+                                        presence.custom_image_uri =
+                                            zelda_presence.stage_image_uri;
+                                    }
+                                }
+                            }
+                        } catch (...) {
+                        }
+                    } else if (presence.game_name.find("Animal Crossing") != std::string::npos ||
+                               presence.game_name.find("どうぶつの森") != std::string::npos) {
+                        try {
+                            const auto web_token = coral_.get_web_service_token(
+                                session_token, kAnimalCrossingGameServiceId);
+                            if (!web_token.empty()) {
+                                const auto ac_presence =
+                                    game_services_.fetch_animal_crossing_presence(web_token);
+                                if (ac_presence.active) {
+                                    const auto state_str = ac_presence.format_state();
+                                    const auto details_str = ac_presence.format_details();
+                                    if (!state_str.empty()) presence.custom_state = state_str;
+                                    if (!details_str.empty()) presence.custom_details = details_str;
+                                    if (!ac_presence.image_uri.empty()) {
+                                        presence.custom_image_uri = ac_presence.image_uri;
+                                    }
+                                }
+                            }
+                        } catch (...) {
+                        }
+                    } else if (presence.game_name.find("Super Smash Bros") != std::string::npos ||
+                               presence.game_name.find("大乱闘スマッシュブラザーズ") != std::string::npos) {
+                        try {
+                            const auto web_token = coral_.get_web_service_token(
+                                session_token, kSmashBrosGameServiceId);
+                            if (!web_token.empty()) {
+                                const auto smash_presence =
+                                    game_services_.fetch_smash_presence(web_token);
+                                if (smash_presence.active) {
+                                    const auto state_str = smash_presence.format_state();
+                                    const auto details_str = smash_presence.format_details();
+                                    if (!state_str.empty()) presence.custom_state = state_str;
+                                    if (!details_str.empty()) presence.custom_details = details_str;
+                                    if (!smash_presence.fighter_image_uri.empty()) {
+                                        presence.custom_image_uri = smash_presence.fighter_image_uri;
+                                    }
+                                }
+                            }
+                        } catch (...) {
+                        }
+                    } else if (presence.game_name.find("Splatoon 2") != std::string::npos ||
+                               presence.game_name.find("スプラトゥーン2") != std::string::npos) {
+                        try {
+                            const auto web_token = coral_.get_web_service_token(
+                                session_token, kSplatoon2GameServiceId);
+                            if (!web_token.empty()) {
+                                const auto splat2_presence =
+                                    game_services_.fetch_splatoon2_presence(web_token);
+                                if (splat2_presence.active) {
+                                    const auto state_str = splat2_presence.format_state();
+                                    const auto details_str = splat2_presence.format_details();
+                                    if (!state_str.empty()) presence.custom_state = state_str;
+                                    if (!details_str.empty()) presence.custom_details = details_str;
+                                    if (!splat2_presence.stage_image_uri.empty()) {
+                                        presence.custom_image_uri = splat2_presence.stage_image_uri;
+                                    }
+                                }
+                            }
+                        } catch (...) {
+                        }
+                    }
                     discord_.update(presence);
                 } else {
                     discord_.clear();

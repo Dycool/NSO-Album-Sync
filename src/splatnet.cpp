@@ -1,224 +1,147 @@
 #include "nso_album_sync/splatnet.hpp"
 
 #include <chrono>
-#include <exception>
+#include <string>
 #include <vector>
 
 namespace nso {
 namespace {
 
-constexpr char kBulletTokensUrl[] =
-    "https://api.lp1.av5ja.srv.nintendo.net/api/bullet_tokens";
-constexpr char kGraphQLUrl[] =
-    "https://api.lp1.av5ja.srv.nintendo.net/api/graphql";
-constexpr char kDefaultWebViewVersion[] = "6.0.0-f8f2b34a";
-constexpr char kDefaultUserAgent[] =
-    "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36";
+constexpr char kBaseUrl[] = "https://api.lp1.av5ja.srv.nintendo.net";
+constexpr char kUserAgent[] =
+    "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
+constexpr char kLanguage[] = "en-GB";
+constexpr char kCountry[] = "GB";
+// imink's current published webview metadata maps this version to the full
+// HistoryRecordQuery SHA-256 below. Keep the pair together.
+constexpr char kWebViewVersion[] = "6.0.0-30a1464a";
+constexpr char kHistoryRecordQuery[] =
+    "f09666535a18dfe2a0953018a8e7138204fb9d007cc32bd2c85f3e0f7c1cc6ba";
+constexpr auto kBulletTtl = std::chrono::minutes(100);
 
-constexpr auto kBulletTokenTtl = std::chrono::hours(2);
-
-// Standard persisted query hashes for SplatNet 3 GraphQL queries
-constexpr char kLatestBattleHistoriesHash[] =
-    "80585ad4e4ecb674c3d8cd278adb1d21";
-constexpr char kStageScheduleHash[] =
-    "2b6940a02978cf47bc62e15e1233dbdf";
+std::vector<std::string> bootstrap_headers(const std::string& token) {
+    return {
+        "Upgrade-Insecure-Requests: 1",
+        std::string("User-Agent: ") + kUserAgent,
+        "x-appplatform: android",
+        "x-appcolorscheme: DARK",
+        "x-gamewebtoken: " + token,
+        "dnt: 1",
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        std::string("Accept-Language: ") + kLanguage + ",en-US;q=0.8",
+        "X-Requested-With: com.nintendo.znca",
+    };
+}
 
 }  // namespace
 
-SplatNetClient::SplatNetClient(HttpClient& http) : http_(http) {}
-
 void SplatNetClient::clear_cache() {
     std::lock_guard lock(mutex_);
+    source_web_token_.clear();
     bullet_token_.clear();
-    cached_web_service_token_.clear();
-    bullet_token_expiry_ = {};
+    language_ = kLanguage;
+    bullet_expires_at_ = {};
 }
 
-std::string SplatNetClient::ensure_bullet_token_locked(
-    const std::string& web_service_token) {
+std::string SplatNetClient::ensure_bullet_token(const std::string& web_service_token) {
     const auto now = std::chrono::system_clock::now();
-    if (!bullet_token_.empty() &&
-        cached_web_service_token_ == web_service_token &&
-        now < bullet_token_expiry_) {
-        return bullet_token_;
-    }
-
-    bullet_token_.clear();
-    cached_web_service_token_ = web_service_token;
-    bullet_token_expiry_ = {};
-
-    const std::vector<std::string> headers = {
-        "X-Gamewebtoken: " + web_service_token,
-        "Accept-Language: en-US",
-        std::string("X-Web-View-Ver: ") + kDefaultWebViewVersion,
-        "Content-Type: application/json",
-        std::string("User-Agent: ") + kDefaultUserAgent,
-    };
-
-    const auto response = http_.post(
-        kBulletTokensUrl, "{}", headers, "application/json", 15);
-    if (response.status != 200 && response.status != 201) {
-        return {};
-    }
-
-    try {
-        const auto json = Json::parse(response.text());
-        const auto token = json.string("bulletToken");
-        if (!token.empty()) {
-            bullet_token_ = token;
-            bullet_token_expiry_ = now + kBulletTokenTtl;
-            return bullet_token_;
-        }
-    } catch (...) {
-    }
-
-    return {};
-}
-
-SplatNetPresence SplatNetClient::fetch_presence(
-    const std::string& web_service_token) {
-    if (web_service_token.empty()) return {};
-
-    std::string bullet_token;
     {
         std::lock_guard lock(mutex_);
-        bullet_token = ensure_bullet_token_locked(web_service_token);
+        if (source_web_token_ == web_service_token && !bullet_token_.empty() && now < bullet_expires_at_) {
+            return bullet_token_;
+        }
     }
-    if (bullet_token.empty()) return {};
+
+    const std::string launch = std::string(kBaseUrl) + "/?lang=" + kLanguage +
+        "&na_country=" + kCountry + "&na_lang=" + kLanguage;
+    const auto bootstrap = http_.get(launch, bootstrap_headers(web_service_token), 10, 8 * 1024 * 1024);
+    if (bootstrap.status != 200) return {};
 
     const std::vector<std::string> headers = {
-        "Authorization: Bearer " + bullet_token,
-        "Accept-Language: en-US",
-        std::string("X-Web-View-Ver: ") + kDefaultWebViewVersion,
-        "Content-Type: application/json",
-        std::string("User-Agent: ") + kDefaultUserAgent,
+        std::string("User-Agent: ") + kUserAgent,
+        "Accept: */*",
+        std::string("Referrer: ") + kBaseUrl + "/",
+        "X-Requested-With: XMLHttpRequest",
+        "X-Web-View-Ver: " + std::string(kWebViewVersion),
+        "X-NACOUNTRY: " + std::string(kCountry),
+        std::string("Accept-Language: ") + kLanguage,
+        "X-GameWebToken: " + web_service_token,
     };
+    const auto response = http_.post(std::string(kBaseUrl) + "/api/bullet_tokens", "", headers, "application/json", 10);
+    if (response.status != 201) return {};
+    const auto json = Json::parse(response.text());
+    const auto bullet = json.string("bulletToken");
+    if (bullet.empty()) return {};
 
-    // 1. Try LatestBattleHistoriesQuery first for active match data
+    std::lock_guard lock(mutex_);
+    source_web_token_ = web_service_token;
+    bullet_token_ = bullet;
+    language_ = json.string("lang", kLanguage);
+    bullet_expires_at_ = now + kBulletTtl;
+    return bullet_token_;
+}
+
+SplatNetPresence SplatNetClient::fetch_presence(const std::string& web_service_token) {
+    if (web_service_token.empty()) return {};
     try {
-        const Json request_body(Json::object{
+        const auto bullet = ensure_bullet_token(web_service_token);
+        if (bullet.empty()) return {};
+
+        const Json body(Json::object{
             {"variables", Json::object{}},
             {"extensions", Json::object{
                 {"persistedQuery", Json::object{
-                    {"version", 1.0},
-                    {"sha256Hash", kLatestBattleHistoriesHash},
+                    {"version", 1},
+                    {"sha256Hash", kHistoryRecordQuery},
                 }},
             }},
         });
+        std::string language;
+        {
+            std::lock_guard lock(mutex_);
+            language = language_;
+        }
+        const std::vector<std::string> headers = {
+            std::string("User-Agent: ") + kUserAgent,
+            "Accept: */*",
+            std::string("Referrer: ") + kBaseUrl + "/",
+            "X-Requested-With: XMLHttpRequest",
+            "Authorization: Bearer " + bullet,
+            "X-Web-View-Ver: " + std::string(kWebViewVersion),
+            std::string("Accept-Language: ") + (language.empty() ? kLanguage : language),
+        };
+        const auto response = http_.post(std::string(kBaseUrl) + "/api/graphql", body.dump(), headers, "application/json", 10);
+        if (response.status == 401) clear_cache();
+        if (response.status != 200) return {};
 
-        const auto response = http_.post(
-            kGraphQLUrl, request_body.dump(), headers, "application/json", 10);
-        if (response.status == 200) {
-            const auto json = Json::parse(response.text());
-            if (const auto* data = json.find("data"); data != nullptr) {
-                if (const auto* history = data->find("latestBattleHistories");
-                    history != nullptr) {
-                    if (const auto* groups = history->find("historyGroups");
-                        groups != nullptr) {
-                        if (const auto* nodes = groups->find("nodes");
-                            nodes != nullptr && nodes->is_array() &&
-                            !nodes->as_array().empty()) {
-                            const auto& group = nodes->as_array().front();
-                            SplatNetPresence presence;
-                            presence.active = true;
+        const auto root = Json::parse(response.text());
+        const auto* data = root.find("data");
+        if (!data || !data->is_object()) return {};
+        const auto* player = data->find("currentPlayer");
+        if (!player || !player->is_object()) return {};
 
-                            if (const auto* mode = group.find("bankaraMatchChallenge");
-                                mode != nullptr && !mode->is_null()) {
-                                presence.mode_name = "Anarchy Battle (Series)";
-                            } else if (const auto* open = group.find("bankaraMatchOpen");
-                                       open != nullptr && !open->is_null()) {
-                                presence.mode_name = "Anarchy Battle (Open)";
-                            } else if (const auto* xmatch = group.find("xMatch");
-                                       xmatch != nullptr && !xmatch->is_null()) {
-                                presence.mode_name = "X Battle";
-                            } else if (const auto* regular = group.find("regularMatch");
-                                       regular != nullptr && !regular->is_null()) {
-                                presence.mode_name = "Regular Battle (Turf War)";
-                            } else {
-                                presence.mode_name = "Battle";
-                            }
-
-                            if (const auto* details = group.find("historyDetails");
-                                details != nullptr) {
-                                if (const auto* detail_nodes = details->find("nodes");
-                                    detail_nodes != nullptr &&
-                                    detail_nodes->is_array() &&
-                                    !detail_nodes->as_array().empty()) {
-                                    const auto& latest_match = detail_nodes->as_array().front();
-                                    if (const auto* vs_rule = latest_match.find("vsRule");
-                                        vs_rule != nullptr) {
-                                        presence.rule_name = vs_rule->string("name");
-                                    }
-                                    if (const auto* vs_stage = latest_match.find("vsStage");
-                                        vs_stage != nullptr) {
-                                        presence.stage_name = vs_stage->string("name");
-                                        if (const auto* img = vs_stage->find("image");
-                                            img != nullptr) {
-                                            presence.stage_image_uri = img->string("url");
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (!presence.mode_name.empty() || !presence.stage_name.empty()) {
-                                return presence;
-                            }
-                        }
-                    }
-                }
+        SplatNetPresence presence;
+        presence.player_name = player->string("name");
+        presence.player_id = player->string("nameId");
+        presence.title = player->string("byname");
+        if (const auto* weapon = player->find("weapon"); weapon && weapon->is_object()) {
+            presence.weapon_name = weapon->string("name");
+            if (const auto* image = weapon->find("image"); image && image->is_object()) {
+                presence.stage_image_uri = image->string("url");
             }
         }
-    } catch (...) {
-    }
-
-    // 2. Fallback: Query current rotation schedule
-    try {
-        const Json schedule_request(Json::object{
-            {"variables", Json::object{}},
-            {"extensions", Json::object{
-                {"persistedQuery", Json::object{
-                    {"version", 1.0},
-                    {"sha256Hash", kStageScheduleHash},
-                }},
-            }},
-        });
-
-        const auto response = http_.post(
-            kGraphQLUrl, schedule_request.dump(), headers, "application/json", 10);
-        if (response.status == 200) {
-            const auto json = Json::parse(response.text());
-            if (const auto* data = json.find("data"); data != nullptr) {
-                if (const auto* regular = data->find("regularSchedules");
-                    regular != nullptr) {
-                    if (const auto* nodes = regular->find("nodes");
-                        nodes != nullptr && nodes->is_array() && !nodes->as_array().empty()) {
-                        const auto& current_node = nodes->as_array().front();
-                        if (const auto* match_setting = current_node.find("regularMatchSetting");
-                            match_setting != nullptr) {
-                            SplatNetPresence presence;
-                            presence.active = true;
-                            presence.mode_name = "Regular Battle";
-                            if (const auto* rule = match_setting->find("vsRule"); rule != nullptr) {
-                                presence.rule_name = rule->string("name");
-                            }
-                            if (const auto* stages = match_setting->find("vsStages");
-                                stages != nullptr && stages->is_array() && !stages->as_array().empty()) {
-                                const auto& stage = stages->as_array().front();
-                                presence.stage_name = stage.string("name");
-                                if (const auto* img = stage.find("image"); img != nullptr) {
-                                    presence.stage_image_uri = img->string("url");
-                                }
-                            }
-                            return presence;
-                        }
-                    }
-                }
+        if (const auto* history = data->find("playHistory"); history && history->is_object()) {
+            presence.player_level = history->integer("rank", 0);
+            if (const auto* udemae = history->find("udemae"); udemae) {
+                if (udemae->is_string()) presence.rank_name = udemae->as_string();
+                else if (udemae->is_object()) presence.rank_name = udemae->string("name");
             }
         }
+        presence.active = !presence.player_name.empty() || !presence.weapon_name.empty() || !presence.title.empty();
+        return presence;
     } catch (...) {
+        return {};
     }
-
-    return {};
 }
 
 }  // namespace nso

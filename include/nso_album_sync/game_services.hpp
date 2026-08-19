@@ -24,23 +24,20 @@ struct AnimalCrossingPresence {
     bool active = false;
 
     std::string format_state() const {
-        if (!island_name.empty()) {
-            std::string state = "🏝️ Island: " + island_name;
-            if (!native_fruit.empty()) state += " (Native: " + native_fruit + ")";
-            return state;
-        }
-        return {};
+        if (island_name.empty()) return {};
+        std::string state = "Island: " + island_name;
+        if (!native_fruit.empty()) state += " • " + native_fruit;
+        return state;
     }
 
     std::string format_details() const {
-        if (!resident_name.empty()) {
-            return "Resident: " + resident_name;
-        }
-        return {};
+        return resident_name.empty() ? std::string{} : "Resident: " + resident_name;
     }
 };
 
 struct SmashBrosPresence {
+    // Smash World is session/cookie based. These fields are intentionally only
+    // populated when a value is observed in a verified Nintendo response.
     std::string main_fighter;
     std::string smash_tag;
     std::int64_t gsp = 0;
@@ -49,63 +46,43 @@ struct SmashBrosPresence {
     bool active = false;
 
     std::string format_state() const {
-        if (!main_fighter.empty()) {
-            std::string state = "⚔️ Main: " + main_fighter;
-            if (gsp > 0) {
-                const auto gsp_millions = static_cast<double>(gsp) / 1'000'000.0;
-                char buffer[32];
-                std::snprintf(buffer, sizeof(buffer), " (GSP: %.1fM", gsp_millions);
-                state += buffer;
-                if (is_elite) state += " ⭐ Elite";
-                state += ")";
-            }
-            return state;
-        }
+        if (!main_fighter.empty()) return "Fighter: " + main_fighter;
         return {};
     }
 
     std::string format_details() const {
-        std::string details;
-        if (!smash_tag.empty()) {
-            details = "Smash Tag: " + smash_tag;
-        }
-        if (!details.empty()) details += " | ";
-        details += "Online Battles";
-        return details;
+        return smash_tag.empty() ? std::string{} : "Smash Tag: " + smash_tag;
     }
 };
 
 struct Splatoon2Presence {
-    std::string mode_name;
-    std::string rule_name;
-    std::string stage_name;
+    std::string player_name;
     std::string weapon_name;
     std::string rank_name;
+    std::int64_t player_level = 0;
+    std::int64_t star_rank = 0;
+    // Kept for the existing RPC asset handoff; this is the player's current
+    // weapon image, never a stage inferred from completed battle history.
     std::string stage_image_uri;
     bool active = false;
 
     std::string format_state() const {
         std::string state;
-        if (!mode_name.empty()) state = mode_name;
-        if (!rule_name.empty()) {
-            state = state.empty() ? rule_name : state + " (" + rule_name + ")";
+        if (player_level > 0) {
+            state = star_rank > 0
+                ? "Level " + std::to_string(player_level) + " (Prestige " + std::to_string(star_rank) + ")"
+                : "Level " + std::to_string(player_level);
         }
         if (!rank_name.empty()) {
-            state = state.empty() ? "Rank " + rank_name : state + " • Rank " + rank_name;
+            if (!state.empty()) state += " • ";
+            state += rank_name;
         }
         return state;
     }
 
     std::string format_details() const {
-        std::string details;
-        if (!stage_name.empty()) {
-            details = stage_name + " (4 vs 4)";
-        }
-        if (!weapon_name.empty()) {
-            if (!details.empty()) details += " | ";
-            details += weapon_name;
-        }
-        return details;
+        if (!weapon_name.empty()) return "Weapon: " + weapon_name;
+        return player_name.empty() ? std::string{} : "Player: " + player_name;
     }
 };
 
@@ -123,16 +100,15 @@ private:
     HttpClient& http_;
     std::mutex mutex_;
 
-    struct TokenCache {
-        std::string token;
+    struct ServiceSession {
+        std::string source_token;
+        std::string cookie;
+        std::string user_id;
+        std::string auth_token;
         std::chrono::system_clock::time_point expires_at{};
     };
 
-    std::unordered_map<std::string, TokenCache> token_cache_;
-
-    std::string get_cached_token_locked(
-        const std::string& service_key,
-        const std::string& web_service_token);
+    std::unordered_map<std::string, ServiceSession> sessions_;
 };
 
 }  // namespace nso

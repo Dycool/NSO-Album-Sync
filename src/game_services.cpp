@@ -1,33 +1,107 @@
 #include "nso_album_sync/game_services.hpp"
 
+#include <algorithm>
 #include <chrono>
-#include <exception>
+#include <cctype>
+#include <string>
 #include <vector>
 
 namespace nso {
 namespace {
 
-constexpr char kNookLinkBaseUrl[] =
-    "https://web.sd.lp1.acbaa.srv.nintendo.net";
-constexpr char kSmashWorldBaseUrl[] =
-    "https://app.smashbros.nintendo.net";
-constexpr char kSplatNet2BaseUrl[] =
-    "https://app.splatoon2.nintendo.net";
+constexpr char kNookLinkBaseUrl[] = "https://web.sd.lp1.acbaa.srv.nintendo.net";
+constexpr char kSmashWorldBaseUrl[] = "https://app.smashbros.nintendo.net";
+constexpr char kSplatNet2BaseUrl[] = "https://app.splatoon2.nintendo.net";
+constexpr char kWebServiceUserAgent[] =
+    "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
+constexpr char kNxapiWebServiceUserAgent[] =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Mobile/15E148 Safari/604.1";
+constexpr char kLanguage[] = "en-GB";
+constexpr char kCountry[] = "GB";
+constexpr char kBlancoVersion[] = "2.1.1";
+constexpr auto kSessionTtl = std::chrono::minutes(90);
 
-constexpr char kDefaultUserAgent[] =
-    "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36";
+std::string launch_url(const char* base) {
+    return std::string(base) + "/?lang=" + kLanguage + "&na_country=" + kCountry + "&na_lang=" + kLanguage;
+}
 
-constexpr auto kTokenTtl = std::chrono::hours(2);
+std::string header_value(const HttpResponse& response, const std::string& key) {
+    const auto it = response.headers.find(key);
+    return it == response.headers.end() ? std::string{} : it->second;
+}
 
-std::string decode_fruit_emoji(int fruit_type) {
-    switch (fruit_type) {
-        case 0: return "🍎";
-        case 1: return "🍒";
-        case 2: return "🍊";
-        case 3: return "🍑";
-        case 4: return "🍐";
-        default: return {};
+std::string cookie_value(const HttpResponse& response, const std::string& name) {
+    const auto cookies = header_value(response, "set-cookie");
+    if (cookies.empty()) return {};
+    const std::string needle = name + "=";
+    auto pos = cookies.find(needle);
+    while (pos != std::string::npos) {
+        if (pos == 0 || cookies[pos - 1] == ' ' || cookies[pos - 1] == ',' || cookies[pos - 1] == ';' || cookies[pos - 1] == '\n') {
+            pos += needle.size();
+            auto end = cookies.find_first_of(";,\r\n", pos);
+            if (end == std::string::npos) end = cookies.size();
+            return cookies.substr(pos, end - pos);
+        }
+        pos = cookies.find(needle, pos + needle.size());
     }
+    return {};
+}
+
+std::string first_session_cookie(const HttpResponse& response) {
+    const auto cookies = header_value(response, "set-cookie");
+    if (cookies.empty()) return {};
+    std::size_t start = 0;
+    while (start < cookies.size()) {
+        while (start < cookies.size() && (cookies[start] == ' ' || cookies[start] == ',' || cookies[start] == '\n' || cookies[start] == '\r')) ++start;
+        const auto eq = cookies.find('=', start);
+        if (eq == std::string::npos) break;
+        const auto name = cookies.substr(start, eq - start);
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower.find("session") != std::string::npos || lower == "a5_token") {
+            auto end = cookies.find_first_of(";,\r\n", eq + 1);
+            if (end == std::string::npos) end = cookies.size();
+            return name + "=" + cookies.substr(eq + 1, end - eq - 1);
+        }
+        const auto next = cookies.find(',', eq + 1);
+        if (next == std::string::npos) break;
+        start = next + 1;
+    }
+    return {};
+}
+
+std::string html_attribute(const std::string& body, const std::string& name) {
+    for (const char quote : {'\"', '\''}) {
+        const std::string needle = name + "=" + quote;
+        const auto begin = body.find(needle);
+        if (begin == std::string::npos) continue;
+        const auto value_begin = begin + needle.size();
+        const auto end = body.find(quote, value_begin);
+        if (end != std::string::npos) return body.substr(value_begin, end - value_begin);
+    }
+    return {};
+}
+
+std::vector<std::string> bootstrap_headers(const std::string& web_service_token, const char* user_agent = kWebServiceUserAgent) {
+    return {
+        "Upgrade-Insecure-Requests: 1",
+        std::string("User-Agent: ") + user_agent,
+        "x-appplatform: android",
+        "x-appcolorscheme: DARK",
+        "x-gamewebtoken: " + web_service_token,
+        "dnt: 1",
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        std::string("Accept-Language: ") + kLanguage,
+        "X-Requested-With: com.nintendo.znca",
+    };
+}
+
+std::string rank_value(const Json& player, const char* key, const char* short_name) {
+    const auto* rank = player.find(key);
+    if (!rank || !rank->is_object()) return {};
+    auto name = rank->string("name");
+    if (name.empty()) return {};
+    return std::string(short_name) + " " + name;
 }
 
 }  // namespace
@@ -36,189 +110,206 @@ GameServicesClient::GameServicesClient(HttpClient& http) : http_(http) {}
 
 void GameServicesClient::clear_cache() {
     std::lock_guard lock(mutex_);
-    token_cache_.clear();
+    sessions_.clear();
 }
 
-std::string GameServicesClient::get_cached_token_locked(
-    const std::string& service_key,
-    const std::string& web_service_token) {
-    const auto now = std::chrono::system_clock::now();
-    const auto it = token_cache_.find(service_key);
-    if (it != token_cache_.end() &&
-        it->second.token == web_service_token &&
-        now < it->second.expires_at) {
-        return it->second.token;
-    }
-
-    token_cache_[service_key] = {web_service_token, now + kTokenTtl};
-    return web_service_token;
-}
-
-AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
-    const std::string& web_service_token) {
+AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const std::string& web_service_token) {
     if (web_service_token.empty()) return {};
 
-    std::string token;
+    ServiceSession session;
     {
         std::lock_guard lock(mutex_);
-        token = get_cached_token_locked("acnh", web_service_token);
+        const auto it = sessions_.find("nooklink");
+        if (it != sessions_.end() && it->second.source_token == web_service_token &&
+            std::chrono::system_clock::now() < it->second.expires_at) {
+            session = it->second;
+        }
     }
 
-    const std::vector<std::string> headers = {
-        "Authorization: Bearer " + token,
-        "Accept-Language: en-US",
-        "Content-Type: application/json",
-        std::string("User-Agent: ") + kDefaultUserAgent,
-    };
-
     try {
-        const auto response = http_.get(
-            std::string(kNookLinkBaseUrl) + "/api/v1/users",
-            headers,
-            10);
+        if (session.cookie.empty()) {
+            const auto bootstrap = http_.get(launch_url(kNookLinkBaseUrl), bootstrap_headers(web_service_token, kNxapiWebServiceUserAgent), 10, 4 * 1024 * 1024);
+            if (bootstrap.status != 200) return {};
+            const auto gtoken = cookie_value(bootstrap, "_gtoken");
+            if (gtoken.empty()) return {};
+            session.source_token = web_service_token;
+            session.cookie = "_gtoken=" + gtoken;
+            session.expires_at = std::chrono::system_clock::now() + kSessionTtl;
+        }
 
-        if (response.status == 200) {
-            const auto json = Json::parse(response.text());
-            if (const auto* users = json.find("users");
-                users != nullptr && users->is_array() && !users->as_array().empty()) {
-                const auto& user = users->as_array().front();
-                AnimalCrossingPresence presence;
-                presence.active = true;
-                presence.resident_name = user.string("name");
+        const std::vector<std::string> api_headers = {
+            std::string("User-Agent: ") + kNxapiWebServiceUserAgent,
+            "Cookie: " + session.cookie,
+            "Accept: application/json, text/plain, */*",
+            std::string("Accept-Language: ") + kLanguage,
+            std::string("Origin: ") + kNookLinkBaseUrl,
+            "X-Blanco-Version: " + std::string(kBlancoVersion),
+        };
 
-                if (const auto* land = user.find("land"); land != nullptr) {
-                    presence.island_name = land->string("name");
-                    if (const auto* fruit = land->find("fruit"); fruit != nullptr) {
-                        const auto fruit_id = static_cast<int>(fruit->integer("type", -1));
-                        presence.native_fruit = decode_fruit_emoji(fruit_id);
+        const auto users_response = http_.get(std::string(kNookLinkBaseUrl) + "/api/sd/v1/users", api_headers, 10, 4 * 1024 * 1024);
+        if (users_response.status != 200) return {};
+        const auto users_json = Json::parse(users_response.text());
+        const auto* users = users_json.find("users");
+        if (!users || !users->is_array() || users->as_array().empty()) return {};
+        const auto& user = users->as_array().front();
+
+        AnimalCrossingPresence presence;
+        presence.resident_name = user.string("name");
+        presence.image_uri = user.string("image");
+        if (const auto* land = user.find("land"); land && land->is_object()) {
+            presence.island_name = land->string("name");
+            session.user_id = user.string("id");
+            const auto land_id = land->string("id");
+
+            if (!session.user_id.empty() && session.auth_token.empty()) {
+                const Json auth_body(Json::object{{"userId", session.user_id}});
+                auto auth_headers = api_headers;
+                auth_headers.push_back("Content-Type: application/json");
+                const auto auth_response = http_.post(std::string(kNookLinkBaseUrl) + "/api/sd/v1/auth_token", auth_body.dump(), auth_headers, "application/json", 10);
+                if (auth_response.status == 200) {
+                    const auto auth_json = Json::parse(auth_response.text());
+                    session.auth_token = auth_json.string("token");
+                }
+            }
+
+            if (!land_id.empty() && !session.auth_token.empty()) {
+                auto profile_headers = api_headers;
+                profile_headers.push_back("Authorization: Bearer " + session.auth_token);
+                const auto island_response = http_.get(
+                    std::string(kNookLinkBaseUrl) + "/api/sd/v1/lands/" + land_id + "/profile?language=" + kLanguage,
+                    profile_headers, 10, 4 * 1024 * 1024);
+                if (island_response.status == 200) {
+                    const auto island_json = Json::parse(island_response.text());
+                    if (const auto* fruit = island_json.find("mFruit"); fruit && fruit->is_object()) {
+                        presence.native_fruit = fruit->string("name");
                     }
                 }
-
-                if (const auto* photo = user.find("image"); photo != nullptr) {
-                    presence.image_uri = photo->string("url");
-                }
-
-                return presence;
             }
         }
+
+        presence.active = !presence.resident_name.empty() || !presence.island_name.empty();
+        {
+            std::lock_guard lock(mutex_);
+            sessions_["nooklink"] = session;
+        }
+        return presence;
     } catch (...) {
+        std::lock_guard lock(mutex_);
+        sessions_.erase("nooklink");
+        return {};
+    }
+}
+
+SmashBrosPresence GameServicesClient::fetch_smash_presence(const std::string& web_service_token) {
+    if (web_service_token.empty()) return {};
+    ServiceSession session;
+    {
+        std::lock_guard lock(mutex_);
+        const auto it = sessions_.find("smash");
+        if (it != sessions_.end() && it->second.source_token == web_service_token &&
+            std::chrono::system_clock::now() < it->second.expires_at) return {};
     }
 
+    try {
+        const auto bootstrap = http_.get(launch_url(kSmashWorldBaseUrl), bootstrap_headers(web_service_token, kNxapiWebServiceUserAgent), 10, 8 * 1024 * 1024);
+        if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
+        auto cookie = cookie_value(bootstrap, "super_smash_session");
+        if (!cookie.empty()) cookie = "super_smash_session=" + cookie;
+        if (cookie.empty()) cookie = first_session_cookie(bootstrap);
+        if (!cookie.empty()) {
+            session.source_token = web_service_token;
+            session.cookie = cookie;
+            session.expires_at = std::chrono::system_clock::now() + kSessionTtl;
+            std::lock_guard lock(mutex_);
+            sessions_["smash"] = session;
+        }
+        // There is no verified structured self/GSP endpoint in nxapi or the
+        // working backend. Successfully bootstrapping Smash World is therefore
+        // not enough to fabricate fighter/GSP activity for Discord.
+    } catch (...) {
+    }
     return {};
 }
 
-SmashBrosPresence GameServicesClient::fetch_smash_presence(
-    const std::string& web_service_token) {
+Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(const std::string& web_service_token) {
     if (web_service_token.empty()) return {};
 
-    std::string token;
+    ServiceSession session;
     {
         std::lock_guard lock(mutex_);
-        token = get_cached_token_locked("smash", web_service_token);
+        const auto it = sessions_.find("splatnet2");
+        if (it != sessions_.end() && it->second.source_token == web_service_token &&
+            std::chrono::system_clock::now() < it->second.expires_at) session = it->second;
     }
-
-    const std::vector<std::string> headers = {
-        "Authorization: Bearer " + token,
-        "Accept-Language: en-US",
-        "Content-Type: application/json",
-        std::string("User-Agent: ") + kDefaultUserAgent,
-    };
 
     try {
-        const auto response = http_.get(
-            std::string(kSmashWorldBaseUrl) + "/api/v1/users/me",
-            headers,
-            10);
-
-        if (response.status == 200) {
-            const auto json = Json::parse(response.text());
-            SmashBrosPresence presence;
-            presence.active = true;
-            presence.smash_tag = json.string("screenName");
-
-            if (const auto* fighter = json.find("fighter"); fighter != nullptr) {
-                presence.main_fighter = fighter->string("name");
-                presence.fighter_image_uri = fighter->string("imageUri");
-            }
-
-            if (const auto* rating = json.find("rating"); rating != nullptr) {
-                presence.gsp = rating->integer("gsp", 0);
-                presence.is_elite = rating->boolean("isElite", false);
-            }
-
-            if (!presence.main_fighter.empty() || !presence.smash_tag.empty()) {
-                return presence;
-            }
+        if (session.cookie.empty() || session.user_id.empty()) {
+            const auto bootstrap = http_.get(launch_url(kSplatNet2BaseUrl), bootstrap_headers(web_service_token), 10, 8 * 1024 * 1024);
+            if (bootstrap.status != 200) return {};
+            const auto iksm = cookie_value(bootstrap, "iksm_session");
+            const auto unique_id = html_attribute(bootstrap.text(), "data-unique-id");
+            if (iksm.empty() || unique_id.empty()) return {};
+            session.source_token = web_service_token;
+            session.cookie = "iksm_session=" + iksm;
+            session.user_id = unique_id;
+            session.expires_at = std::chrono::system_clock::now() + kSessionTtl;
         }
-    } catch (...) {
-    }
 
-    return {};
-}
-
-Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(
-    const std::string& web_service_token) {
-    if (web_service_token.empty()) return {};
-
-    std::string token;
-    {
-        std::lock_guard lock(mutex_);
-        token = get_cached_token_locked("splat2", web_service_token);
-    }
-
-    const std::vector<std::string> headers = {
-        "X-Gamewebtoken: " + token,
-        "Accept-Language: en-US",
-        "Content-Type: application/json",
-        std::string("User-Agent: ") + kDefaultUserAgent,
-    };
-
-    try {
-        const auto response = http_.get(
-            std::string(kSplatNet2BaseUrl) + "/api/results",
-            headers,
-            10);
-
-        if (response.status == 200) {
-            const auto json = Json::parse(response.text());
-            if (const auto* results = json.find("results");
-                results != nullptr && results->is_array() && !results->as_array().empty()) {
-                const auto& latest = results->as_array().front();
-                Splatoon2Presence presence;
-                presence.active = true;
-
-                if (const auto* game_mode = latest.find("game_mode"); game_mode != nullptr) {
-                    presence.mode_name = game_mode->string("name");
-                }
-
-                if (const auto* rule = latest.find("rule"); rule != nullptr) {
-                    presence.rule_name = rule->string("name");
-                }
-
-                if (const auto* stage = latest.find("stage"); stage != nullptr) {
-                    presence.stage_name = stage->string("name");
-                    presence.stage_image_uri = stage->string("image");
-                }
-
-                if (const auto* weapon = latest.find("player_result"); weapon != nullptr) {
-                    if (const auto* wp = weapon->find("player"); wp != nullptr) {
-                        if (const auto* wp_info = wp->find("weapon"); wp_info != nullptr) {
-                            presence.weapon_name = wp_info->string("name");
-                        }
-                    }
-                }
-
-                if (const auto* udemae = latest.find("udemae"); udemae != nullptr) {
-                    presence.rank_name = udemae->string("name");
-                }
-
-                return presence;
+        const std::vector<std::string> headers = {
+            std::string("User-Agent: ") + kWebServiceUserAgent,
+            "Cookie: " + session.cookie,
+            "Accept: */*",
+            std::string("Accept-Language: ") + kLanguage + ",en-US;q=0.8",
+            std::string("Referer: ") + kSplatNet2BaseUrl + "/home",
+            "X-Requested-With: XMLHttpRequest",
+            "X-Timezone-Offset: 0",
+            "X-Unique-Id: " + session.user_id,
+        };
+        const auto response = http_.get(std::string(kSplatNet2BaseUrl) + "/api/records", headers, 10, 8 * 1024 * 1024);
+        if (response.status != 200) {
+            if (response.status == 401) {
+                std::lock_guard lock(mutex_);
+                sessions_.erase("splatnet2");
             }
+            return {};
         }
-    } catch (...) {
-    }
 
-    return {};
+        const auto json = Json::parse(response.text());
+        const auto* records = json.find("records");
+        if (!records || !records->is_object()) return {};
+        const auto* player = records->find("player");
+        if (!player || !player->is_object()) return {};
+
+        Splatoon2Presence presence;
+        presence.player_name = player->string("nickname");
+        presence.player_level = player->integer("player_rank", 0);
+        presence.star_rank = player->integer("star_rank", 0);
+        if (const auto* weapon = player->find("weapon"); weapon && weapon->is_object()) {
+            presence.weapon_name = weapon->string("name");
+            presence.stage_image_uri = weapon->string("image");
+        }
+
+        std::vector<std::string> ranks;
+        for (const auto& value : {
+                 rank_value(*player, "udemae_zones", "Zones"),
+                 rank_value(*player, "udemae_tower", "Tower"),
+                 rank_value(*player, "udemae_rainmaker", "Rainmaker"),
+                 rank_value(*player, "udemae_clam", "Clams")}) {
+            if (!value.empty()) ranks.push_back(value);
+        }
+        for (std::size_t i = 0; i < ranks.size(); ++i) {
+            if (i) presence.rank_name += " / ";
+            presence.rank_name += ranks[i];
+        }
+        presence.active = !presence.player_name.empty() || !presence.weapon_name.empty() || presence.player_level > 0;
+        {
+            std::lock_guard lock(mutex_);
+            sessions_["splatnet2"] = session;
+        }
+        return presence;
+    } catch (...) {
+        return {};
+    }
 }
 
 }  // namespace nso
