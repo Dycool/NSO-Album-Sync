@@ -215,6 +215,10 @@ MediaItem parse_media_item(const Json& item) {
 
 NintendoPresence parse_presence(const Json& result) {
     NintendoPresence presence;
+    // /v4/User/ShowSelf already includes the signed-in user's Nintendo/Coral
+    // profile image. Use it as the generic Discord small image without another
+    // account/profile request; game-specific enrichment can still replace it.
+    presence.custom_image_uri = result.string("imageUri", result.string("image2Uri"));
     const auto* presence_json = result.find("presence");
     if (presence_json == nullptr) return presence;
 
