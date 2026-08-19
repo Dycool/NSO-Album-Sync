@@ -31,6 +31,7 @@ namespace {
 constexpr auto kCallbackPumpInterval = std::chrono::milliseconds(100);
 constexpr std::size_t kDiscordActivityImageMaxLength = 300;
 constexpr char kNookLinkOrigin[] = "https://web.sd.lp1.acbaa.srv.nintendo.net";
+constexpr char kSplatNet2Origin[] = "https://app.splatoon2.nintendo.net";
 
 #ifdef _WIN32
 bool ensure_embedded_discord_sdk_loaded() {
@@ -105,8 +106,16 @@ bool is_valid_discord_image_url(const std::string& url) {
 
 bool is_animal_crossing_presence(const NintendoPresence& presence) {
     const auto& name = presence.game_name;
-    return name.find("Animal Crossing") != std::string::npos ||
+    return presence.title_id == "01006f8002326000" ||
+        name.find("Animal Crossing") != std::string::npos ||
         name.find("あつまれ どうぶつの森") != std::string::npos;
+}
+
+bool is_splatoon2_presence(const NintendoPresence& presence) {
+    const auto& name = presence.game_name;
+    return presence.title_id == "01003bc0000a0000" ||
+        name.find("Splatoon 2") != std::string::npos ||
+        name.find("スプラトゥーン2") != std::string::npos;
 }
 
 std::string normalize_discord_image_url(
@@ -114,18 +123,24 @@ std::string normalize_discord_image_url(
     std::string url) {
     if (url.empty()) return {};
 
-    // NookLink's browser can use relative passport-photo URLs because the page
-    // itself runs on web.sd. Discord activity assets cannot: they require an
-    // absolute HTTPS URL. Resolve both root-relative and ordinary relative
-    // NookLink image values before applying Discord's 300-character limit.
+    const char* relative_origin = nullptr;
     if (is_animal_crossing_presence(presence)) {
+        relative_origin = kNookLinkOrigin;
+    } else if (is_splatoon2_presence(presence)) {
+        relative_origin = kSplatNet2Origin;
+    }
+
+    // Browser-based game services can return root-relative asset paths because
+    // their WebViews resolve them against the current service origin. Discord
+    // activity assets cannot, so resolve known NookLink/SplatNet 2 paths first.
+    if (relative_origin != nullptr) {
         if (url.rfind("//", 0) == 0) {
             url = "https:" + url;
         } else if (url.rfind("/", 0) == 0) {
-            url = std::string(kNookLinkOrigin) + url;
+            url = std::string(relative_origin) + url;
         } else if (url.find("://") == std::string::npos &&
                    url.rfind("data:", 0) != 0) {
-            url = std::string(kNookLinkOrigin) + "/" + url;
+            url = std::string(relative_origin) + "/" + url;
         }
     }
 
@@ -149,9 +164,8 @@ void log_rejected_custom_image(const NintendoPresence& presence, const std::stri
     }
     if (reason.empty()) return;
 
-    // Do not log the avatar URL itself; it may contain a user-specific image
-    // identifier or signature. Scheme/length classification is enough to debug
-    // Discord asset rejection safely.
+    // Do not log the custom image URL itself; game-service image values can
+    // contain user-specific identifiers or signatures. Classification is enough.
     std::cerr << "[DiscordPresence] Custom image rejected for "
               << presence.game_name << ": " << reason << '\n';
 }
