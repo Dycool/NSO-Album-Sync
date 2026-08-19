@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,82 @@ std::string cookie_value(const HttpResponse& response, const std::string& name) 
         return line.substr(value_start, end - value_start);
     }
     return {};
+}
+
+std::string trim_cookie_piece(std::string value) {
+    while (!value.empty() &&
+           std::isspace(static_cast<unsigned char>(value.front()))) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() &&
+           std::isspace(static_cast<unsigned char>(value.back()))) {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::string merge_cookie_header(
+    const std::string& existing,
+    const HttpResponse& response) {
+    std::map<std::string, std::string> cookies;
+
+    const auto add_cookie_pair = [&cookies](std::string pair) {
+        pair = trim_cookie_piece(std::move(pair));
+        if (pair.empty()) return;
+        const auto eq = pair.find('=');
+        if (eq == std::string::npos || eq == 0) return;
+        auto name = trim_cookie_piece(pair.substr(0, eq));
+        auto value = trim_cookie_piece(pair.substr(eq + 1));
+        if (!name.empty()) cookies[std::move(name)] = std::move(value);
+    };
+
+    std::size_t start = 0;
+    while (start < existing.size()) {
+        const auto end = existing.find(';', start);
+        add_cookie_pair(existing.substr(
+            start,
+            end == std::string::npos ? std::string::npos : end - start));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+
+    for (const auto& line : set_cookie_lines(response)) {
+        const auto end = line.find(';');
+        add_cookie_pair(line.substr(0, end));
+    }
+
+    std::string result;
+    for (const auto& [name, value] : cookies) {
+        if (!result.empty()) result += "; ";
+        result += name + "=" + value;
+    }
+    return result;
+}
+
+std::vector<std::string> nooklink_api_headers(
+    const std::string& cookie_header,
+    const std::string& language,
+    const std::string& country) {
+    // Match the currently working nso-worker-backend request shape for NookLink
+    // API calls. In particular, preserve the WebService browser fingerprint and
+    // platform/origin context on POST /auth_token rather than using the older
+    // minimal direct-client header set.
+    return {
+        std::string("User-Agent: ") + kNxapiWebServiceUserAgent,
+        "Cookie: " + cookie_header,
+        "Upgrade-Insecure-Requests: 1",
+        "dnt: 1",
+        "Accept: application/json, text/plain, */*",
+        "Accept-Language: " + (language.empty() ? std::string("en-GB") : language),
+        std::string("Origin: ") + kNookLinkBaseUrl,
+        std::string("Referer: ") + kNookLinkBaseUrl + "/",
+        "Content-Type: application/json",
+        "X-Blanco-Version: " + std::string(kBlancoVersion),
+        "x-appplatform: android",
+        "x-appcolorscheme: DARK",
+        "X-NACountry: " + (country.empty() ? std::string("GB") : country),
+        "X-Requested-With: com.nintendo.znca",
+    };
 }
 
 std::string first_session_cookie(const HttpResponse& response) {
@@ -188,11 +265,8 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
 
     try {
         if (session.cookie.empty()) {
-            // Match nxapi's direct NookLink client exactly. The Worker has
-            // browser/reverse-proxy-specific NookLink quirks (iPhone UA, DNT
-            // handling and manual cookie capture) that do not belong in this
-            // native HTTP client. nxapi launches web.sd directly with the
-            // Android WebView UA and reads _gtoken from the final 200 response.
+            // The direct bootstrap path is already proven by the runtime
+            // diagnostic: it returns 200, issues _gtoken and allows /users.
             const auto bootstrap = http_.get(
                 launch_url(kNookLinkBaseUrl, language, country),
                 bootstrap_headers(web_service_token, language),
@@ -210,28 +284,18 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                 return {};
             }
             session.source_token = web_service_token;
-            session.cookie = "_gtoken=" + gtoken;
+            // Preserve every Nintendo cookie from the bootstrap, not only
+            // _gtoken. The working Worker carries a full CookieJar across each
+            // request and later endpoints are allowed to depend on refreshed
+            // session cookies.
+            session.cookie = merge_cookie_header({}, bootstrap);
+            if (session.cookie.empty()) session.cookie = "_gtoken=" + gtoken;
             session.expires_at = std::chrono::system_clock::now() + kSessionTtl;
         }
 
-        // NookLink's authenticated API keeps the same Android WebView UA used
-        // for bootstrap. Its API Accept-Language is fixed to en-GB in nxapi;
-        // the Nintendo Account locale is only used in the launch URL.
-        const std::vector<std::string> api_headers = {
-            std::string("User-Agent: ") + kWebServiceUserAgent,
-            "Cookie: " + session.cookie,
-            "Upgrade-Insecure-Requests: 1",
-            "dnt: 1",
-            "Accept: application/json, text/plain, */*",
-            "Accept-Language: en-GB,en-US;q=0.8",
-            std::string("Origin: ") + kNookLinkBaseUrl,
-            "Content-Type: application/json",
-            "X-Blanco-Version: " + std::string(kBlancoVersion),
-        };
-
         const auto users_response = http_.get(
             std::string(kNookLinkBaseUrl) + "/api/sd/v1/users",
-            api_headers,
+            nooklink_api_headers(session.cookie, language, country),
             10,
             4 * 1024 * 1024);
         if (users_response.status == 401 || users_response.status == 403) {
@@ -246,6 +310,8 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                 "/users HTTP " + std::to_string(users_response.status));
             return {};
         }
+        session.cookie = merge_cookie_header(session.cookie, users_response);
+
         const auto users_json = Json::parse(users_response.text());
         const auto* users = users_json.find("users");
         if (!users || !users->is_array()) {
@@ -267,27 +333,32 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
             presence.island_name = land->string("name");
             land_id = land->string("id");
         }
+        // /users alone is sufficient for a truthful enriched RPC. Resident
+        // bearer auth only adds deeper profile data/native fruit and must never
+        // make the already-valid resident/island information disappear.
+        presence.active = !presence.resident_name.empty() || !presence.island_name.empty();
 
-        if (!session.user_id.empty() && session.auth_token.empty()) {
+        if (!session.user_id.empty() && session.auth_token.empty() &&
+            !session.user_auth_attempted) {
+            session.user_auth_attempted = true;
             const Json auth_body(Json::object{{"userId", session.user_id}});
             const auto auth_response = http_.post(
                 std::string(kNookLinkBaseUrl) + "/api/sd/v1/auth_token",
                 auth_body.dump(),
-                api_headers,
+                nooklink_api_headers(session.cookie, language, country),
                 "",
                 10);
-            if (auth_response.status == 401 || auth_response.status == 403) {
-                log_nooklink_failure(
-                    "/auth_token HTTP " + std::to_string(auth_response.status));
-                std::lock_guard lock(mutex_);
-                sessions_.erase("nooklink");
-                return {};
-            }
+            session.cookie = merge_cookie_header(session.cookie, auth_response);
+
             if (auth_response.status / 100 == 2) {
-                const auto auth_json = Json::parse(auth_response.text());
-                session.auth_token = auth_json.string("token");
-                if (session.auth_token.empty()) {
-                    log_nooklink_failure("/auth_token response has no token");
+                try {
+                    const auto auth_json = Json::parse(auth_response.text());
+                    session.auth_token = auth_json.string("token");
+                    if (session.auth_token.empty()) {
+                        log_nooklink_failure("/auth_token response has no token");
+                    }
+                } catch (...) {
+                    log_nooklink_failure("/auth_token response is not valid JSON");
                 }
             } else {
                 log_nooklink_failure(
@@ -296,7 +367,8 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         }
 
         if (!session.user_id.empty() && !session.auth_token.empty()) {
-            auto profile_headers = api_headers;
+            auto profile_headers = nooklink_api_headers(
+                session.cookie, language, country);
             profile_headers.push_back("Authorization: Bearer " + session.auth_token);
 
             // nxapi's authenticated NookLink user client deliberately uses
@@ -309,52 +381,70 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                 profile_headers,
                 10,
                 4 * 1024 * 1024);
+            session.cookie = merge_cookie_header(session.cookie, user_profile_response);
+
+            bool user_auth_still_valid = true;
             if (user_profile_response.status == 401 || user_profile_response.status == 403) {
                 log_nooklink_failure(
                     "resident profile HTTP " +
                     std::to_string(user_profile_response.status));
-                std::lock_guard lock(mutex_);
-                sessions_.erase("nooklink");
-                return {};
-            }
-            if (user_profile_response.status == 200) {
-                const auto profile_json = Json::parse(user_profile_response.text());
-                const auto resident_name = profile_json.string("mPNm");
-                if (!resident_name.empty()) presence.resident_name = resident_name;
-                const auto island_name = profile_json.string("landName");
-                if (!island_name.empty()) presence.island_name = island_name;
-                const auto image = profile_json.string("mJpeg");
-                if (!image.empty()) presence.image_uri = image;
+                session.auth_token.clear();
+                user_auth_still_valid = false;
+            } else if (user_profile_response.status == 200) {
+                try {
+                    const auto profile_json = Json::parse(user_profile_response.text());
+                    const auto resident_name = profile_json.string("mPNm");
+                    if (!resident_name.empty()) presence.resident_name = resident_name;
+                    const auto island_name = profile_json.string("landName");
+                    if (!island_name.empty()) presence.island_name = island_name;
+                    const auto image = profile_json.string("mJpeg");
+                    if (!image.empty()) presence.image_uri = image;
+                } catch (...) {
+                    log_nooklink_failure("resident profile response is not valid JSON");
+                }
+            } else {
+                log_nooklink_failure(
+                    "resident profile HTTP " +
+                    std::to_string(user_profile_response.status));
             }
 
-            if (!land_id.empty()) {
+            if (user_auth_still_valid && !land_id.empty()) {
+                auto island_headers = nooklink_api_headers(
+                    session.cookie, language, country);
+                island_headers.push_back("Authorization: Bearer " + session.auth_token);
                 const auto island_response = http_.get(
                     std::string(kNookLinkBaseUrl) + "/api/sd/v1/lands/" + land_id +
                         "/profile?language=" + kNookLinkProfileLanguage,
-                    profile_headers,
+                    island_headers,
                     10,
                     4 * 1024 * 1024);
+                session.cookie = merge_cookie_header(session.cookie, island_response);
+
                 if (island_response.status == 401 || island_response.status == 403) {
                     log_nooklink_failure(
                         "island profile HTTP " +
                         std::to_string(island_response.status));
-                    std::lock_guard lock(mutex_);
-                    sessions_.erase("nooklink");
-                    return {};
-                }
-                if (island_response.status == 200) {
-                    const auto island_json = Json::parse(island_response.text());
-                    const auto island_name = island_json.string("mVNm");
-                    if (!island_name.empty()) presence.island_name = island_name;
-                    if (const auto* fruit = island_json.find("mFruit");
-                        fruit && fruit->is_object()) {
-                        presence.native_fruit = fruit->string("name");
+                    session.auth_token.clear();
+                } else if (island_response.status == 200) {
+                    try {
+                        const auto island_json = Json::parse(island_response.text());
+                        const auto island_name = island_json.string("mVNm");
+                        if (!island_name.empty()) presence.island_name = island_name;
+                        if (const auto* fruit = island_json.find("mFruit");
+                            fruit && fruit->is_object()) {
+                            presence.native_fruit = fruit->string("name");
+                        }
+                    } catch (...) {
+                        log_nooklink_failure("island profile response is not valid JSON");
                     }
+                } else {
+                    log_nooklink_failure(
+                        "island profile HTTP " +
+                        std::to_string(island_response.status));
                 }
             }
         }
 
-        presence.active = !presence.resident_name.empty() || !presence.island_name.empty();
         if (!presence.active) {
             log_nooklink_failure("/users returned no usable resident or island name");
         }
