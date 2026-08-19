@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <initializer_list>
 #include <iostream>
 #include <random>
 #include <thread>
@@ -453,119 +454,153 @@ void App::presence_loop() {
                 config.session_token == session_token &&
                 account_generation_.load() == generation) {
                 if (presence.is_playing()) {
-                    switch (rpc_game_service_for(presence)) {
-                        case RpcGameService::Splatoon3:
-                            try {
-                                const auto web_token = coral_.get_web_service_token(
-                                    session_token, kSplatoon3GameServiceId);
-                                if (!web_token.empty()) {
-                                    const auto splat_presence =
-                                        splatnet_.fetch_presence(web_token);
-                                    if (splat_presence.active) {
-                                        presence.custom_details =
-                                            splat_presence.format_details();
-                                        presence.custom_state =
-                                            splat_presence.format_state();
-                                        if (!splat_presence.stage_image_uri.empty()) {
-                                            presence.custom_image_uri =
-                                                splat_presence.stage_image_uri;
-                                        }
-                                    }
-                                }
-                            } catch (...) {
-                            }
-                            break;
-                        case RpcGameService::ZeldaNotes:
-                            try {
-                                const auto web_token = coral_.get_web_service_token(
-                                    session_token, kZeldaNotesGameServiceId);
-                                if (!web_token.empty()) {
-                                    const auto zelda_presence =
-                                        zeldanotes_.fetch_presence(web_token);
-                                    if (zelda_presence.active) {
-                                        const auto state_str =
-                                            zelda_presence.format_state();
-                                        const auto details_str =
-                                            zelda_presence.format_details();
-                                        if (!state_str.empty()) {
-                                            presence.custom_state = state_str;
-                                        }
-                                        if (!details_str.empty()) {
-                                            presence.custom_details = details_str;
-                                        }
-                                        if (!zelda_presence.stage_image_uri.empty()) {
-                                            presence.custom_image_uri =
-                                                zelda_presence.stage_image_uri;
-                                        }
-                                    }
-                                }
-                            } catch (...) {
-                            }
-                            break;
-                        case RpcGameService::AnimalCrossing:
-                            try {
-                                const auto web_token = coral_.get_web_service_token(
-                                    session_token, kAnimalCrossingGameServiceId);
-                                if (!web_token.empty()) {
-                                    const auto ac_presence =
-                                        game_services_.fetch_animal_crossing_presence(web_token);
-                                    if (ac_presence.active) {
-                                        const auto state_str = ac_presence.format_state();
-                                        const auto details_str = ac_presence.format_details();
-                                        if (!state_str.empty()) presence.custom_state = state_str;
-                                        if (!details_str.empty()) presence.custom_details = details_str;
-                                        if (!ac_presence.image_uri.empty()) {
-                                            presence.custom_image_uri = ac_presence.image_uri;
-                                        }
-                                    }
-                                }
-                            } catch (...) {
-                            }
-                            break;
-                        case RpcGameService::SmashBros:
-                            try {
-                                const auto web_token = coral_.get_web_service_token(
-                                    session_token, kSmashBrosGameServiceId);
-                                if (!web_token.empty()) {
-                                    const auto smash_presence =
-                                        game_services_.fetch_smash_presence(web_token);
-                                    if (smash_presence.active) {
-                                        const auto state_str = smash_presence.format_state();
-                                        const auto details_str = smash_presence.format_details();
-                                        if (!state_str.empty()) presence.custom_state = state_str;
-                                        if (!details_str.empty()) presence.custom_details = details_str;
-                                        if (!smash_presence.fighter_image_uri.empty()) {
-                                            presence.custom_image_uri = smash_presence.fighter_image_uri;
-                                        }
-                                    }
-                                }
-                            } catch (...) {
-                            }
-                            break;
-                        case RpcGameService::Splatoon2:
-                            try {
-                                const auto web_token = coral_.get_web_service_token(
-                                    session_token, kSplatoon2GameServiceId);
-                                if (!web_token.empty()) {
-                                    const auto splat2_presence =
-                                        game_services_.fetch_splatoon2_presence(web_token);
-                                    if (splat2_presence.active) {
-                                        const auto state_str = splat2_presence.format_state();
-                                        const auto details_str = splat2_presence.format_details();
-                                        if (!state_str.empty()) presence.custom_state = state_str;
-                                        if (!details_str.empty()) presence.custom_details = details_str;
-                                        if (!splat2_presence.stage_image_uri.empty()) {
-                                            presence.custom_image_uri = splat2_presence.stage_image_uri;
-                                        }
-                                    }
-                                }
-                            } catch (...) {
-                            }
-                            break;
-                        case RpcGameService::None:
-                            break;
+                    const auto service = rpc_game_service_for(presence);
+
+                    // Game WebView bootstraps use the Nintendo Account locale in
+                    // nxapi and in the working backend. Reuse the auth manager's
+                    // cached Nintendo token/profile; this is internal RPC state
+                    // and does not introduce any new user input or setup.
+                    if (service != RpcGameService::None) {
+                        try {
+                            const auto tokens = auth_.exchange_session_token(session_token);
+                            const auto profile = auth_.fetch_profile(tokens.access_token);
+                            splatnet_.set_locale(profile.language, profile.country);
+                            zeldanotes_.set_locale(profile.language, profile.country);
+                            game_services_.set_locale(profile.language, profile.country);
+                        } catch (...) {
+                            // The service clients retain safe en-GB/GB defaults if
+                            // the already-authenticated profile cannot be refreshed.
+                        }
                     }
-                    discord_.update(presence);
+
+                    // Signing out/account switching can happen while the profile
+                    // or Nintendo service request is in flight. Never start a new
+                    // game-service request after the account generation changed.
+                    if (!stopping_ && account_generation_.load() == generation &&
+                        config_.snapshot().session_token == session_token) {
+                        switch (service) {
+                            case RpcGameService::Splatoon3:
+                                try {
+                                    const auto web_token = coral_.get_web_service_token(
+                                        session_token, kSplatoon3GameServiceId);
+                                    if (!web_token.empty()) {
+                                        const auto splat_presence =
+                                            splatnet_.fetch_presence(web_token);
+                                        if (splat_presence.active) {
+                                            presence.custom_details =
+                                                splat_presence.format_details();
+                                            presence.custom_state =
+                                                splat_presence.format_state();
+                                            if (!splat_presence.stage_image_uri.empty()) {
+                                                presence.custom_image_uri =
+                                                    splat_presence.stage_image_uri;
+                                            }
+                                        }
+                                    }
+                                } catch (...) {
+                                }
+                                break;
+                            case RpcGameService::ZeldaNotes:
+                                try {
+                                    const auto web_token = coral_.get_web_service_token(
+                                        session_token, kZeldaNotesGameServiceId);
+                                    if (!web_token.empty()) {
+                                        const auto zelda_presence =
+                                            zeldanotes_.fetch_presence(web_token);
+                                        if (zelda_presence.active) {
+                                            const auto state_str =
+                                                zelda_presence.format_state();
+                                            const auto details_str =
+                                                zelda_presence.format_details();
+                                            if (!state_str.empty()) {
+                                                presence.custom_state = state_str;
+                                            }
+                                            if (!details_str.empty()) {
+                                                presence.custom_details = details_str;
+                                            }
+                                            if (!zelda_presence.stage_image_uri.empty()) {
+                                                presence.custom_image_uri =
+                                                    zelda_presence.stage_image_uri;
+                                            }
+                                        }
+                                    }
+                                } catch (...) {
+                                }
+                                break;
+                            case RpcGameService::AnimalCrossing:
+                                try {
+                                    const auto web_token = coral_.get_web_service_token(
+                                        session_token, kAnimalCrossingGameServiceId);
+                                    if (!web_token.empty()) {
+                                        const auto ac_presence =
+                                            game_services_.fetch_animal_crossing_presence(web_token);
+                                        if (ac_presence.active) {
+                                            const auto state_str = ac_presence.format_state();
+                                            const auto details_str = ac_presence.format_details();
+                                            if (!state_str.empty()) presence.custom_state = state_str;
+                                            if (!details_str.empty()) presence.custom_details = details_str;
+                                            if (!ac_presence.image_uri.empty()) {
+                                                presence.custom_image_uri = ac_presence.image_uri;
+                                            }
+                                        }
+                                    }
+                                } catch (...) {
+                                }
+                                break;
+                            case RpcGameService::SmashBros:
+                                try {
+                                    const auto web_token = coral_.get_web_service_token(
+                                        session_token, kSmashBrosGameServiceId);
+                                    if (!web_token.empty()) {
+                                        const auto smash_presence =
+                                            game_services_.fetch_smash_presence(web_token);
+                                        if (smash_presence.active) {
+                                            const auto state_str = smash_presence.format_state();
+                                            const auto details_str = smash_presence.format_details();
+                                            if (!state_str.empty()) presence.custom_state = state_str;
+                                            if (!details_str.empty()) presence.custom_details = details_str;
+                                            if (!smash_presence.fighter_image_uri.empty()) {
+                                                presence.custom_image_uri = smash_presence.fighter_image_uri;
+                                            }
+                                        }
+                                    }
+                                } catch (...) {
+                                }
+                                break;
+                            case RpcGameService::Splatoon2:
+                                try {
+                                    const auto web_token = coral_.get_web_service_token(
+                                        session_token, kSplatoon2GameServiceId);
+                                    if (!web_token.empty()) {
+                                        const auto splat2_presence =
+                                            game_services_.fetch_splatoon2_presence(web_token);
+                                        if (splat2_presence.active) {
+                                            const auto state_str = splat2_presence.format_state();
+                                            const auto details_str = splat2_presence.format_details();
+                                            if (!state_str.empty()) presence.custom_state = state_str;
+                                            if (!details_str.empty()) presence.custom_details = details_str;
+                                            if (!splat2_presence.stage_image_uri.empty()) {
+                                                presence.custom_image_uri =
+                                                    splat2_presence.stage_image_uri;
+                                            }
+                                        }
+                                    }
+                                } catch (...) {
+                                }
+                                break;
+                            case RpcGameService::None:
+                                break;
+                        }
+                    }
+
+                    // A sign-out clears Discord immediately. Do not allow a slow
+                    // request from the old account to republish stale activity.
+                    const auto latest = config_.snapshot();
+                    if (!stopping_ && latest.discord_presence &&
+                        latest.session_token == session_token &&
+                        account_generation_.load() == generation) {
+                        discord_.update(presence);
+                    }
                 } else {
                     discord_.clear();
                 }
