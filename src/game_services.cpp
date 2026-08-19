@@ -10,11 +10,12 @@ namespace nso {
 namespace {
 
 constexpr char kNookLinkBaseUrl[] = "https://web.sd.lp1.acbaa.srv.nintendo.net";
+constexpr char kNookLinkDplUrl[] = "https://dpl.sd.lp1.acbaa.srv.nintendo.net";
 constexpr char kSmashWorldBaseUrl[] = "https://app.smashbros.nintendo.net";
 constexpr char kSplatNet2BaseUrl[] = "https://app.splatoon2.nintendo.net";
 constexpr char kWebServiceUserAgent[] =
     "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
-constexpr char kSmashWorldUserAgent[] =
+constexpr char kNxapiWebServiceUserAgent[] =
     "Mozilla/5.0 (iPhone; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Mobile/15E148 Safari/604.1";
 constexpr char kBlancoVersion[] = "2.1.1";
 constexpr auto kSessionTtl = std::chrono::minutes(90);
@@ -123,6 +124,29 @@ std::vector<std::string> bootstrap_headers(
     };
 }
 
+std::vector<std::string> nooklink_bootstrap_headers(
+    const std::string& web_service_token,
+    const std::string& language) {
+    // The working nso-worker-backend path carries two NookLink-specific
+    // compatibility quirks that are required for Nintendo to issue _gtoken:
+    // disable DNT for this initial document and explicitly opt out of app
+    // analytics. It also uses the same iPhone WebService UA as nxapi's
+    // embedded WebService window. Subsequent API calls use _gtoken instead of
+    // the GameWebServiceToken.
+    return {
+        "Upgrade-Insecure-Requests: 1",
+        std::string("User-Agent: ") + kNxapiWebServiceUserAgent,
+        "x-appplatform: android",
+        "x-appcolorscheme: DARK",
+        "x-gamewebtoken: " + web_service_token,
+        "dnt: 0",
+        "x-isappanalyticsoptedin: false",
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language: " + language,
+        "X-Requested-With: com.nintendo.znca",
+    };
+}
+
 std::string rank_value(const Json& player, const char* key, const char* short_name) {
     const auto* rank = player.find(key);
     if (!rank || !rank->is_object()) return {};
@@ -166,13 +190,25 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
 
     try {
         if (session.cookie.empty()) {
-            const auto bootstrap = http_.get(
-                launch_url(kNookLinkBaseUrl, language, country),
-                bootstrap_headers(web_service_token, language),
-                10,
-                4 * 1024 * 1024);
-            if (bootstrap.status != 200) return {};
-            const auto gtoken = cookie_value(bootstrap, "_gtoken");
+            std::string gtoken;
+            // Coral/NookLink deployments have used both web.sd and dpl.sd as
+            // the initial document origin. The authenticated JSON API remains
+            // on web.sd, so try both known Nintendo origins internally without
+            // exposing any configuration to the user.
+            const char* bootstrap_origins[] = {
+                kNookLinkBaseUrl,
+                kNookLinkDplUrl,
+            };
+            for (const auto* origin : bootstrap_origins) {
+                const auto bootstrap = http_.get(
+                    launch_url(origin, language, country),
+                    nooklink_bootstrap_headers(web_service_token, language),
+                    10,
+                    4 * 1024 * 1024);
+                if (bootstrap.status != 200) continue;
+                gtoken = cookie_value(bootstrap, "_gtoken");
+                if (!gtoken.empty()) break;
+            }
             if (gtoken.empty()) return {};
             session.source_token = web_service_token;
             session.cookie = "_gtoken=" + gtoken;
@@ -180,13 +216,14 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         }
 
         const std::vector<std::string> api_headers = {
-            std::string("User-Agent: ") + kWebServiceUserAgent,
+            std::string("User-Agent: ") + kNxapiWebServiceUserAgent,
             "Cookie: " + session.cookie,
             "Upgrade-Insecure-Requests: 1",
             "dnt: 1",
             "Accept: application/json, text/plain, */*",
             "Accept-Language: en-GB,en-US;q=0.8",
             std::string("Origin: ") + kNookLinkBaseUrl,
+            "Content-Type: application/json",
             "X-Blanco-Version: " + std::string(kBlancoVersion),
         };
 
@@ -323,7 +360,7 @@ SmashBrosPresence GameServicesClient::fetch_smash_presence(
             bootstrap_headers(
                 web_service_token,
                 language,
-                kSmashWorldUserAgent,
+                kNxapiWebServiceUserAgent,
                 true),
             10,
             8 * 1024 * 1024);
