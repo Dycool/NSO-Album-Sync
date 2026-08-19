@@ -10,7 +10,7 @@ namespace {
 
 constexpr char kBaseUrl[] = "https://api.lp1.87abc152.srv.nintendo.net";
 constexpr char kUserAgent[] =
-    "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
+    "Mozilla/5.0 (Linux; Android 10; Build/QP1A.190711.020; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/80.0.3987.162 Mobile Safari/537.36 com.nintendo.znca/3.4.1";
 constexpr auto kSessionTtl = std::chrono::minutes(90);
 
 std::string header_value(const HttpResponse& response, const std::string& key) {
@@ -18,41 +18,52 @@ std::string header_value(const HttpResponse& response, const std::string& key) {
     return it == response.headers.end() ? std::string{} : it->second;
 }
 
-std::string session_cookie(const HttpResponse& response) {
+std::vector<std::string> set_cookie_lines(const HttpResponse& response) {
     const auto cookies = header_value(response, "set-cookie");
     if (cookies.empty()) return {};
+    std::vector<std::string> lines;
     std::size_t start = 0;
-    while (start < cookies.size()) {
-        while (start < cookies.size() &&
-               (cookies[start] == ' ' || cookies[start] == ',' ||
-                cookies[start] == '\r' || cookies[start] == '\n')) {
+    while (start <= cookies.size()) {
+        const auto end = cookies.find('\n', start);
+        auto line = cookies.substr(
+            start,
+            end == std::string::npos ? std::string::npos : end - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) lines.push_back(line);
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return lines;
+}
+
+std::string session_cookie(const HttpResponse& response) {
+    for (const auto& line : set_cookie_lines(response)) {
+        std::size_t start = 0;
+        while (start < line.size() && std::isspace(static_cast<unsigned char>(line[start]))) {
             ++start;
         }
-        const auto eq = cookies.find('=', start);
-        if (eq == std::string::npos) break;
-        auto name = cookies.substr(start, eq - start);
-        auto lower = name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-            return static_cast<char>(std::tolower(c));
-        });
-        if (lower == "a5_token" || lower.find("session") != std::string::npos) {
-            auto end = cookies.find_first_of(";,\r\n", eq + 1);
-            if (end == std::string::npos) end = cookies.size();
-            return name + "=" + cookies.substr(eq + 1, end - eq - 1);
+        const auto eq = line.find('=', start);
+        if (eq == std::string::npos) continue;
+        const auto name = line.substr(start, eq - start);
+        auto lower_name = name;
+        std::transform(
+            lower_name.begin(), lower_name.end(), lower_name.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower_name != "a5_token" && lower_name.find("session") == std::string::npos) {
+            continue;
         }
-        const auto next_comma = cookies.find(',', eq + 1);
-        const auto next_line = cookies.find('\n', eq + 1);
-        if (next_comma == std::string::npos && next_line == std::string::npos) break;
-        if (next_comma == std::string::npos) start = next_line + 1;
-        else if (next_line == std::string::npos) start = next_comma + 1;
-        else start = std::min(next_comma, next_line) + 1;
+        const auto value_start = eq + 1;
+        auto end = line.find(';', value_start);
+        if (end == std::string::npos) end = line.size();
+        return name + "=" + line.substr(value_start, end - value_start);
     }
     return {};
 }
 
 std::vector<std::string> bootstrap_headers(
     const std::string& token,
-    const std::string& language) {
+    const std::string& language,
+    const std::string& country) {
     return {
         "Upgrade-Insecure-Requests: 1",
         std::string("User-Agent: ") + kUserAgent,
@@ -62,6 +73,7 @@ std::vector<std::string> bootstrap_headers(
         "dnt: 1",
         "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language: " + language,
+        "X-NACountry: " + country,
         "X-Requested-With: com.nintendo.znca",
     };
 }
@@ -97,7 +109,7 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
         if (cookie.empty()) {
             const auto bootstrap = http_.get(
                 std::string(kBaseUrl) + "/" + locale_query,
-                bootstrap_headers(web_service_token, language),
+                bootstrap_headers(web_service_token, language, country),
                 10,
                 8 * 1024 * 1024);
             if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
@@ -110,10 +122,9 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
             session_expires_at_ = std::chrono::system_clock::now() + kSessionTtl;
         }
 
-        // Match the working WebView session model: only the initial top-level
-        // navigation carries the GameWebServiceToken. Subsequent navigation is
-        // authenticated by Nintendo's service cookie, and the backend preserves
-        // the locale query when redirecting the root document to /title-select.
+        // Match the working backend WebView model: the GameWebServiceToken is
+        // only needed until Nintendo issues a5_token/session state. Subsequent
+        // navigation relies on that cookie and preserves the account locale.
         const auto page = http_.get(
             std::string(kBaseUrl) + "/title-select" + locale_query,
             {
@@ -121,15 +132,18 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
                 "Cookie: " + cookie,
                 "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language: " + language,
+                "X-NACountry: " + country,
+                "x-appplatform: android",
+                "x-appcolorscheme: DARK",
                 "X-Requested-With: com.nintendo.znca",
             },
             10,
             8 * 1024 * 1024);
         if (page.status == 401 || page.status == 403) clear_cache();
 
-        // Zelda Notes does not currently expose a verified stable self-presence
-        // endpoint analogous to SplatNet's player records. A valid service
-        // session must therefore not be converted into a guessed map location.
+        // No stable structured self-presence endpoint has been verified in the
+        // references available to this app. Do not turn a valid Zelda Notes
+        // session into guessed map/location/activity text on Discord.
         return {};
     } catch (...) {
         return {};
