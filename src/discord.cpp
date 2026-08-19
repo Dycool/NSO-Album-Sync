@@ -30,6 +30,7 @@ namespace {
 
 constexpr auto kCallbackPumpInterval = std::chrono::milliseconds(100);
 constexpr std::size_t kDiscordActivityImageMaxLength = 300;
+constexpr char kNookLinkOrigin[] = "https://web.sd.lp1.acbaa.srv.nintendo.net";
 
 #ifdef _WIN32
 bool ensure_embedded_discord_sdk_loaded() {
@@ -100,6 +101,59 @@ bool is_valid_discord_image_url(const std::string& url) {
         if (std::isspace(static_cast<unsigned char>(c))) return false;
     }
     return true;
+}
+
+bool is_animal_crossing_presence(const NintendoPresence& presence) {
+    const auto& name = presence.game_name;
+    return name.find("Animal Crossing") != std::string::npos ||
+        name.find("あつまれ どうぶつの森") != std::string::npos;
+}
+
+std::string normalize_discord_image_url(
+    const NintendoPresence& presence,
+    std::string url) {
+    if (url.empty()) return {};
+
+    // NookLink's browser can use relative passport-photo URLs because the page
+    // itself runs on web.sd. Discord activity assets cannot: they require an
+    // absolute HTTPS URL. Resolve both root-relative and ordinary relative
+    // NookLink image values before applying Discord's 300-character limit.
+    if (is_animal_crossing_presence(presence)) {
+        if (url.rfind("//", 0) == 0) {
+            url = "https:" + url;
+        } else if (url.rfind("/", 0) == 0) {
+            url = std::string(kNookLinkOrigin) + url;
+        } else if (url.find("://") == std::string::npos &&
+                   url.rfind("data:", 0) != 0) {
+            url = std::string(kNookLinkOrigin) + "/" + url;
+        }
+    }
+
+    return url;
+}
+
+void log_rejected_custom_image(const NintendoPresence& presence, const std::string& url) {
+    if (url.empty()) return;
+    std::string reason;
+    if (url.size() > kDiscordActivityImageMaxLength) {
+        reason = "URL too long (" + std::to_string(url.size()) + " chars)";
+    } else if (url.rfind("https://", 0) != 0) {
+        reason = "not an HTTPS URL";
+    } else {
+        for (char c : url) {
+            if (std::isspace(static_cast<unsigned char>(c))) {
+                reason = "contains whitespace";
+                break;
+            }
+        }
+    }
+    if (reason.empty()) return;
+
+    // Do not log the avatar URL itself; it may contain a user-specific image
+    // identifier or signature. Scheme/length classification is enough to debug
+    // Discord asset rejection safely.
+    std::cerr << "[DiscordPresence] Custom image rejected for "
+              << presence.game_name << ": " << reason << '\n';
 }
 
 }  // namespace
@@ -248,18 +302,25 @@ void DiscordPresence::update(const NintendoPresence& presence) {
     // Coral's current-game artwork is always the primary image. Game-service
     // enrichment (weapon/avatar/fighter/etc.) is supplementary and therefore
     // belongs in Discord's small-image slot instead of replacing the game art.
-    if (is_valid_discord_image_url(presence.image_uri) ||
-        is_valid_discord_image_url(presence.custom_image_uri)) {
+    const auto large_image_uri = normalize_discord_image_url(presence, presence.image_uri);
+    const auto small_image_uri = normalize_discord_image_url(presence, presence.custom_image_uri);
+    if (!presence.custom_image_uri.empty() &&
+        !is_valid_discord_image_url(small_image_uri)) {
+        log_rejected_custom_image(presence, small_image_uri);
+    }
+
+    if (is_valid_discord_image_url(large_image_uri) ||
+        is_valid_discord_image_url(small_image_uri)) {
         discordpp::ActivityAssets assets;
-        if (is_valid_discord_image_url(presence.image_uri)) {
-            assets.SetLargeImage(presence.image_uri);
+        if (is_valid_discord_image_url(large_image_uri)) {
+            assets.SetLargeImage(large_image_uri);
             assets.SetLargeText(presence.game_name);
             if (is_valid_discord_image_url(presence.shop_uri)) {
                 assets.SetLargeUrl(presence.shop_uri);
             }
         }
-        if (is_valid_discord_image_url(presence.custom_image_uri)) {
-            assets.SetSmallImage(presence.custom_image_uri);
+        if (is_valid_discord_image_url(small_image_uri)) {
+            assets.SetSmallImage(small_image_uri);
         }
         activity.SetAssets(assets);
     }
