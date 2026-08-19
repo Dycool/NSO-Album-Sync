@@ -44,7 +44,7 @@ bool ensure_embedded_discord_sdk_loaded() {
             RT_RCDATA);
         if (resource == nullptr) return false;
 
-        const HGLOBAL data_handle = LoadResource(executable, resource);
+        const HGLOBAL data_handle = LoadResource(executable);
         if (data_handle == nullptr) return false;
         const auto* data = static_cast<const unsigned char*>(LockResource(data_handle));
         const DWORD size = SizeofResource(executable, resource);
@@ -285,7 +285,14 @@ void DiscordPresence::update(const NintendoPresence& presence) {
     }
 
     if (!presence.custom_state.empty()) {
-        activity.SetState(presence.custom_state);
+        auto state = presence.custom_state;
+        if (is_animal_crossing_presence(presence)) {
+            const auto playtime_description = presence.discord_state();
+            if (!playtime_description.empty()) {
+                state += " • " + playtime_description;
+            }
+        }
+        activity.SetState(state);
     } else {
         activity.SetState(presence.console_name());
     }
