@@ -1,8 +1,11 @@
 #include "nso_album_sync/zeldanotes.hpp"
+#include "nso_album_sync/json.hpp"
 #include "nso_album_sync/sse.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -13,6 +16,9 @@ constexpr char kBaseUrl[] = "https://api.lp1.87abc152.srv.nintendo.net";
 constexpr char kUserAgent[] =
     "Mozilla/5.0 (Linux; Android 10; Build/QP1A.190711.020; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/80.0.3987.162 Mobile Safari/537.36 com.nintendo.znca/3.4.1";
 constexpr auto kSessionTtl = std::chrono::minutes(90);
+constexpr char kPorterSessionAlphabet[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+constexpr std::size_t kPorterSessionIdLength = 5;
 
 std::string header_value(const HttpResponse& response, const std::string& key) {
     const auto it = response.headers.find(key);
@@ -79,7 +85,140 @@ std::vector<std::string> bootstrap_headers(
     };
 }
 
+bool read_vector3(
+    const Json& message,
+    const std::string& key,
+    ZeldaNotesVector3& output) {
+    const auto* value = message.find(key);
+    if (value == nullptr || !value->is_array()) return false;
+    const auto& coordinates = value->as_array();
+    if (coordinates.size() < 3 ||
+        !coordinates[0].is_number() ||
+        !coordinates[1].is_number() ||
+        !coordinates[2].is_number()) {
+        return false;
+    }
+
+    const auto x = coordinates[0].as_number();
+    const auto y = coordinates[1].as_number();
+    const auto z = coordinates[2].as_number();
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+        return false;
+    }
+
+    output = ZeldaNotesVector3{x, y, z};
+    return true;
+}
+
+ZeldaNotesLiveMessageType live_message_type(const std::string& type) {
+    if (type == "open") return ZeldaNotesLiveMessageType::Open;
+    if (type == "map_sync_start_ack") {
+        return ZeldaNotesLiveMessageType::MapSyncStartAck;
+    }
+    if (type == "map_sync_player_info") {
+        return ZeldaNotesLiveMessageType::MapSyncPlayerInfo;
+    }
+    return ZeldaNotesLiveMessageType::Unknown;
+}
+
 }  // namespace
+
+ZeldaNotesLayer zelda_notes_layer_from_wire(const std::string& layer) {
+    if (layer == "Ground") return ZeldaNotesLayer::Ground;
+    if (layer == "Sky") return ZeldaNotesLayer::Sky;
+    if (layer == "Underground") return ZeldaNotesLayer::Underground;
+    return ZeldaNotesLayer::Unknown;
+}
+
+std::string zelda_notes_generate_porter_session_id() {
+    static_assert(
+        sizeof(kPorterSessionAlphabet) - 1 == 62,
+        "Zelda Notes porter-session alphabet must stay alphanumeric");
+
+    static thread_local std::mt19937_64 generator([] {
+        std::random_device random;
+        std::seed_seq seed{
+            random(), random(), random(), random(),
+            random(), random(), random(), random(),
+        };
+        return std::mt19937_64(seed);
+    }());
+    std::uniform_int_distribution<std::size_t> distribution(
+        0, sizeof(kPorterSessionAlphabet) - 2);
+
+    std::string id;
+    id.reserve(kPorterSessionIdLength);
+    for (std::size_t i = 0; i < kPorterSessionIdLength; ++i) {
+        id.push_back(kPorterSessionAlphabet[distribution(generator)]);
+    }
+    return id;
+}
+
+ZeldaNotesLiveMessage zelda_notes_decode_live_message(
+    const std::string& payload,
+    ZeldaNotesGame game,
+    std::chrono::steady_clock::time_point received_at) {
+    ZeldaNotesLiveMessage decoded;
+    decoded.received_at = received_at;
+
+    try {
+        const auto message = Json::parse(payload);
+        if (!message.is_object()) return decoded;
+
+        decoded.type = live_message_type(message.string("messageType"));
+        if (decoded.type == ZeldaNotesLiveMessageType::Unknown) return decoded;
+        decoded.valid = true;
+
+        // The captured Nintendo frontend forwards these identifiers unchanged
+        // into its server actions. In the verified traffic they are strings, so
+        // do not silently coerce other JSON types into action arguments.
+        decoded.game_session_id = message.string("gameSessionId");
+        decoded.needs_ack = message.boolean("needsAck", false);
+        decoded.message_request_id = message.string("messageRequestId");
+
+        if (decoded.type != ZeldaNotesLiveMessageType::MapSyncPlayerInfo) {
+            return decoded;
+        }
+
+        decoded.updates_live_state = true;
+        auto& state = decoded.live_state;
+        state.game = game;
+        state.received_at = received_at;
+
+        const bool has_position = read_vector3(message, "playerPos", state.position);
+        const bool has_front = read_vector3(message, "playerFront", state.front);
+
+        if (game == ZeldaNotesGame::TearsOfTheKingdom) {
+            state.layer = zelda_notes_layer_from_wire(message.string("playerLayer"));
+            // Zelda Notes' TOTK PlayerProvider only treats the stream as live
+            // when all three fields exist: playerPos, playerFront, playerLayer.
+            state.synchronized =
+                has_position && has_front && state.layer != ZeldaNotesLayer::Unknown;
+        } else if (game == ZeldaNotesGame::BreathOfTheWild) {
+            // BOTW has no layer field; its PlayerProvider requires only the
+            // current player position and facing vector.
+            state.synchronized = has_position && has_front;
+        }
+
+        return decoded;
+    } catch (...) {
+        // A malformed individual SSE payload must never take down the presence
+        // worker. The live-session coordinator can ignore invalid messages and
+        // rely on the freshness watchdog to fall back safely.
+        return ZeldaNotesLiveMessage{};
+    }
+}
+
+bool zelda_notes_live_state_is_fresh(
+    const ZeldaNotesLiveState& state,
+    std::chrono::steady_clock::time_point now) {
+    if (!state.synchronized ||
+        state.received_at == std::chrono::steady_clock::time_point{} ||
+        now < state.received_at) {
+        return false;
+    }
+    return now - state.received_at < kZeldaNotesLiveFreshness;
+}
 
 void ZeldaNotesClient::clear_cache() {
     std::lock_guard lock(mutex_);
@@ -100,9 +239,9 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
             country = country_;
             if (source_web_token_ == web_service_token && !session_cookie_.empty() &&
                 std::chrono::system_clock::now() < session_expires_at_) {
-                // Zelda Notes has no verified structured self-presence endpoint
-                // yet. Once the session has been proven, do not keep reloading a
-                // page every Discord poll just to rediscover the same cookie.
+                // The live Complete Guide stream is managed separately. Do not
+                // keep reloading a page from this legacy synchronous probe just
+                // to rediscover the same authenticated Zelda Notes cookie.
                 return {};
             }
         }
@@ -129,8 +268,9 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
         session_cookie_ = cookie;
         session_expires_at_ = std::chrono::system_clock::now() + kSessionTtl;
 
-        // A valid Zelda Notes session is useful proof that probing/auth works,
-        // but it is not evidence of Link's current map position or activity.
+        // Authentication alone is not current-location evidence. A later step
+        // starts the verified continuous-connection stream and only publishes
+        // synchronized, fresh map_sync_player_info data.
         return {};
     } catch (...) {
         return {};

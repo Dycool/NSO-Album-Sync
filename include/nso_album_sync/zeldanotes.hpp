@@ -14,6 +14,7 @@ inline constexpr std::uint64_t kZeldaNotesGameServiceIdAlt = 4974384874151936ULL
 
 inline constexpr char kZeldaNotesBotwTitleId[] = "01007ef00011e000";
 inline constexpr char kZeldaNotesTotkTitleId[] = "0100f2c0115b6000";
+inline constexpr auto kZeldaNotesLiveFreshness = std::chrono::seconds(30);
 
 enum class ZeldaNotesGame {
     Unknown,
@@ -26,6 +27,13 @@ enum class ZeldaNotesLayer {
     Ground,
     Sky,
     Underground,
+};
+
+enum class ZeldaNotesLiveMessageType {
+    Unknown,
+    Open,
+    MapSyncStartAck,
+    MapSyncPlayerInfo,
 };
 
 struct ZeldaNotesVector3 {
@@ -44,6 +52,22 @@ struct ZeldaNotesLiveState {
     ZeldaNotesVector3 position;
     ZeldaNotesVector3 front;
     bool synchronized = false;
+    std::chrono::steady_clock::time_point received_at{};
+};
+
+// One decoded message from Zelda Notes' continuous-connection SSE stream.
+// `received_at` belongs to the wire message itself so the future live-session
+// coordinator can reproduce Nintendo's 30-second "any message" watchdog. A
+// map_sync_player_info message additionally sets updates_live_state and carries
+// the current synchronized/unsynchronized player state.
+struct ZeldaNotesLiveMessage {
+    ZeldaNotesLiveMessageType type = ZeldaNotesLiveMessageType::Unknown;
+    std::string game_session_id;
+    bool needs_ack = false;
+    std::string message_request_id;
+    bool updates_live_state = false;
+    ZeldaNotesLiveState live_state;
+    bool valid = false;
     std::chrono::steady_clock::time_point received_at{};
 };
 
@@ -105,6 +129,20 @@ inline const char* zelda_notes_layer_rpc_name(ZeldaNotesLayer layer) {
     }
     return "";
 }
+
+ZeldaNotesLayer zelda_notes_layer_from_wire(const std::string& layer);
+std::string zelda_notes_generate_porter_session_id();
+
+ZeldaNotesLiveMessage zelda_notes_decode_live_message(
+    const std::string& payload,
+    ZeldaNotesGame game,
+    std::chrono::steady_clock::time_point received_at =
+        std::chrono::steady_clock::now());
+
+bool zelda_notes_live_state_is_fresh(
+    const ZeldaNotesLiveState& state,
+    std::chrono::steady_clock::time_point now =
+        std::chrono::steady_clock::now());
 
 struct ZeldaNotesPresence {
     // Legacy synchronous enrichment result. The live location implementation
