@@ -261,8 +261,14 @@ std::map<std::string, std::string> read_response_headers(HINTERNET request) {
             continue;
         }
 
-        result[lower(line.substr(0, separator))] =
-            trim(line.substr(separator + 1));
+        const auto name = lower(line.substr(0, separator));
+        const auto value = trim(line.substr(separator + 1));
+        const auto existing = result.find(name);
+        if (name == "set-cookie" && existing != result.end()) {
+            existing->second += "\n" + value;
+        } else {
+            result[name] = value;
+        }
     }
 
     return result;
