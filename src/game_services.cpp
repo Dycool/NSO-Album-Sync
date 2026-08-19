@@ -133,7 +133,7 @@ std::vector<std::string> nooklink_bootstrap_headers(
     // analytics. It also uses the same iPhone WebService UA as nxapi's
     // embedded WebService window. Subsequent API calls use _gtoken instead of
     // the GameWebServiceToken.
-    return {
+    std::vector<std::string> headers = {
         "Upgrade-Insecure-Requests: 1",
         std::string("User-Agent: ") + kNxapiWebServiceUserAgent,
         "x-appplatform: android",
@@ -145,6 +145,52 @@ std::vector<std::string> nooklink_bootstrap_headers(
         "Accept-Language: " + language,
         "X-Requested-With: com.nintendo.znca",
     };
+#ifdef _WIN32
+    // WinHTTP normally follows redirects before callers can inspect the
+    // intermediate response. NookLink can issue _gtoken on that response, so
+    // ask our Windows transport to return redirects to this client instead.
+    headers.emplace_back("X-NSO-Internal-Manual-Redirect: 1");
+#endif
+    return headers;
+}
+
+bool is_redirect_status(long status) {
+    return status == 301 || status == 302 || status == 303 ||
+        status == 307 || status == 308;
+}
+
+bool has_nooklink_origin(const std::string& url, const char* origin) {
+    const std::string prefix(origin);
+    if (url.compare(0, prefix.size(), prefix) != 0) return false;
+    if (url.size() == prefix.size()) return true;
+    const char next = url[prefix.size()];
+    return next == '/' || next == '?' || next == '#';
+}
+
+std::string resolve_nooklink_redirect(
+    const std::string& current_url,
+    const std::string& location) {
+    if (location.empty()) return {};
+
+    std::string candidate;
+    if (location.rfind("https://", 0) == 0) {
+        candidate = location;
+    } else if (location.front() == '/') {
+        const char* current_origin = has_nooklink_origin(current_url, kNookLinkDplUrl)
+            ? kNookLinkDplUrl
+            : kNookLinkBaseUrl;
+        candidate = std::string(current_origin) + location;
+    } else {
+        // Nintendo's NookLink redirects are normally absolute or root-relative.
+        // Do not broaden this into a generic URL resolver for an auth flow.
+        return {};
+    }
+
+    if (!has_nooklink_origin(candidate, kNookLinkBaseUrl) &&
+        !has_nooklink_origin(candidate, kNookLinkDplUrl)) {
+        return {};
+    }
+    return candidate;
 }
 
 std::string rank_value(const Json& player, const char* key, const char* short_name) {
@@ -193,20 +239,35 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
             std::string gtoken;
             // Coral/NookLink deployments have used both web.sd and dpl.sd as
             // the initial document origin. The authenticated JSON API remains
-            // on web.sd, so try both known Nintendo origins internally without
-            // exposing any configuration to the user.
+            // on web.sd, so start from each known Nintendo origin and follow a
+            // small, strictly NookLink-only redirect chain until _gtoken is
+            // issued. This mirrors the working backend's manual redirect/cookie
+            // handling without exposing any configuration to the user.
             const char* bootstrap_origins[] = {
                 kNookLinkBaseUrl,
                 kNookLinkDplUrl,
             };
             for (const auto* origin : bootstrap_origins) {
-                const auto bootstrap = http_.get(
-                    launch_url(origin, language, country),
-                    nooklink_bootstrap_headers(web_service_token, language),
-                    10,
-                    4 * 1024 * 1024);
-                if (bootstrap.status != 200) continue;
-                gtoken = cookie_value(bootstrap, "_gtoken");
+                std::string url = launch_url(origin, language, country);
+                for (int redirect = 0; redirect < 4; ++redirect) {
+                    const auto bootstrap = http_.get(
+                        url,
+                        nooklink_bootstrap_headers(web_service_token, language),
+                        10,
+                        4 * 1024 * 1024);
+                    if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) {
+                        break;
+                    }
+
+                    gtoken = cookie_value(bootstrap, "_gtoken");
+                    if (!gtoken.empty()) break;
+                    if (!is_redirect_status(bootstrap.status)) break;
+
+                    const auto next = resolve_nooklink_redirect(
+                        url, header_value(bootstrap, "location"));
+                    if (next.empty() || next == url) break;
+                    url = next;
+                }
                 if (!gtoken.empty()) break;
             }
             if (gtoken.empty()) return {};
