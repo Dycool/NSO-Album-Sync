@@ -11,11 +11,12 @@
 
 namespace nso {
 
-// Coral GameWebServiceTokens are reusable by the direct game-service RPC
-// probes. Passing 0 asks CoralClient for any still-valid cached GWS token and,
-// if none exists yet, obtains the established fallback token. Keep Nintendo's
-// actual NookLink catalog ID separately for protocol/reference code.
-inline constexpr std::uint64_t kAnimalCrossingGameServiceId = 0ULL;
+// Use Nintendo's actual NookLink service ID when Album Sync has to acquire a
+// GameWebServiceToken itself. This is the direct-client path proven by nxapi.
+// nso-webapp's account broker may reuse/cache token material more broadly, but
+// that broker behavior is not equivalent to blindly selecting an arbitrary
+// locally cached token in the desktop client.
+inline constexpr std::uint64_t kAnimalCrossingGameServiceId = 4953919198265344ULL;
 inline constexpr std::uint64_t kAnimalCrossingNintendoGameServiceId = 4953919198265344ULL;
 inline constexpr std::uint64_t kSmashBrosGameServiceId = 5598642853249024ULL;
 inline constexpr std::uint64_t kSmashBrosGameServiceIdAlt = 5614999764533248ULL;
@@ -86,7 +87,7 @@ struct Splatoon2Presence {
     }
 
     std::string format_details() const {
-        return player_name.empty() ? std::string{} : "Player: " + player_name;
+        return player_name;
     }
 };
 
