@@ -67,6 +67,60 @@ bool is_invalid_grant(const std::string& message) {
     return message.find("invalid_grant") != std::string::npos;
 }
 
+enum class RpcGameService {
+    None,
+    Splatoon3,
+    ZeldaNotes,
+    AnimalCrossing,
+    SmashBros,
+    Splatoon2,
+};
+
+bool contains_any(const std::string& text, std::initializer_list<const char*> needles) {
+    for (const auto* needle : needles) {
+        if (needle != nullptr && text.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
+RpcGameService rpc_game_service_for(const NintendoPresence& presence) {
+    // Prefer Nintendo's stable application/title ID. Coral names are localized,
+    // so routing only by English/Japanese substrings silently disables RPC
+    // enrichment for other Nintendo Account languages.
+    if (presence.title_id == "0100c2500fc20000") return RpcGameService::Splatoon3;
+    if (presence.title_id == "01003bc0000a0000") return RpcGameService::Splatoon2;
+    if (presence.title_id == "01006f8002326000") return RpcGameService::AnimalCrossing;
+    if (presence.title_id == "01006a800016e000") return RpcGameService::SmashBros;
+    if (presence.title_id == "01007ef00011e000" ||
+        presence.title_id == "0100f2c0115b6000") {
+        return RpcGameService::ZeldaNotes;
+    }
+
+    // Name fallbacks cover Coral payloads that omit an application ID and
+    // Nintendo Switch 2 Edition display names. Keep Zelda deliberately narrow:
+    // Zelda Notes supports BOTW/TOTK, not every Zelda-family title.
+    if (contains_any(presence.game_name, {"Splatoon 3", "スプラトゥーン3"})) {
+        return RpcGameService::Splatoon3;
+    }
+    if (contains_any(presence.game_name, {
+            "Breath of the Wild", "ブレス オブ ザ ワイルド",
+            "Tears of the Kingdom", "ティアーズ オブ ザ キングダム"})) {
+        return RpcGameService::ZeldaNotes;
+    }
+    if (contains_any(presence.game_name, {
+            "Animal Crossing", "New Horizons", "どうぶつの森", "あつ森"})) {
+        return RpcGameService::AnimalCrossing;
+    }
+    if (contains_any(presence.game_name, {
+            "Super Smash Bros", "大乱闘スマッシュブラザーズ", "スマブラSP"})) {
+        return RpcGameService::SmashBros;
+    }
+    if (contains_any(presence.game_name, {"Splatoon 2", "スプラトゥーン2"})) {
+        return RpcGameService::Splatoon2;
+    }
+    return RpcGameService::None;
+}
+
 }  // namespace
 
 App::App()
@@ -242,6 +296,9 @@ void App::complete_pending_login(const std::string& redirect_url_or_code) {
         const auto auth_result = auth_.complete_login(redirect_url_or_code);
         account_generation_.fetch_add(1);
         coral_.clear_cached_session();
+        splatnet_.clear_cache();
+        zeldanotes_.clear_cache();
+        game_services_.clear_cache();
         nxapi_.clear_user_auth();
         const auto config = config_.update([&](AppConfig& value) {
             value.session_token = auth_result.session_token;
@@ -396,114 +453,117 @@ void App::presence_loop() {
                 config.session_token == session_token &&
                 account_generation_.load() == generation) {
                 if (presence.is_playing()) {
-                    if (presence.game_name.find("Splatoon 3") != std::string::npos ||
-                        presence.game_name.find("スプラトゥーン3") != std::string::npos) {
-                        try {
-                            const auto web_token = coral_.get_web_service_token(
-                                session_token, kSplatoon3GameServiceId);
-                            if (!web_token.empty()) {
-                                const auto splat_presence =
-                                    splatnet_.fetch_presence(web_token);
-                                if (splat_presence.active) {
-                                    presence.custom_details =
-                                        splat_presence.format_details();
-                                    presence.custom_state =
-                                        splat_presence.format_state();
-                                    if (!splat_presence.stage_image_uri.empty()) {
-                                        presence.custom_image_uri =
-                                            splat_presence.stage_image_uri;
+                    switch (rpc_game_service_for(presence)) {
+                        case RpcGameService::Splatoon3:
+                            try {
+                                const auto web_token = coral_.get_web_service_token(
+                                    session_token, kSplatoon3GameServiceId);
+                                if (!web_token.empty()) {
+                                    const auto splat_presence =
+                                        splatnet_.fetch_presence(web_token);
+                                    if (splat_presence.active) {
+                                        presence.custom_details =
+                                            splat_presence.format_details();
+                                        presence.custom_state =
+                                            splat_presence.format_state();
+                                        if (!splat_presence.stage_image_uri.empty()) {
+                                            presence.custom_image_uri =
+                                                splat_presence.stage_image_uri;
+                                        }
                                     }
                                 }
+                            } catch (...) {
                             }
-                        } catch (...) {
-                        }
-                    } else if (presence.game_name.find("Zelda") != std::string::npos ||
-                               presence.game_name.find("ゼルダ") != std::string::npos) {
-                        try {
-                            const auto web_token = coral_.get_web_service_token(
-                                session_token, kZeldaNotesGameServiceId);
-                            if (!web_token.empty()) {
-                                const auto zelda_presence =
-                                    zeldanotes_.fetch_presence(web_token);
-                                if (zelda_presence.active) {
-                                    const auto state_str =
-                                        zelda_presence.format_state();
-                                    const auto details_str =
-                                        zelda_presence.format_details();
-                                    if (!state_str.empty()) {
-                                        presence.custom_state = state_str;
-                                    }
-                                    if (!details_str.empty()) {
-                                        presence.custom_details = details_str;
-                                    }
-                                    if (!zelda_presence.stage_image_uri.empty()) {
-                                        presence.custom_image_uri =
-                                            zelda_presence.stage_image_uri;
+                            break;
+                        case RpcGameService::ZeldaNotes:
+                            try {
+                                const auto web_token = coral_.get_web_service_token(
+                                    session_token, kZeldaNotesGameServiceId);
+                                if (!web_token.empty()) {
+                                    const auto zelda_presence =
+                                        zeldanotes_.fetch_presence(web_token);
+                                    if (zelda_presence.active) {
+                                        const auto state_str =
+                                            zelda_presence.format_state();
+                                        const auto details_str =
+                                            zelda_presence.format_details();
+                                        if (!state_str.empty()) {
+                                            presence.custom_state = state_str;
+                                        }
+                                        if (!details_str.empty()) {
+                                            presence.custom_details = details_str;
+                                        }
+                                        if (!zelda_presence.stage_image_uri.empty()) {
+                                            presence.custom_image_uri =
+                                                zelda_presence.stage_image_uri;
+                                        }
                                     }
                                 }
+                            } catch (...) {
                             }
-                        } catch (...) {
-                        }
-                    } else if (presence.game_name.find("Animal Crossing") != std::string::npos ||
-                               presence.game_name.find("どうぶつの森") != std::string::npos) {
-                        try {
-                            const auto web_token = coral_.get_web_service_token(
-                                session_token, kAnimalCrossingGameServiceId);
-                            if (!web_token.empty()) {
-                                const auto ac_presence =
-                                    game_services_.fetch_animal_crossing_presence(web_token);
-                                if (ac_presence.active) {
-                                    const auto state_str = ac_presence.format_state();
-                                    const auto details_str = ac_presence.format_details();
-                                    if (!state_str.empty()) presence.custom_state = state_str;
-                                    if (!details_str.empty()) presence.custom_details = details_str;
-                                    if (!ac_presence.image_uri.empty()) {
-                                        presence.custom_image_uri = ac_presence.image_uri;
+                            break;
+                        case RpcGameService::AnimalCrossing:
+                            try {
+                                const auto web_token = coral_.get_web_service_token(
+                                    session_token, kAnimalCrossingGameServiceId);
+                                if (!web_token.empty()) {
+                                    const auto ac_presence =
+                                        game_services_.fetch_animal_crossing_presence(web_token);
+                                    if (ac_presence.active) {
+                                        const auto state_str = ac_presence.format_state();
+                                        const auto details_str = ac_presence.format_details();
+                                        if (!state_str.empty()) presence.custom_state = state_str;
+                                        if (!details_str.empty()) presence.custom_details = details_str;
+                                        if (!ac_presence.image_uri.empty()) {
+                                            presence.custom_image_uri = ac_presence.image_uri;
+                                        }
                                     }
                                 }
+                            } catch (...) {
                             }
-                        } catch (...) {
-                        }
-                    } else if (presence.game_name.find("Super Smash Bros") != std::string::npos ||
-                               presence.game_name.find("大乱闘スマッシュブラザーズ") != std::string::npos) {
-                        try {
-                            const auto web_token = coral_.get_web_service_token(
-                                session_token, kSmashBrosGameServiceId);
-                            if (!web_token.empty()) {
-                                const auto smash_presence =
-                                    game_services_.fetch_smash_presence(web_token);
-                                if (smash_presence.active) {
-                                    const auto state_str = smash_presence.format_state();
-                                    const auto details_str = smash_presence.format_details();
-                                    if (!state_str.empty()) presence.custom_state = state_str;
-                                    if (!details_str.empty()) presence.custom_details = details_str;
-                                    if (!smash_presence.fighter_image_uri.empty()) {
-                                        presence.custom_image_uri = smash_presence.fighter_image_uri;
+                            break;
+                        case RpcGameService::SmashBros:
+                            try {
+                                const auto web_token = coral_.get_web_service_token(
+                                    session_token, kSmashBrosGameServiceId);
+                                if (!web_token.empty()) {
+                                    const auto smash_presence =
+                                        game_services_.fetch_smash_presence(web_token);
+                                    if (smash_presence.active) {
+                                        const auto state_str = smash_presence.format_state();
+                                        const auto details_str = smash_presence.format_details();
+                                        if (!state_str.empty()) presence.custom_state = state_str;
+                                        if (!details_str.empty()) presence.custom_details = details_str;
+                                        if (!smash_presence.fighter_image_uri.empty()) {
+                                            presence.custom_image_uri = smash_presence.fighter_image_uri;
+                                        }
                                     }
                                 }
+                            } catch (...) {
                             }
-                        } catch (...) {
-                        }
-                    } else if (presence.game_name.find("Splatoon 2") != std::string::npos ||
-                               presence.game_name.find("スプラトゥーン2") != std::string::npos) {
-                        try {
-                            const auto web_token = coral_.get_web_service_token(
-                                session_token, kSplatoon2GameServiceId);
-                            if (!web_token.empty()) {
-                                const auto splat2_presence =
-                                    game_services_.fetch_splatoon2_presence(web_token);
-                                if (splat2_presence.active) {
-                                    const auto state_str = splat2_presence.format_state();
-                                    const auto details_str = splat2_presence.format_details();
-                                    if (!state_str.empty()) presence.custom_state = state_str;
-                                    if (!details_str.empty()) presence.custom_details = details_str;
-                                    if (!splat2_presence.stage_image_uri.empty()) {
-                                        presence.custom_image_uri = splat2_presence.stage_image_uri;
+                            break;
+                        case RpcGameService::Splatoon2:
+                            try {
+                                const auto web_token = coral_.get_web_service_token(
+                                    session_token, kSplatoon2GameServiceId);
+                                if (!web_token.empty()) {
+                                    const auto splat2_presence =
+                                        game_services_.fetch_splatoon2_presence(web_token);
+                                    if (splat2_presence.active) {
+                                        const auto state_str = splat2_presence.format_state();
+                                        const auto details_str = splat2_presence.format_details();
+                                        if (!state_str.empty()) presence.custom_state = state_str;
+                                        if (!details_str.empty()) presence.custom_details = details_str;
+                                        if (!splat2_presence.stage_image_uri.empty()) {
+                                            presence.custom_image_uri = splat2_presence.stage_image_uri;
+                                        }
                                     }
                                 }
+                            } catch (...) {
                             }
-                        } catch (...) {
-                        }
+                            break;
+                        case RpcGameService::None:
+                            break;
                     }
                     discord_.update(presence);
                 } else {
