@@ -1,5 +1,7 @@
 #include "nso_album_sync/splatnet.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <string>
 #include <vector>
@@ -17,9 +19,18 @@ constexpr char kHistoryRecordQuery[] =
     "a654ecc80161a7ca5c38761c1d9e502d405eae764e2d343618b9c74b1dc0a80f";
 constexpr auto kBulletTtl = std::chrono::minutes(100);
 
-std::vector<std::string> bootstrap_headers(
-    const std::string& token,
-    const std::string& language) {
+std::string splatnet_language(const std::string& account_language) {
+    static constexpr std::array<const char*, 14> kLanguages = {
+        "de-DE", "en-GB", "en-US", "es-ES", "es-MX", "fr-CA", "fr-FR",
+        "it-IT", "ja-JP", "ko-KR", "nl-NL", "ru-RU", "zh-CN", "zh-TW",
+    };
+    const auto supported = std::find_if(
+        kLanguages.begin(), kLanguages.end(),
+        [&](const char* language) { return account_language == language; });
+    return supported == kLanguages.end() ? std::string("en-GB") : account_language;
+}
+
+std::vector<std::string> bootstrap_headers(const std::string& token) {
     return {
         "Upgrade-Insecure-Requests: 1",
         std::string("User-Agent: ") + kUserAgent,
@@ -28,7 +39,7 @@ std::vector<std::string> bootstrap_headers(
         "x-gamewebtoken: " + token,
         "dnt: 1",
         "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        std::string("Accept-Language: ") + language + ",en-US;q=0.8",
+        "Accept-Language: en-GB,en-US;q=0.8",
         "X-Requested-With: com.nintendo.znca",
     };
 }
@@ -39,7 +50,7 @@ void SplatNetClient::clear_cache() {
     std::lock_guard lock(mutex_);
     source_web_token_.clear();
     bullet_token_.clear();
-    language_ = account_language_;
+    language_ = splatnet_language(account_language_);
     bullet_expires_at_ = {};
 }
 
@@ -56,12 +67,16 @@ std::string SplatNetClient::ensure_bullet_token(const std::string& web_service_t
         account_language = account_language_;
         account_country = account_country_;
     }
+    const auto api_language = splatnet_language(account_language);
 
+    // nxapi preserves the Nintendo Account language in the launch URL, but the
+    // SplatNet API itself only supports a fixed locale list and falls back to
+    // en-GB when the account language is unsupported (for example pt-PT).
     const std::string launch = std::string(kBaseUrl) + "/?lang=" + account_language +
         "&na_country=" + account_country + "&na_lang=" + account_language;
     const auto bootstrap = http_.get(
         launch,
-        bootstrap_headers(web_service_token, account_language),
+        bootstrap_headers(web_service_token),
         10,
         8 * 1024 * 1024);
     if (bootstrap.status != 200) return {};
@@ -73,7 +88,7 @@ std::string SplatNetClient::ensure_bullet_token(const std::string& web_service_t
         "X-Requested-With: XMLHttpRequest",
         "X-Web-View-Ver: " + std::string(kWebViewVersion),
         "X-NACOUNTRY: " + account_country,
-        "Accept-Language: " + account_language,
+        "Accept-Language: " + api_language,
         "X-GameWebToken: " + web_service_token,
     };
     const auto response = http_.post(
@@ -93,7 +108,7 @@ std::string SplatNetClient::ensure_bullet_token(const std::string& web_service_t
     }
     source_web_token_ = web_service_token;
     bullet_token_ = bullet;
-    language_ = json.string("lang", account_language);
+    language_ = json.string("lang", api_language);
     bullet_expires_at_ = now + kBulletTtl;
     return bullet_token_;
 }
