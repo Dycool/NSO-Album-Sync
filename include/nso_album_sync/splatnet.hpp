@@ -20,15 +20,14 @@ struct SplatNetPresence {
     std::string weapon_name;
     std::string rank_name;
     std::int64_t player_level = 0;
-    // This is the current weapon image returned by the authenticated player's
-    // record. Discord renders it as the supplementary small image while Coral's
-    // game artwork remains the large image.
+    // Short public mirror URL for the current weapon image. The original
+    // SplatNet image URL is a long signed CDN URL that exceeds Discord Social
+    // SDK's 300-character activity-asset limit.
     std::string stage_image_uri;
     bool active = false;
 
     std::string format_details() const {
-        std::string details;
-        if (!player_name.empty()) details = "Player: " + player_name;
+        std::string details = player_name;
         if (!title.empty()) {
             if (!details.empty()) details += " • ";
             details += title;
