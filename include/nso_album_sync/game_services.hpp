@@ -61,8 +61,8 @@ struct Splatoon2Presence {
     std::string rank_name;
     std::int64_t player_level = 0;
     std::int64_t star_rank = 0;
-    // Kept for the existing RPC asset handoff; this is the player's current
-    // weapon image, never a stage inferred from completed battle history.
+    // The player's current weapon image is a supplementary small RPC image;
+    // Coral's Splatoon 2 artwork remains the large image.
     std::string stage_image_uri;
     bool active = false;
 
@@ -81,7 +81,6 @@ struct Splatoon2Presence {
     }
 
     std::string format_details() const {
-        if (!weapon_name.empty()) return "Weapon: " + weapon_name;
         return player_name.empty() ? std::string{} : "Player: " + player_name;
     }
 };
