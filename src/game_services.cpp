@@ -226,9 +226,14 @@ std::string rank_value(const Json& player, const char* key, const char* short_na
     auto name = rank->string("name");
     if (name.empty()) return {};
     if (name == "S+") {
-        auto number = rank->integer("s_plus_number", -1);
-        if (number < 0) number = rank->integer("number", -1);
-        if (number >= 0) name += std::to_string(number);
+        // SplatNet's `number` is an internal rank code (X can report 128), not
+        // the visible S+ suffix. Only append the dedicated S+ value when the
+        // response actually supplies it; otherwise "S+" is the truthful value.
+        const auto* s_plus_number = rank->find("s_plus_number");
+        if (s_plus_number && s_plus_number->is_number()) {
+            const auto number = s_plus_number->as_i64();
+            if (number >= 0) name += std::to_string(number);
+        }
     }
     return std::string(short_name) + " " + name;
 }
