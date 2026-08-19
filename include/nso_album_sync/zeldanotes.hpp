@@ -2,10 +2,14 @@
 
 #include "nso_album_sync/http.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
+#include <thread>
 
 namespace nso {
 
@@ -56,12 +60,11 @@ struct ZeldaNotesLiveState {
 };
 
 // One decoded message from Zelda Notes' continuous-connection SSE stream.
-// `received_at` belongs to the wire message itself so the future live-session
-// coordinator can reproduce Nintendo's 30-second "any message" watchdog. A
-// map_sync_player_info message additionally sets updates_live_state and carries
-// the current synchronized/unsynchronized player state.
+// Unknown message types can still be valid because Nintendo may request an ACK
+// or attach a gameSessionId to messages unrelated to Rich Presence.
 struct ZeldaNotesLiveMessage {
     ZeldaNotesLiveMessageType type = ZeldaNotesLiveMessageType::Unknown;
+    std::string message_type;
     std::string game_session_id;
     bool needs_ack = false;
     std::string message_request_id;
@@ -71,12 +74,14 @@ struct ZeldaNotesLiveMessage {
     std::chrono::steady_clock::time_point received_at{};
 };
 
-// Human-readable location derived locally from the verified Zelda Notes map
-// data. Raw Nintendo coordinates should never be exposed directly to Discord.
+// Human-readable location derived locally from Nintendo's Zelda Notes Complete
+// Guide data. Raw Nintendo coordinates are never exposed to Discord.
 struct ZeldaNotesResolvedLocation {
     ZeldaNotesLayer layer = ZeldaNotesLayer::Unknown;
     std::string region;
     std::string poi;
+    std::int64_t poi_uid = 0;
+    double poi_distance = 0.0;
     bool valid = false;
     bool at_poi = false;
     bool near_poi = false;
@@ -145,9 +150,9 @@ bool zelda_notes_live_state_is_fresh(
         std::chrono::steady_clock::now());
 
 struct ZeldaNotesPresence {
-    // Legacy synchronous enrichment result. The live location implementation
-    // uses ZeldaNotesLiveState instead and must not freeze a location here for
-    // the rest of the play session.
+    // Keep the legacy shape because App's game-service branch already consumes
+    // this interface. Live location updates are overlaid again by Discord so the
+    // generic game name, artwork, profile image and Coral timer remain intact.
     std::string title_name;
     std::string profile_summary;
     std::string stage_image_uri;
@@ -157,34 +162,64 @@ struct ZeldaNotesPresence {
     std::string format_details() const { return profile_summary; }
 };
 
+using ZeldaNotesRpcRefreshCallback = std::function<void()>;
+
+// Discord supplies the latest Coral title immediately after the one-shot Zelda
+// bootstrap. This lets the Zelda client choose BOTW/TOTK without duplicating or
+// accelerating Coral requests. A non-Zelda/offline presence stops map sync.
+void zelda_notes_note_discord_presence(
+    const std::string& title_id,
+    const std::string& game_name,
+    bool playing);
+
+// Discord queries this just before rendering. It returns active=true only for a
+// synchronized, fresh location that could be resolved to trustworthy text.
+ZeldaNotesPresence zelda_notes_current_live_presence();
+
+// The live Zelda worker asks Discord to re-render only when the meaningful
+// details/state strings change (or when live location becomes unavailable).
+void zelda_notes_set_rpc_refresh_callback(ZeldaNotesRpcRefreshCallback callback);
+
 class ZeldaNotesClient {
 public:
-    explicit ZeldaNotesClient(HttpClient& http) : http_(http) {}
+    explicit ZeldaNotesClient(HttpClient& http);
+    ~ZeldaNotesClient();
+
+    ZeldaNotesClient(const ZeldaNotesClient&) = delete;
+    ZeldaNotesClient& operator=(const ZeldaNotesClient&) = delete;
 
     ZeldaNotesPresence fetch_presence(const std::string& web_service_token);
 
-    void set_locale(const std::string& language, const std::string& country) {
-        const auto next_language = language.empty() ? std::string("en-GB") : language;
-        const auto next_country = country.empty() ? std::string("GB") : country;
-        std::lock_guard lock(mutex_);
-        if (language_ == next_language && country_ == next_country) return;
-        language_ = next_language;
-        country_ = next_country;
-        source_web_token_.clear();
-        session_cookie_.clear();
-        session_expires_at_ = {};
-    }
-
+    void set_locale(const std::string& language, const std::string& country);
     void clear_cache();
 
+    // Internal bridge used by zelda_notes_note_discord_presence(). Public only
+    // so the process-wide single-client bridge does not need friend plumbing.
+    void set_active_game(ZeldaNotesGame game);
+    ZeldaNotesPresence live_presence() const;
+
 private:
+    bool ensure_session(const std::string& web_service_token);
+    void stop_live_session();
+    void run_live_session(ZeldaNotesGame game, std::string web_service_token);
+    void publish_live_presence(ZeldaNotesPresence presence);
+
     HttpClient& http_;
-    std::mutex mutex_;
+
+    mutable std::mutex mutex_;
     std::string language_ = "en-GB";
     std::string country_ = "GB";
     std::string source_web_token_;
     std::string session_cookie_;
     std::chrono::system_clock::time_point session_expires_at_{};
+    std::string latest_web_token_;
+
+    mutable std::mutex live_mutex_;
+    std::condition_variable live_cv_;
+    std::thread live_thread_;
+    std::atomic<bool> live_stop_{false};
+    ZeldaNotesGame live_game_ = ZeldaNotesGame::Unknown;
+    ZeldaNotesPresence live_presence_;
 };
 
 }  // namespace nso
