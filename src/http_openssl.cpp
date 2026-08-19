@@ -427,8 +427,14 @@ HttpResponse parse_response(const std::vector<unsigned char>& bytes) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         const auto separator_position = line.find(':');
         if (separator_position == std::string::npos) continue;
-        response.headers[lowercase(line.substr(0, separator_position))] =
-            trim_left(line.substr(separator_position + 1));
+        const auto name = lowercase(line.substr(0, separator_position));
+        const auto value = trim_left(line.substr(separator_position + 1));
+        const auto existing = response.headers.find(name);
+        if (name == "set-cookie" && existing != response.headers.end()) {
+            existing->second += "\n" + value;
+        } else {
+            response.headers[name] = value;
+        }
     }
     response.body.assign(separator + 4, bytes.end());
 
