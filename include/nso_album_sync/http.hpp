@@ -13,10 +13,10 @@ inline constexpr std::size_t kDefaultGetResponseLimit =
     256ULL * 1024ULL * 1024ULL;
 
 // Response headers are map-like for existing callers, but Set-Cookie is the
-// one HTTP response field that cannot be safely collapsed. Both WinHTTP and
-// the OpenSSL transport feed headers through operator[]; preserving repeated
-// Set-Cookie assignments here keeps all Nintendo web-service session cookies
-// without requiring platform-specific cookie handling.
+// one HTTP response field that cannot be safely collapsed. The OpenSSL
+// transport feeds headers through operator[]; Windows can also assign its
+// already-parsed map directly. In both cases every Nintendo session cookie is
+// retained while ordinary duplicate headers keep normal last-value semantics.
 class HttpResponseHeaders {
 public:
     using Storage = std::map<std::string, std::string>;
@@ -46,6 +46,20 @@ public:
         HttpResponseHeaders& owner_;
         std::string key_;
     };
+
+    HttpResponseHeaders() = default;
+    HttpResponseHeaders(const HttpResponseHeaders&) = default;
+    HttpResponseHeaders(HttpResponseHeaders&&) noexcept = default;
+    HttpResponseHeaders& operator=(const HttpResponseHeaders&) = default;
+    HttpResponseHeaders& operator=(HttpResponseHeaders&&) noexcept = default;
+
+    HttpResponseHeaders& operator=(Storage values) {
+        values_ = std::move(values);
+        return *this;
+    }
+
+    operator const Storage&() const { return values_; }
+    operator Storage&() { return values_; }
 
     ValueProxy operator[](std::string key) {
         return ValueProxy(*this, std::move(key));
