@@ -29,11 +29,26 @@ public:
     explicit ZeldaNotesClient(HttpClient& http) : http_(http) {}
 
     ZeldaNotesPresence fetch_presence(const std::string& web_service_token);
+
+    void set_locale(const std::string& language, const std::string& country) {
+        const auto next_language = language.empty() ? std::string("en-GB") : language;
+        const auto next_country = country.empty() ? std::string("GB") : country;
+        std::lock_guard lock(mutex_);
+        if (language_ == next_language && country_ == next_country) return;
+        language_ = next_language;
+        country_ = next_country;
+        source_web_token_.clear();
+        session_cookie_.clear();
+        session_expires_at_ = {};
+    }
+
     void clear_cache();
 
 private:
     HttpClient& http_;
     std::mutex mutex_;
+    std::string language_ = "en-GB";
+    std::string country_ = "GB";
     std::string source_web_token_;
     std::string session_cookie_;
     std::chrono::system_clock::time_point session_expires_at_{};
