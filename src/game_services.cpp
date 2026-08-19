@@ -99,8 +99,10 @@ std::vector<std::string> bootstrap_headers(const std::string& web_service_token,
 std::string rank_value(const Json& player, const char* key, const char* short_name) {
     const auto* rank = player.find(key);
     if (!rank || !rank->is_object()) return {};
+    if (rank->boolean("is_x", false)) return std::string(short_name) + " X";
     auto name = rank->string("name");
     if (name.empty()) return {};
+    if (name == "S+") name += std::to_string(rank->integer("s_plus_number", 0));
     return std::string(short_name) + " " + name;
 }
 
@@ -147,6 +149,11 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
         };
 
         const auto users_response = http_.get(std::string(kNookLinkBaseUrl) + "/api/sd/v1/users", api_headers, 10, 4 * 1024 * 1024);
+        if (users_response.status == 401 || users_response.status == 403) {
+            std::lock_guard lock(mutex_);
+            sessions_.erase("nooklink");
+            return {};
+        }
         if (users_response.status != 200) return {};
         const auto users_json = Json::parse(users_response.text());
         const auto* users = users_json.find("users");
@@ -156,30 +163,64 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(const 
         AnimalCrossingPresence presence;
         presence.resident_name = user.string("name");
         presence.image_uri = user.string("image");
+        session.user_id = user.string("id");
+        std::string land_id;
         if (const auto* land = user.find("land"); land && land->is_object()) {
             presence.island_name = land->string("name");
-            session.user_id = user.string("id");
-            const auto land_id = land->string("id");
+            land_id = land->string("id");
+        }
 
-            if (!session.user_id.empty() && session.auth_token.empty()) {
-                const Json auth_body(Json::object{{"userId", session.user_id}});
-                auto auth_headers = api_headers;
-                auth_headers.push_back("Content-Type: application/json");
-                const auto auth_response = http_.post(std::string(kNookLinkBaseUrl) + "/api/sd/v1/auth_token", auth_body.dump(), auth_headers, "application/json", 10);
-                if (auth_response.status == 200) {
-                    const auto auth_json = Json::parse(auth_response.text());
-                    session.auth_token = auth_json.string("token");
-                }
+        if (!session.user_id.empty() && session.auth_token.empty()) {
+            const Json auth_body(Json::object{{"userId", session.user_id}});
+            auto auth_headers = api_headers;
+            auth_headers.push_back("Content-Type: application/json");
+            const auto auth_response = http_.post(std::string(kNookLinkBaseUrl) + "/api/sd/v1/auth_token", auth_body.dump(), auth_headers, "application/json", 10);
+            if (auth_response.status == 401 || auth_response.status == 403) {
+                std::lock_guard lock(mutex_);
+                sessions_.erase("nooklink");
+                return {};
+            }
+            if (auth_response.status / 100 == 2) {
+                const auto auth_json = Json::parse(auth_response.text());
+                session.auth_token = auth_json.string("token");
+            }
+        }
+
+        if (!session.user_id.empty() && !session.auth_token.empty()) {
+            auto profile_headers = api_headers;
+            profile_headers.push_back("Authorization: Bearer " + session.auth_token);
+
+            const auto user_profile_response = http_.get(
+                std::string(kNookLinkBaseUrl) + "/api/sd/v1/users/" + session.user_id + "/profile?language=" + kLanguage,
+                profile_headers, 10, 4 * 1024 * 1024);
+            if (user_profile_response.status == 401 || user_profile_response.status == 403) {
+                std::lock_guard lock(mutex_);
+                sessions_.erase("nooklink");
+                return {};
+            }
+            if (user_profile_response.status == 200) {
+                const auto profile_json = Json::parse(user_profile_response.text());
+                const auto resident_name = profile_json.string("mPNm");
+                if (!resident_name.empty()) presence.resident_name = resident_name;
+                const auto island_name = profile_json.string("landName");
+                if (!island_name.empty()) presence.island_name = island_name;
+                const auto image = profile_json.string("mJpeg");
+                if (!image.empty()) presence.image_uri = image;
             }
 
-            if (!land_id.empty() && !session.auth_token.empty()) {
-                auto profile_headers = api_headers;
-                profile_headers.push_back("Authorization: Bearer " + session.auth_token);
+            if (!land_id.empty()) {
                 const auto island_response = http_.get(
                     std::string(kNookLinkBaseUrl) + "/api/sd/v1/lands/" + land_id + "/profile?language=" + kLanguage,
                     profile_headers, 10, 4 * 1024 * 1024);
+                if (island_response.status == 401 || island_response.status == 403) {
+                    std::lock_guard lock(mutex_);
+                    sessions_.erase("nooklink");
+                    return {};
+                }
                 if (island_response.status == 200) {
                     const auto island_json = Json::parse(island_response.text());
+                    const auto island_name = island_json.string("mVNm");
+                    if (!island_name.empty()) presence.island_name = island_name;
                     if (const auto* fruit = island_json.find("mFruit"); fruit && fruit->is_object()) {
                         presence.native_fruit = fruit->string("name");
                     }
@@ -267,7 +308,7 @@ Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(const std::string
         };
         const auto response = http_.get(std::string(kSplatNet2BaseUrl) + "/api/records", headers, 10, 8 * 1024 * 1024);
         if (response.status != 200) {
-            if (response.status == 401) {
+            if (response.status == 401 || response.status == 403) {
                 std::lock_guard lock(mutex_);
                 sessions_.erase("splatnet2");
             }
