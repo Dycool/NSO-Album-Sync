@@ -19,7 +19,10 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    // Zelda Notes can request a Rich Presence redraw from its live SSE thread.
+    // A shared implementation lets that callback hold only a weak_ptr, so a
+    // late network callback can never dereference a destroyed DiscordPresence.
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace nso
