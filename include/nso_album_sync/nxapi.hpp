@@ -21,15 +21,10 @@ struct FAttestation {
 
 class NxapiClient {
 public:
-    // The second argument is retained only so older App construction code and
-    // config files remain source-compatible during the migration. It is ignored:
-    // NSO Album Sync no longer authenticates directly to nxapi-auth.
     NxapiClient(
         HttpClient& http,
-        std::string legacy_client_id,
+        std::string client_id,
         std::filesystem::path cache_file);
-
-    void bind_nintendo_auth(NintendoAuthManager& auth);
 
     std::string nso_version();
 
@@ -56,47 +51,43 @@ public:
 
     std::string decrypt_response(const std::vector<unsigned char>& body);
 
-    // Clears the short-lived native Worker broker credential. nxapi OAuth
-    // access/refresh tokens never exist in this process anymore.
+    // nxapi-auth access/refresh tokens are intentionally memory-only. The
+    // public API terms say these credentials should not be persisted and may
+    // only be used by a single Coral user.
     void clear_user_auth();
 
 private:
     using Clock = std::chrono::system_clock;
 
     HttpClient& http_;
-    NintendoAuthManager* nintendo_auth_ = nullptr;
+    std::string client_id_;
     std::filesystem::path cache_file_;
 
-    // All nxapi operations stay serialized, preserving the existing request
-    // ordering and avoiding duplicate attestation work.
     std::recursive_mutex request_mutex_;
     std::mutex auth_mutex_;
     std::mutex auth_request_mutex_;
     std::atomic<std::uint64_t> auth_generation_{0};
 
-    std::string native_client_id_;
-    std::string broker_token_;
-    Clock::time_point broker_expiry_{};
-
     std::string version_;
+    std::string auth_token_;
+    std::string refresh_token_;
+
     Clock::time_point version_expiry_{};
+    Clock::time_point auth_expiry_{};
     Clock::time_point rate_limit_until_{};
 
-    std::string nintendo_access_token();
-    std::string ensure_broker_token();
-    bool is_broker_auth_failure(const HttpResponse& response) const;
-
+    std::string auth_token();
     void throw_if_rate_limited() const;
     void apply_rate_limit_response(const HttpResponse& response);
     void load_cache();
     void save_cache() const;
 
-    HttpResponse worker_request(
+    HttpResponse znca_request(
         const std::string& method,
         const std::string& path,
         const std::string& body,
         const std::string& accept,
-        bool allow_broker_retry = true);
+        const std::vector<std::string>& extra_headers = {});
 };
 
 }  // namespace nso

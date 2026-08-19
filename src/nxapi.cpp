@@ -1,7 +1,6 @@
 #include "nso_album_sync/nxapi.hpp"
 
 #include "nso_album_sync/json.hpp"
-#include "nso_album_sync/secure_store.hpp"
 #include "nso_album_sync/util.hpp"
 
 #include <algorithm>
@@ -10,10 +9,9 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <map>
 #include <sstream>
 #include <stdexcept>
-#include <string>
-#include <utility>
 
 #ifdef _WIN32
 #include "nso_album_sync/windows_compat.hpp"
@@ -24,27 +22,26 @@
 namespace nso {
 namespace {
 
-constexpr char kWorkerBaseUrl[] =
-    "https://nso-worker-backend.diogoenes0.workers.dev";
-constexpr char kNativeSessionStartPath[] = "/api/nso/native/session/start";
-constexpr char kNativeSessionReleasePath[] = "/api/nso/native/session/release";
-constexpr char kNativeNxapiConfigPath[] = "/api/nso/native/nxapi/config";
-constexpr char kNativeNxapiFPath[] = "/api/nso/native/nxapi/f";
-constexpr char kNativeNxapiEncryptPath[] = "/api/nso/native/nxapi/encrypt-request";
-constexpr char kNativeNxapiDecryptPath[] = "/api/nso/native/nxapi/decrypt-response";
-constexpr char kNintendoSecureStoreAccount[] = "NintendoAccount";
+constexpr char kZncaBaseUrl[] =
+    "https://nxapi-znca-api.fancy.org.uk/api/znca";
+constexpr char kNxapiAuthUrl[] =
+    "https://nxapi-auth.fancy.org.uk/api/oauth/token";
 constexpr char kUserAgent[] =
     "nso-album-sync/2.0.0 (+https://github.com/Dycool/NSO-Album-Sync)";
+constexpr char kZncaClientVersion[] = "w8zSLBsxR7rVoGJA";
 constexpr char kCoralLoginUrl[] =
     "https://api-lp1.znc.srv.nintendo.net/v4/Account/Login";
 
 constexpr auto kVersionCacheLifetime = std::chrono::hours(6);
 constexpr auto kVersionRetryLifetime = std::chrono::minutes(15);
 constexpr auto kDefaultRateLimitBackoff = std::chrono::minutes(15);
-constexpr auto kBrokerSafetyMargin = std::chrono::seconds(30);
 
-std::string worker_url(const char* path) {
-    return std::string(kWorkerBaseUrl) + path;
+std::vector<std::string> znca_headers(const std::string& nso_version) {
+    return {
+        "X-znca-Platform: Android",
+        "X-znca-Version: " + nso_version,
+        std::string("X-znca-Client-Version: ") + kZncaClientVersion,
+    };
 }
 
 std::int64_t epoch_seconds(std::chrono::system_clock::time_point value) {
@@ -55,38 +52,6 @@ std::int64_t epoch_seconds(std::chrono::system_clock::time_point value) {
 
 std::chrono::system_clock::time_point time_from_epoch(std::int64_t value) {
     return std::chrono::system_clock::time_point(std::chrono::seconds(value));
-}
-
-std::chrono::system_clock::time_point broker_expiry_from_json(const Json& json) {
-    const auto expires_at = json.integer("expiresAt");
-    if (expires_at > 100000000000LL) {
-        return std::chrono::system_clock::time_point(
-            std::chrono::milliseconds(expires_at));
-    }
-    if (expires_at > 1000000000LL) {
-        return time_from_epoch(expires_at);
-    }
-
-    const auto expires_in = std::max<std::int64_t>(
-        60, json.integer("expiresIn", 7200));
-    return std::chrono::system_clock::now() + std::chrono::seconds(expires_in);
-}
-
-std::string response_error(
-    const HttpResponse& response,
-    const std::string& label) {
-    std::string message = label + " (HTTP " + std::to_string(response.status) + ")";
-    try {
-        const auto json = Json::parse(response.text());
-        auto detail = json.string("error_description");
-        if (detail.empty()) detail = json.string("error_message");
-        if (detail.empty()) detail = json.string("error");
-        if (!detail.empty()) message += ": " + detail;
-    } catch (...) {
-        // Never append an arbitrary upstream/body dump here. The Worker owns
-        // confidential nxapi credentials and client errors must stay sanitized.
-    }
-    return message;
 }
 
 void replace_cache_file(
@@ -142,21 +107,12 @@ std::chrono::seconds retry_after_delay(const std::string& value) {
 
 NxapiClient::NxapiClient(
     HttpClient& http,
-    std::string legacy_client_id,
+    std::string client_id,
     std::filesystem::path cache_file)
     : http_(http),
-      cache_file_(std::move(cache_file)),
-      native_client_id_("desktop_" + base64url(random_bytes(18))) {
-    // Public nxapi-auth client IDs are deliberately ignored. Authentication is
-    // now performed by the confidential Cloudflare Worker and no nxapi OAuth
-    // bearer/refresh token is ever returned to this desktop process.
-    (void)legacy_client_id;
+      client_id_(std::move(client_id)),
+      cache_file_(std::move(cache_file)) {
     load_cache();
-}
-
-void NxapiClient::bind_nintendo_auth(NintendoAuthManager& auth) {
-    std::lock_guard lock(auth_mutex_);
-    nintendo_auth_ = &auth;
 }
 
 void NxapiClient::load_cache() {
@@ -204,133 +160,16 @@ void NxapiClient::save_cache() const {
 #endif
     } catch (...) {
         // Cache persistence is an optimisation; never break login because disk
-        // cache storage is unavailable. Only non-secret version/backoff state is
-        // written here.
+        // cache storage is unavailable.
     }
-}
-
-std::string NxapiClient::nintendo_access_token() {
-    NintendoAuthManager* auth = nullptr;
-    {
-        std::lock_guard lock(auth_mutex_);
-        auth = nintendo_auth_;
-    }
-    if (auth == nullptr) {
-        throw std::runtime_error(
-            "Nintendo authentication is not bound to the NSO backend client");
-    }
-
-    auto access_token = auth->cached_access_token();
-    if (!access_token.empty()) return access_token;
-
-    // During a normal fresh sign-in the auth manager remembers the Nintendo
-    // session token in memory. On a restored sign-in, retrieve the same token
-    // from the platform secure store. It is never copied to nxapi-cache.json.
-    auto session_token = auth->cached_session_token();
-    if (session_token.empty()) {
-        if (const auto stored = SecureStore::get(kNintendoSecureStoreAccount)) {
-            session_token = *stored;
-        }
-    }
-    if (session_token.empty()) {
-        throw std::runtime_error(
-            "Nintendo Account session is unavailable for NSO backend authentication");
-    }
-
-    const auto tokens = auth->exchange_session_token(session_token);
-    if (tokens.access_token.empty()) {
-        throw std::runtime_error(
-            "Nintendo Account token exchange returned no access token");
-    }
-    return tokens.access_token;
-}
-
-std::string NxapiClient::ensure_broker_token() {
-    std::lock_guard request_lock(auth_request_mutex_);
-    const auto generation = auth_generation_.load();
-    const auto now = Clock::now();
-
-    {
-        std::lock_guard state_lock(auth_mutex_);
-        if (!broker_token_.empty() && now + kBrokerSafetyMargin < broker_expiry_) {
-            return broker_token_;
-        }
-    }
-
-    const auto access_token = nintendo_access_token();
-    const Json payload(Json::object{
-        {"nintendoAccessToken", access_token},
-        {"clientId", native_client_id_},
-    });
-
-    const auto response = http_.post(
-        worker_url(kNativeSessionStartPath),
-        payload.dump(),
-        {
-            "Accept: application/json",
-            "Cache-Control: no-store",
-            std::string("User-Agent: ") + kUserAgent,
-        },
-        "application/json",
-        20);
-
-    if (response.status / 100 != 2) {
-        if (response.status == 429) apply_rate_limit_response(response);
-        throw std::runtime_error(response_error(
-            response, "NSO backend native session start failed"));
-    }
-
-    const auto json = Json::parse(response.text());
-    const auto broker_token = json.string("brokerToken");
-    if (broker_token.empty()) {
-        throw std::runtime_error(
-            "NSO backend native session response is missing brokerToken");
-    }
-    const auto broker_expiry = broker_expiry_from_json(json);
-
-    if (auth_generation_.load() != generation) {
-        throw std::runtime_error("NSO backend authentication cancelled");
-    }
-    {
-        std::lock_guard state_lock(auth_mutex_);
-        if (auth_generation_.load() != generation) {
-            throw std::runtime_error("NSO backend authentication cancelled");
-        }
-        broker_token_ = broker_token;
-        broker_expiry_ = broker_expiry;
-    }
-    return broker_token;
 }
 
 void NxapiClient::clear_user_auth() {
     auth_generation_.fetch_add(1);
-
-    std::string broker_token;
-    {
-        std::lock_guard lock(auth_mutex_);
-        broker_token.swap(broker_token_);
-        broker_expiry_ = {};
-    }
-
-    // Best-effort server cleanup. Local invalidation happens first, so sign-out
-    // is complete even if the Worker is unreachable. The broker credential is
-    // short-lived and remains account-bound server-side.
-    if (!broker_token.empty()) {
-        try {
-            const Json payload(Json::object{{"clientId", native_client_id_}});
-            (void)http_.post(
-                worker_url(kNativeSessionReleasePath),
-                payload.dump(),
-                {
-                    "Accept: application/json",
-                    "Authorization: Bearer " + broker_token,
-                    std::string("User-Agent: ") + kUserAgent,
-                },
-                "application/json",
-                5);
-        } catch (...) {
-        }
-    }
+    std::lock_guard lock(auth_mutex_);
+    auth_token_.clear();
+    refresh_token_.clear();
+    auth_expiry_ = {};
 }
 
 void NxapiClient::throw_if_rate_limited() const {
@@ -341,10 +180,16 @@ void NxapiClient::throw_if_rate_limited() const {
 }
 
 void NxapiClient::apply_rate_limit_response(const HttpResponse& response) {
+    if (response.status == 401) {
+        // Do not retry automatically. Forget the rejected in-memory bearer
+        // token so the next independent user action can obtain a new one.
+        clear_user_auth();
+    }
+
     if (response.status == 406) {
         // The cached Nintendo Switch Online version is explicitly unsupported.
         // Do not retry this request; force the next independent action to fetch
-        // config instead of repeatedly sending a known-bad version.
+        // /config instead of repeatedly sending a known-bad version.
         version_.clear();
         version_expiry_ = {};
         save_cache();
@@ -363,67 +208,124 @@ void NxapiClient::apply_rate_limit_response(const HttpResponse& response) {
     save_cache();
 }
 
-bool NxapiClient::is_broker_auth_failure(const HttpResponse& response) const {
-    if (response.status != 401) return false;
-    try {
-        const auto error = Json::parse(response.text()).string("error");
-        return error == "broker_session_missing" ||
-               error == "native_broker_missing" ||
-               error == "native_broker_invalid" ||
-               error == "native_broker_expired" ||
-               error == "native_session_missing" ||
-               error == "native_session_expired" ||
-               error == "invalid_native_broker";
-    } catch (...) {
-        return false;
+std::string NxapiClient::auth_token() {
+    // Serialize token acquisition/refresh, but never hold the small state mutex
+    // across network I/O. Signing out must be able to invalidate credentials
+    // immediately even if nxapi-auth is slow or unavailable.
+    std::lock_guard request_lock(auth_request_mutex_);
+    const auto generation = auth_generation_.load();
+    const auto now = Clock::now();
+
+    std::string refresh_token;
+    {
+        std::lock_guard state_lock(auth_mutex_);
+        if (!auth_token_.empty() && now < auth_expiry_) return auth_token_;
+        refresh_token = refresh_token_;
     }
+
+    const auto request_token = [&](const std::string& grant_type,
+                                   const std::string& token_to_refresh) {
+        std::map<std::string, std::string> fields{
+            {"grant_type", grant_type},
+            {"client_id", client_id_},
+            {"scope", "ca:gf ca:er ca:dr"},
+        };
+        if (!token_to_refresh.empty()) fields["refresh_token"] = token_to_refresh;
+        auto response = http_.post(
+            kNxapiAuthUrl,
+            HttpClient::form_encode(fields),
+            {
+                "Accept: application/json",
+                std::string("User-Agent: ") + kUserAgent,
+            },
+            "application/x-www-form-urlencoded");
+        // The auth service can rate-limit too. Never retry it automatically;
+        // persist any Retry-After so a restart cannot bypass the backoff.
+        apply_rate_limit_response(response);
+        return response;
+    };
+
+    HttpResponse response;
+    if (!refresh_token.empty()) {
+        response = request_token("refresh_token", refresh_token);
+        if (response.status / 100 != 2) {
+            std::string error_code;
+            try {
+                error_code = Json::parse(response.text()).string("error");
+            } catch (...) {
+            }
+            if (error_code != "invalid_grant") {
+                throw std::runtime_error(
+                    "nxapi-auth refresh failed: " + response.text());
+            }
+            refresh_token.clear();
+            std::lock_guard state_lock(auth_mutex_);
+            if (auth_generation_.load() == generation) refresh_token_.clear();
+        }
+    }
+
+    if (refresh_token.empty() || response.status / 100 != 2) {
+        response = request_token("client_credentials", "");
+    }
+    if (response.status / 100 != 2) {
+        throw std::runtime_error(
+            "nxapi-auth token request failed: " + response.text());
+    }
+
+    const auto json = Json::parse(response.text());
+    const auto access_token = json.string("access_token");
+    const auto new_refresh_token = json.string("refresh_token", refresh_token);
+    if (access_token.empty()) {
+        throw std::runtime_error("nxapi-auth response missing access_token");
+    }
+    const auto expires_in = json.integer("expires_in", 300);
+
+    if (auth_generation_.load() != generation) {
+        throw std::runtime_error("nxapi authentication cancelled");
+    }
+    {
+        std::lock_guard state_lock(auth_mutex_);
+        if (auth_generation_.load() != generation) {
+            throw std::runtime_error("nxapi authentication cancelled");
+        }
+        auth_token_ = access_token;
+        refresh_token_ = new_refresh_token;
+        // Public API terms require caching this token for its full validity
+        // period. Measure from receipt rather than request start.
+        auth_expiry_ = Clock::now() + std::chrono::seconds(
+            std::max<std::int64_t>(1, expires_in));
+    }
+    return access_token;
 }
 
-HttpResponse NxapiClient::worker_request(
+HttpResponse NxapiClient::znca_request(
     const std::string& method,
     const std::string& path,
     const std::string& body,
     const std::string& accept,
-    bool allow_broker_retry) {
-    // Preserve the old client's one-at-a-time behavior. This is especially
-    // important for /f because an ambiguous duplicate request can spend a
-    // user's attestation allowance twice.
+    const std::vector<std::string>& extra_headers) {
+    // Serialize all requests. The public API requires at most one concurrent
+    // automated request, and serialising interactive work as well avoids bursts.
     std::lock_guard lock(request_mutex_);
     throw_if_rate_limited();
 
-    const auto perform = [&](const std::string& broker_token) {
-        std::vector<std::string> headers{
-            "Accept: " + accept,
-            "Authorization: Bearer " + broker_token,
-            "X-NSO-Native-Client-Id: " + native_client_id_,
-            std::string("User-Agent: ") + kUserAgent,
-        };
-        return http_.request(
-            method,
-            std::string(kWorkerBaseUrl) + path,
-            headers,
-            std::vector<unsigned char>(body.begin(), body.end()),
-            body.empty() ? "" : "application/json",
-            30);
+    std::vector<std::string> headers{
+        "Accept: " + accept,
+        std::string("User-Agent: ") + kUserAgent,
     };
-
-    auto broker_token = ensure_broker_token();
-    auto response = perform(broker_token);
-
-    // Retry only when the Worker explicitly rejected the native broker before
-    // touching nxapi. Never retry an upstream /f failure or a generic 401.
-    if (allow_broker_retry && is_broker_auth_failure(response)) {
-        {
-            std::lock_guard state_lock(auth_mutex_);
-            if (broker_token_ == broker_token) {
-                broker_token_.clear();
-                broker_expiry_ = {};
-            }
-        }
-        broker_token = ensure_broker_token();
-        response = perform(broker_token);
+    const auto bearer_token = auth_token();
+    if (!bearer_token.empty()) {
+        headers.push_back("Authorization: Bearer " + bearer_token);
     }
+    headers.insert(headers.end(), extra_headers.begin(), extra_headers.end());
 
+    const auto response = http_.request(
+        method,
+        std::string(kZncaBaseUrl) + path,
+        headers,
+        std::vector<unsigned char>(body.begin(), body.end()),
+        body.empty() ? "" : "application/json",
+        30);
     apply_rate_limit_response(response);
     return response;
 }
@@ -433,16 +335,9 @@ std::string NxapiClient::nso_version() {
     const auto now = Clock::now();
     if (!version_.empty() && now < version_expiry_) return version_;
 
-    const auto response = worker_request(
-        "GET", kNativeNxapiConfigPath, "", "application/json");
+    const auto response = znca_request("GET", "/config", "", "application/json");
     if (response.status / 100 == 2) {
-        const auto json = Json::parse(response.text());
-        auto supported_version = json.string("nso_version");
-        if (supported_version.empty()) {
-            if (const auto* config = json.find("config")) {
-                supported_version = config->string("nso_version");
-            }
-        }
+        const auto supported_version = Json::parse(response.text()).string("nso_version");
         if (!supported_version.empty()) {
             version_ = supported_version;
             version_expiry_ = now + kVersionCacheLifetime;
@@ -456,8 +351,8 @@ std::string NxapiClient::nso_version() {
         save_cache();
         return version_;
     }
-    throw std::runtime_error(response_error(
-        response, "Could not retrieve supported NSO version from NSO backend"));
+    throw std::runtime_error(
+        "Could not retrieve supported NSO version from nxapi /config");
 }
 
 std::vector<unsigned char> NxapiClient::encrypted_login_body(
@@ -465,10 +360,11 @@ std::vector<unsigned char> NxapiClient::encrypted_login_body(
     const UserProfile& profile) {
     const auto version = nso_version();
 
-    // /f output is request-specific. The Worker owns nxapi OAuth credentials,
-    // while only the operation result needed for Coral login returns here.
+    // `/f` output is request-specific (it includes the request timestamp/id and
+    // encrypted login body), so it must not be reused as a long-lived token.
+    // The reusable credential is the Coral access token returned by Account/Login;
+    // CoralClient persists that credential for its server-provided lifetime.
     const Json payload(Json::object{
-        {"zncaVersion", version},
         {"token", id_token},
         {"hash_method", "1"},
         {"na_id", profile.id},
@@ -488,17 +384,15 @@ std::vector<unsigned char> NxapiClient::encrypted_login_body(
          }},
     });
 
-    const auto response = worker_request(
-        "POST", kNativeNxapiFPath, payload.dump(), "application/json");
+    const auto response = znca_request(
+        "POST", "/f", payload.dump(), "application/json", znca_headers(version));
     if (response.status / 100 != 2) {
-        throw std::runtime_error(response_error(
-            response, "NSO backend nxapi /f failed"));
+        throw std::runtime_error("nxapi /f failed: " + response.text());
     }
     const auto encrypted =
         Json::parse(response.text()).string("encrypted_token_request");
     if (encrypted.empty()) {
-        throw std::runtime_error(
-            "NSO backend nxapi /f response is missing encrypted_token_request");
+        throw std::runtime_error("nxapi /f missing encrypted_token_request");
     }
     return base64_decode(encrypted);
 }
@@ -510,28 +404,24 @@ FAttestation NxapiClient::generate_f(
     const std::string& coral_user_id) {
     const auto version = nso_version();
     const Json payload(Json::object{
-        {"zncaVersion", version},
         {"hash_method", std::to_string(hash_method)},
         {"token", token},
         {"na_id", na_id},
         {"coral_user_id", coral_user_id},
     });
 
-    const auto response = worker_request(
-        "POST", kNativeNxapiFPath, payload.dump(), "application/json");
+    const auto response = znca_request(
+        "POST", "/f", payload.dump(), "application/json", znca_headers(version));
     if (response.status / 100 != 2) {
-        throw std::runtime_error(response_error(
-            response, "NSO backend nxapi /f failed"));
+        throw std::runtime_error("nxapi /f failed: " + response.text());
     }
     const auto json = Json::parse(response.text());
     FAttestation attestation;
     attestation.f = json.string("f");
     attestation.request_id = json.string("request_id");
     attestation.timestamp = json.integer("timestamp");
-    if (attestation.f.empty() || attestation.request_id.empty() ||
-        attestation.timestamp == 0) {
-        throw std::runtime_error(
-            "NSO backend nxapi /f returned incomplete attestation");
+    if (attestation.f.empty() || attestation.request_id.empty() || attestation.timestamp == 0) {
+        throw std::runtime_error("nxapi /f returned incomplete attestation: " + response.text());
     }
     return attestation;
 }
@@ -544,7 +434,6 @@ std::vector<unsigned char> NxapiClient::encrypted_web_service_token_body(
     const auto version = nso_version();
 
     const Json payload(Json::object{
-        {"zncaVersion", version},
         {"token", coral_access_token},
         {"hash_method", "2"},
         {"na_id", na_id},
@@ -563,17 +452,17 @@ std::vector<unsigned char> NxapiClient::encrypted_web_service_token_body(
          }},
     });
 
-    const auto response = worker_request(
-        "POST", kNativeNxapiFPath, payload.dump(), "application/json");
+    const auto response = znca_request(
+        "POST", "/f", payload.dump(), "application/json", znca_headers(version));
     if (response.status / 100 != 2) {
-        throw std::runtime_error(response_error(
-            response, "NSO backend nxapi /f (hash_method 2) failed"));
+        throw std::runtime_error(
+            "nxapi /f (hash_method 2) failed: " + response.text());
     }
     const auto encrypted =
         Json::parse(response.text()).string("encrypted_token_request");
     if (encrypted.empty()) {
         throw std::runtime_error(
-            "NSO backend nxapi /f (hash_method 2) response is missing encrypted_token_request");
+            "nxapi /f (hash_method 2) missing encrypted_token_request");
     }
     return base64_decode(encrypted);
 }
@@ -584,21 +473,20 @@ std::vector<unsigned char> NxapiClient::encrypt_request(
     const std::string& json) {
     const auto version = nso_version();
     const Json payload(Json::object{
-        {"zncaVersion", version},
         {"url", url},
         {"token", coral_token},
         {"data", json},
     });
-    const auto response = worker_request(
-        "POST", kNativeNxapiEncryptPath, payload.dump(), "application/json");
+    const auto response = znca_request(
+        "POST", "/encrypt-request", payload.dump(), "application/json",
+        znca_headers(version));
     if (response.status / 100 != 2) {
-        throw std::runtime_error(response_error(
-            response, "NSO backend nxapi /encrypt-request failed"));
+        throw std::runtime_error(
+            "nxapi /encrypt-request failed: " + response.text());
     }
     const auto encrypted = Json::parse(response.text()).string("data");
     if (encrypted.empty()) {
-        throw std::runtime_error(
-            "NSO backend nxapi /encrypt-request response is missing data");
+        throw std::runtime_error("nxapi /encrypt-request missing data");
     }
     return base64_decode(encrypted);
 }
@@ -606,15 +494,13 @@ std::vector<unsigned char> NxapiClient::encrypt_request(
 std::string NxapiClient::decrypt_response(
     const std::vector<unsigned char>& body) {
     const auto version = nso_version();
-    const Json payload(Json::object{
-        {"zncaVersion", version},
-        {"data", base64_encode(body)},
-    });
-    const auto response = worker_request(
-        "POST", kNativeNxapiDecryptPath, payload.dump(), "text/plain");
+    const Json payload(Json::object{{"data", base64_encode(body)}});
+    const auto response = znca_request(
+        "POST", "/decrypt-response", payload.dump(), "text/plain",
+        znca_headers(version));
     if (response.status / 100 != 2) {
-        throw std::runtime_error(response_error(
-            response, "NSO backend nxapi /decrypt-response failed"));
+        throw std::runtime_error(
+            "nxapi /decrypt-response failed: " + response.text());
     }
     return response.text();
 }

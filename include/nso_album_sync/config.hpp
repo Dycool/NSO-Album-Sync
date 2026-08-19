@@ -26,11 +26,7 @@ struct AppConfig {
     std::string last_sync = "Never";
 
     std::string proxy_url;
-    // Legacy compatibility only. Older config files may still contain an
-    // nxapi-auth public client ID, but the desktop app no longer uses it for
-    // authentication. New installs persist this field as empty until the
-    // config migration can remove the legacy key entirely.
-    std::string nxapi_auth_client_id;
+    std::string nxapi_auth_client_id = "eJ8TDme0c-Z4czx5SvZabA";
     std::uint64_t discord_application_id = kDiscordApplicationId;
 };
 

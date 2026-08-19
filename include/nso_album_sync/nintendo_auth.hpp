@@ -39,27 +39,6 @@ public:
     UserProfile fetch_profile(const std::string& access_token);
     void clear_cached_tokens();
 
-    // The Worker broker only needs a short-lived Nintendo access token to bind
-    // the desktop process to the signed-in Nintendo Account. Reuse the token
-    // already obtained during normal sign-in whenever it is still safely valid.
-    std::string cached_access_token() {
-        std::lock_guard lock(token_cache_mutex_);
-        if (cached_tokens_.access_token.empty()) return {};
-        if (std::chrono::steady_clock::now() + std::chrono::seconds(10) >=
-            cached_token_expiry_) {
-            return {};
-        }
-        return cached_tokens_.access_token;
-    }
-
-    // Kept memory-only. This lets the Worker broker refresh a Nintendo access
-    // token later in the same process even when the platform secure store is
-    // unavailable and the app is running with a volatile sign-in.
-    std::string cached_session_token() {
-        std::lock_guard lock(token_cache_mutex_);
-        return cached_session_token_;
-    }
-
 private:
     using Clock = std::chrono::steady_clock;
 
