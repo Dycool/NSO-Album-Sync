@@ -31,13 +31,13 @@ struct AnimalCrossingPresence {
 
     std::string format_state() const {
         if (island_name.empty()) return {};
-        std::string state = "Island: " + island_name;
+        std::string state = island_name;
         if (!native_fruit.empty()) state += " • " + native_fruit;
         return state;
     }
 
     std::string format_details() const {
-        return resident_name.empty() ? std::string{} : "Resident: " + resident_name;
+        return resident_name;
     }
 };
 
