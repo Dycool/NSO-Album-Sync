@@ -91,7 +91,6 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
     if (web_service_token.empty()) return {};
 
     try {
-        std::string cookie;
         std::string language;
         std::string country;
         {
@@ -100,50 +99,37 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(const std::string& web_servi
             country = country_;
             if (source_web_token_ == web_service_token && !session_cookie_.empty() &&
                 std::chrono::system_clock::now() < session_expires_at_) {
-                cookie = session_cookie_;
+                // Zelda Notes has no verified structured self-presence endpoint
+                // yet. Once the session has been proven, do not keep reloading a
+                // page every Discord poll just to rediscover the same cookie.
+                return {};
             }
         }
 
         const auto locale_query = "?lang=" + language + "&na_country=" + country +
             "&na_lang=" + language;
-        if (cookie.empty()) {
-            const auto bootstrap = http_.get(
-                std::string(kBaseUrl) + "/" + locale_query,
-                bootstrap_headers(web_service_token, language, country),
-                10,
-                8 * 1024 * 1024);
-            if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
-            cookie = session_cookie(bootstrap);
-            if (cookie.empty()) return {};
-            std::lock_guard lock(mutex_);
-            if (language_ != language || country_ != country) return {};
-            source_web_token_ = web_service_token;
-            session_cookie_ = cookie;
-            session_expires_at_ = std::chrono::system_clock::now() + kSessionTtl;
-        }
 
-        // Match the working backend WebView model: the GameWebServiceToken is
-        // only needed until Nintendo issues a5_token/session state. Subsequent
-        // navigation relies on that cookie and preserves the account locale.
-        const auto page = http_.get(
+        // The working backend resolves its proxy root to /title-select before
+        // making any Nintendo request. Therefore /title-select is the actual
+        // first Nintendo navigation that receives GameWebServiceToken and
+        // establishes Zelda Notes' a5_token/session cookie.
+        const auto bootstrap = http_.get(
             std::string(kBaseUrl) + "/title-select" + locale_query,
-            {
-                std::string("User-Agent: ") + kUserAgent,
-                "Cookie: " + cookie,
-                "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language: " + language,
-                "X-NACountry: " + country,
-                "x-appplatform: android",
-                "x-appcolorscheme: DARK",
-                "X-Requested-With: com.nintendo.znca",
-            },
+            bootstrap_headers(web_service_token, language, country),
             10,
             8 * 1024 * 1024);
-        if (page.status == 401 || page.status == 403) clear_cache();
+        if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
+        const auto cookie = session_cookie(bootstrap);
+        if (cookie.empty()) return {};
 
-        // No stable structured self-presence endpoint has been verified in the
-        // references available to this app. Do not turn a valid Zelda Notes
-        // session into guessed map/location/activity text on Discord.
+        std::lock_guard lock(mutex_);
+        if (language_ != language || country_ != country) return {};
+        source_web_token_ = web_service_token;
+        session_cookie_ = cookie;
+        session_expires_at_ = std::chrono::system_clock::now() + kSessionTtl;
+
+        // A valid Zelda Notes session is useful proof that probing/auth works,
+        // but it is not evidence of Link's current map position or activity.
         return {};
     } catch (...) {
         return {};
