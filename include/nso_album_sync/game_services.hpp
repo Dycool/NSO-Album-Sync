@@ -122,6 +122,7 @@ private:
         std::string cookie;
         std::string user_id;
         std::string auth_token;
+        bool user_auth_attempted = false;
         std::chrono::system_clock::time_point expires_at{};
     };
 
