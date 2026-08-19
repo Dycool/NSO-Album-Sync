@@ -20,14 +20,20 @@ struct SplatNetPresence {
     std::string weapon_name;
     std::string rank_name;
     std::int64_t player_level = 0;
-    // Kept for the existing Discord asset handoff. This is the current weapon
-    // image returned by the authenticated player's record, not an inferred stage.
+    // This is the current weapon image returned by the authenticated player's
+    // record. Discord renders it as the supplementary small image while Coral's
+    // game artwork remains the large image.
     std::string stage_image_uri;
     bool active = false;
 
     std::string format_details() const {
-        if (!weapon_name.empty()) return "Weapon: " + weapon_name;
-        return title.empty() ? std::string{} : title;
+        std::string details;
+        if (!player_name.empty()) details = "Player: " + player_name;
+        if (!title.empty()) {
+            if (!details.empty()) details += " • ";
+            details += title;
+        }
+        return details;
     }
 
     std::string format_state() const {
@@ -35,7 +41,7 @@ struct SplatNetPresence {
         if (player_level > 0) state = "Level " + std::to_string(player_level);
         if (!rank_name.empty()) {
             if (!state.empty()) state += " • ";
-            state += rank_name;
+            state += "Rank " + rank_name;
         }
         if (state.empty() && !title.empty()) state = title;
         return state;
