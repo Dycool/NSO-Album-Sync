@@ -11,7 +11,12 @@
 
 namespace nso {
 
-inline constexpr std::uint64_t kAnimalCrossingGameServiceId = 4953919198265344ULL;
+// Coral GameWebServiceTokens are reusable by the direct game-service RPC
+// probes. Passing 0 asks CoralClient for any still-valid cached GWS token and,
+// if none exists yet, obtains the established fallback token. Keep Nintendo's
+// actual NookLink catalog ID separately for protocol/reference code.
+inline constexpr std::uint64_t kAnimalCrossingGameServiceId = 0ULL;
+inline constexpr std::uint64_t kAnimalCrossingNintendoGameServiceId = 4953919198265344ULL;
 inline constexpr std::uint64_t kSmashBrosGameServiceId = 5598642853249024ULL;
 inline constexpr std::uint64_t kSmashBrosGameServiceIdAlt = 5614999764533248ULL;
 inline constexpr std::uint64_t kSplatoon2GameServiceId = 5741031244955648ULL;
