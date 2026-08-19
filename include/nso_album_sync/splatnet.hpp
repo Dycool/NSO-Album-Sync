@@ -47,6 +47,20 @@ public:
     explicit SplatNetClient(HttpClient& http) : http_(http) {}
 
     SplatNetPresence fetch_presence(const std::string& web_service_token);
+
+    void set_locale(const std::string& language, const std::string& country) {
+        const auto next_language = language.empty() ? std::string("en-GB") : language;
+        const auto next_country = country.empty() ? std::string("GB") : country;
+        std::lock_guard lock(mutex_);
+        if (account_language_ == next_language && account_country_ == next_country) return;
+        account_language_ = next_language;
+        account_country_ = next_country;
+        source_web_token_.clear();
+        bullet_token_.clear();
+        language_ = next_language;
+        bullet_expires_at_ = {};
+    }
+
     void clear_cache();
 
 private:
@@ -54,6 +68,8 @@ private:
     std::mutex mutex_;
     std::string source_web_token_;
     std::string bullet_token_;
+    std::string account_language_ = "en-GB";
+    std::string account_country_ = "GB";
     std::string language_ = "en-GB";
     std::chrono::system_clock::time_point bullet_expires_at_{};
 
