@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -23,7 +25,17 @@ constexpr auto kSessionTtl = std::chrono::minutes(90);
 void log_nooklink_failure(const std::string& stage) {
     // Deliberately stage/status only. Never log GameWebServiceToken, _gtoken,
     // per-user auth tokens, Nintendo user IDs, cookies or profile payloads.
-    std::cerr << "[NookLink RPC] " << stage << '\n';
+    const auto line = std::string("[NookLink RPC] ") + stage;
+    std::cerr << line << '\n';
+    try {
+        static std::mutex log_mutex;
+        std::lock_guard lock(log_mutex);
+        const auto path = std::filesystem::temp_directory_path() /
+            "nso-album-sync-rpc.log";
+        std::ofstream output(path, std::ios::app);
+        if (output) output << line << '\n';
+    } catch (...) {
+    }
 }
 
 std::string launch_url(
