@@ -161,30 +161,6 @@ std::vector<std::string> nooklink_api_headers(
     };
 }
 
-std::string first_session_cookie(const HttpResponse& response) {
-    for (const auto& line : set_cookie_lines(response)) {
-        std::size_t start = 0;
-        while (start < line.size() && std::isspace(static_cast<unsigned char>(line[start]))) {
-            ++start;
-        }
-        const auto eq = line.find('=', start);
-        if (eq == std::string::npos) continue;
-        const auto name = line.substr(start, eq - start);
-        auto lower_name = name;
-        std::transform(
-            lower_name.begin(), lower_name.end(), lower_name.begin(),
-            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (lower_name.find("session") == std::string::npos && lower_name != "a5_token") {
-            continue;
-        }
-        const auto value_start = eq + 1;
-        auto end = line.find(';', value_start);
-        if (end == std::string::npos) end = line.size();
-        return name + "=" + line.substr(value_start, end - value_start);
-    }
-    return {};
-}
-
 std::string html_attribute(const std::string& body, const std::string& name) {
     for (const char quote : {'\"', '\''}) {
         const std::string needle = name + "=" + quote;
