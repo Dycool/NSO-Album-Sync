@@ -105,19 +105,43 @@ std::string default_album_folder() {
 #elif __APPLE__
     const auto home = environment_variable("HOME");
     const std::filesystem::path base = home.empty() ? "." : home;
-    const auto candidate = base / "Pictures" / "Nintendo Switch" / "Album";
-    std::error_code ec;
-    if (std::filesystem::exists(candidate, ec)) {
-        return candidate.string();
+    const std::vector<std::filesystem::path> candidates = {
+        base / "Movies" / "Nintendo Switch 2" / "Album",
+        base / "Movies" / "Nintendo Switch" / "Album",
+        base / "Movies" / "Nintendo Switch 2",
+        base / "Movies" / "Nintendo Switch",
+        base / "Pictures" / "Nintendo Switch 2" / "Album",
+        base / "Pictures" / "Nintendo Switch" / "Album",
+        base / "Pictures" / "Nintendo Switch 2",
+        base / "Pictures" / "Nintendo Switch",
+    };
+
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec)) {
+            return candidate.string();
+        }
     }
     return (base / "Pictures" / "Nintendo Switch").string();
 #else
     const auto home = environment_variable("HOME");
     const std::filesystem::path base = home.empty() ? "." : home;
-    const auto candidate = base / "Pictures" / "Nintendo Switch" / "Album";
-    std::error_code ec;
-    if (std::filesystem::exists(candidate, ec)) {
-        return candidate.string();
+    const std::vector<std::filesystem::path> candidates = {
+        base / "Videos" / "Nintendo Switch 2" / "Album",
+        base / "Videos" / "Nintendo Switch" / "Album",
+        base / "Videos" / "Nintendo Switch 2",
+        base / "Videos" / "Nintendo Switch",
+        base / "Pictures" / "Nintendo Switch 2" / "Album",
+        base / "Pictures" / "Nintendo Switch" / "Album",
+        base / "Pictures" / "Nintendo Switch 2",
+        base / "Pictures" / "Nintendo Switch",
+    };
+
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec)) {
+            return candidate.string();
+        }
     }
     return (base / "Pictures" / "Nintendo Switch").string();
 #endif

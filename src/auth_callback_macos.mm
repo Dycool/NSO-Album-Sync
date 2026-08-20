@@ -13,6 +13,9 @@
 - (void)handleGetURLEvent:(NSAppleEventDescriptor*)event withReplyEvent:(NSAppleEventDescriptor*)replyEvent {
     (void)replyEvent;
     NSString* urlString = [[event paramDescriptorForKeyword:keyDirectObject] stringValue];
+    if (urlString == nil) {
+        urlString = [event stringValue];
+    }
     if (urlString != nil) {
         const char* utf8 = urlString.UTF8String;
         if (utf8 != nullptr) nso::publish_nintendo_auth_callback(utf8);
@@ -62,14 +65,24 @@ void install_auth_delegate() {
 bool register_nintendo_auth_protocol() {
     install_auth_delegate();
 
-    NSString* bundle_id = [[NSBundle mainBundle] bundleIdentifier];
-    if (bundle_id == nil) return true;
+    NSBundle* main_bundle = [NSBundle mainBundle];
+    NSString* bundle_id = [main_bundle bundleIdentifier];
+    NSURL* bundle_url = [main_bundle bundleURL];
 
+    if (bundle_url != nil) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    LSSetDefaultHandlerForURLScheme(
-        CFSTR("npf71b963c1b7b6d119"), (CFStringRef)bundle_id);
+        LSRegisterURL((__bridge CFURLRef)bundle_url, true);
 #pragma clang diagnostic pop
+    }
+
+    if (bundle_id != nil) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        LSSetDefaultHandlerForURLScheme(
+            CFSTR("npf71b963c1b7b6d119"), (CFStringRef)bundle_id);
+#pragma clang diagnostic pop
+    }
 
     return true;
 }

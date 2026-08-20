@@ -1,6 +1,7 @@
 #include "nso_album_sync/http.hpp"
 
 #include <openssl/bio.h>
+#include <openssl/err.h>
 #include <openssl/ssl.h>
 
 #include <algorithm>
@@ -13,10 +14,11 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 namespace nso {
 namespace {
@@ -51,35 +53,6 @@ struct Connection {
     Connection& operator=(const Connection&) = delete;
 };
 
-ParsedUrl parse_url(const std::string& url) {
-    const auto scheme_end = url.find("://");
-    if (scheme_end == std::string::npos) {
-        throw std::runtime_error("Invalid URL");
-    }
-
-    ParsedUrl parsed;
-    parsed.scheme = url.substr(0, scheme_end);
-    const auto authority_start = scheme_end + 3;
-    const auto path_start = url.find('/', authority_start);
-    const auto authority = url.substr(
-        authority_start,
-        path_start == std::string::npos
-            ? url.size() - authority_start
-            : path_start - authority_start);
-    parsed.path = path_start == std::string::npos ? "/" : url.substr(path_start);
-
-    const auto port_separator = authority.rfind(':');
-    const bool looks_like_ipv6 = authority.find(']') != std::string::npos;
-    if (port_separator != std::string::npos && !looks_like_ipv6) {
-        parsed.host = authority.substr(0, port_separator);
-        parsed.port = std::stoi(authority.substr(port_separator + 1));
-    } else {
-        parsed.host = authority;
-        parsed.port = parsed.scheme == "http" ? 80 : 443;
-    }
-    return parsed;
-}
-
 std::string lowercase(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
         [](const unsigned char character) {
@@ -94,6 +67,62 @@ std::string trim_left(std::string text) {
         text.erase(text.begin());
     }
     return text;
+}
+
+std::string trim_ascii(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+ParsedUrl parse_url(const std::string& raw) {
+    ParsedUrl result;
+    const auto scheme_end = raw.find("://");
+    if (scheme_end == std::string::npos) {
+        throw std::runtime_error("Invalid URL: missing scheme: " + raw);
+    }
+    result.scheme = raw.substr(0, scheme_end);
+    std::transform(
+        result.scheme.begin(),
+        result.scheme.end(),
+        result.scheme.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    const auto authority_start = scheme_end + 3;
+    const auto path_start = raw.find('/', authority_start);
+    const auto authority = path_start == std::string::npos
+        ? raw.substr(authority_start)
+        : raw.substr(authority_start, path_start - authority_start);
+    result.path = path_start == std::string::npos ? "/" : raw.substr(path_start);
+
+    const auto colon = authority.rfind(':');
+    if (colon != std::string::npos && authority.find(']') == std::string::npos) {
+        result.host = authority.substr(0, colon);
+        result.port = std::stoi(authority.substr(colon + 1));
+    } else {
+        result.host = authority;
+        result.port = result.scheme == "http" ? 80 : 443;
+    }
+    return result;
+}
+
+std::string header_value(const std::vector<std::string>& headers, const std::string& name) {
+    const std::string prefix = name + ":";
+    for (const auto& header : headers) {
+        if (header.size() >= prefix.size()) {
+            bool matches = true;
+            for (std::size_t i = 0; i < prefix.size(); ++i) {
+                if (std::tolower(static_cast<unsigned char>(header[i])) !=
+                    std::tolower(static_cast<unsigned char>(prefix[i]))) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) return trim_ascii(header.substr(prefix.size()));
+        }
+    }
+    return {};
 }
 
 long safe_timeout(long timeout_seconds) {
@@ -163,6 +192,15 @@ void connect_tcp(
         wait_for_connect(connection.raw, deadline);
     }
     BIO_set_nbio(connection.raw, 0);
+
+    int fd = -1;
+    if (BIO_get_fd(connection.raw, &fd) >= 0 && fd >= 0) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+        }
+    }
+
     apply_socket_timeout(connection.raw, timeout_seconds);
     connection.io = connection.raw;
 }
@@ -206,9 +244,35 @@ void establish_proxy_tunnel(
     if (!proxy_accepted) throw std::runtime_error("HTTP proxy CONNECT failed");
 }
 
+void wait_for_ssl(SSL* ssl, int error, std::chrono::steady_clock::time_point deadline) {
+    int fd = SSL_get_fd(ssl);
+    if (fd < 0) throw std::runtime_error("TLS socket descriptor error");
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) throw std::runtime_error("TLS handshake timed out");
+    const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+    timeval timeout{
+        static_cast<time_t>(remaining.count() / 1'000'000),
+        static_cast<suseconds_t>(remaining.count() % 1'000'000),
+    };
+
+    fd_set read_set;
+    fd_set write_set;
+    FD_ZERO(&read_set);
+    FD_ZERO(&write_set);
+    if (error == SSL_ERROR_WANT_READ) FD_SET(fd, &read_set);
+    if (error == SSL_ERROR_WANT_WRITE) FD_SET(fd, &write_set);
+    const int ready = select(fd + 1, &read_set, &write_set, nullptr, &timeout);
+    if (ready == 0) throw std::runtime_error("TLS handshake timed out");
+    if (ready < 0 && errno != EINTR) throw std::runtime_error("TLS handshake wait failed");
+}
+
 void enable_tls(Connection& connection, const ParsedUrl& destination) {
     connection.context = SSL_CTX_new(TLS_client_method());
     if (connection.context == nullptr) throw std::runtime_error("SSL_CTX_new failed");
+#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
+    SSL_CTX_set_options(connection.context, SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
     SSL_CTX_set_verify(connection.context, SSL_VERIFY_PEER, nullptr);
     if (SSL_CTX_set_default_verify_paths(connection.context) != 1) {
         throw std::runtime_error("Could not load system TLS trust store");
@@ -224,12 +288,20 @@ void enable_tls(Connection& connection, const ParsedUrl& destination) {
     SSL_set_bio(connection.ssl, connection.raw, connection.raw);
     connection.raw = nullptr;
     connection.io = nullptr;
-    const int connect_result = SSL_connect(connection.ssl);
-    if (connect_result != 1) {
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(safe_timeout(30));
+    for (;;) {
+        const int connect_result = SSL_connect(connection.ssl);
+        if (connect_result == 1) break;
         const int error = SSL_get_error(connection.ssl, connect_result);
-        if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE ||
-            (error == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK))) {
-            throw std::runtime_error("TLS handshake timed out");
+        if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+            wait_for_ssl(connection.ssl, error, deadline);
+            continue;
+        }
+        if (error == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            wait_for_ssl(connection.ssl, SSL_ERROR_WANT_READ, deadline);
+            continue;
         }
         throw std::runtime_error("TLS handshake failed");
     }
@@ -268,6 +340,51 @@ void write_all(
     }
 }
 
+bool is_response_complete(const std::vector<unsigned char>& response) {
+    static constexpr unsigned char kHeaderSeparator[] = {'\r', '\n', '\r', '\n'};
+    const auto separator = std::search(
+        response.begin(), response.end(), std::begin(kHeaderSeparator), std::end(kHeaderSeparator));
+    if (separator == response.end()) return false;
+
+    const std::size_t header_len = static_cast<std::size_t>(separator - response.begin());
+    const std::string_view headers(reinterpret_cast<const char*>(response.data()), header_len);
+    const std::size_t body_len = response.size() - (header_len + 4);
+
+    std::string lower_headers;
+    lower_headers.reserve(headers.size() + 2);
+    lower_headers.push_back('\n');
+    for (char c : headers) {
+        lower_headers.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    lower_headers.push_back('\n');
+
+    const std::string cl_prefix = "\ncontent-length:";
+    const auto cl_pos = lower_headers.find(cl_prefix);
+    if (cl_pos != std::string::npos) {
+        const auto val_start = lower_headers.find_first_not_of(" \t", cl_pos + cl_prefix.size());
+        if (val_start != std::string::npos) {
+            const auto val_end = lower_headers.find_first_of("\r\n", val_start);
+            const auto cl_str = lower_headers.substr(val_start, val_end - val_start);
+            try {
+                const auto expected_len = static_cast<std::size_t>(std::stoull(cl_str));
+                if (body_len >= expected_len) return true;
+            } catch (...) {}
+        }
+    }
+
+    if (lower_headers.find("transfer-encoding: chunked") != std::string::npos ||
+        lower_headers.find("transfer-encoding:\tchunked") != std::string::npos ||
+        lower_headers.find("transfer-encoding:chunked") != std::string::npos) {
+        if (body_len >= 5) {
+            const std::string_view body(
+                reinterpret_cast<const char*>(response.data() + header_len + 4), body_len);
+            if (body.ends_with("0\r\n\r\n") || body.ends_with("0\r\n\r\n\r\n")) return true;
+        }
+    }
+
+    return false;
+}
+
 std::vector<unsigned char> read_all(
     Connection& connection,
     bool use_tls,
@@ -296,6 +413,7 @@ std::vector<unsigned char> read_all(
                 throw std::runtime_error("HTTP response exceeded configured size limit");
             }
             response.insert(response.end(), buffer, buffer + bytes_read);
+            if (is_response_complete(response)) break;
             continue;
         }
 
@@ -306,7 +424,20 @@ std::vector<unsigned char> read_all(
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     throw std::runtime_error("HTTP read timed out");
                 }
-                if (errno == 0) break;
+                if (errno == 0 || !response.empty()) break;
+            }
+            if (error == SSL_ERROR_SSL) {
+                unsigned long err = ERR_peek_error();
+#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
+                if (ERR_GET_REASON(err) == SSL_R_UNEXPECTED_EOF_WHILE_READING) {
+                    ERR_clear_error();
+                    break;
+                }
+#endif
+                if (!response.empty()) {
+                    ERR_clear_error();
+                    break;
+                }
             }
             if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
                 throw std::runtime_error("HTTP read timed out");
