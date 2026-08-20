@@ -702,7 +702,7 @@ std::string resolve_region(
 
 struct DistanceThresholds {
     double at = 80.0;
-    double near = 300.0;
+    double nearby = 300.0;
 };
 
 DistanceThresholds thresholds_for(const std::string& subcategory) {
@@ -758,10 +758,10 @@ ZeldaNotesResolvedLocation resolve_location(
         if (name.empty() || name == "???") continue;
         const auto thresholds = thresholds_for(place.subcategory);
         const auto distance = horizontal_distance(state.position, place.position);
-        if (distance > thresholds.near) continue;
+        if (distance > thresholds.nearby) continue;
         const auto priority_penalty =
             static_cast<double>(100 - category_priority(place.subcategory)) * 0.004;
-        const auto score = distance / thresholds.near + priority_penalty;
+        const auto score = distance / thresholds.nearby + priority_penalty;
         if (score < best.score) best = Candidate{&place, distance, score};
     }
 
@@ -771,7 +771,7 @@ ZeldaNotesResolvedLocation resolve_location(
             if (place.uid != previous.poi_uid || !same_layer(place, state)) continue;
             const auto thresholds = thresholds_for(place.subcategory);
             const auto distance = horizontal_distance(state.position, place.position);
-            if (distance <= thresholds.near * 1.15 &&
+            if (distance <= thresholds.nearby * 1.15 &&
                 best.distance > distance * 0.75) {
                 best = Candidate{&place, distance, 0.0};
             }

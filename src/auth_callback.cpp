@@ -155,6 +155,7 @@ bool publish_posix_callback(
             if (errno == EEXIST) continue;
             return false;
         }
+        fchmod(descriptor, 0600);
 
         const bool wrote = write_all(descriptor, url.data(), url.size());
         const bool synced = wrote && fsync(descriptor) == 0;

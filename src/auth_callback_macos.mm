@@ -6,9 +6,19 @@
 #import <CoreServices/CoreServices.h>
 
 @interface NsoAuthUrlDelegate : NSObject <NSApplicationDelegate>
+- (void)handleGetURLEvent:(NSAppleEventDescriptor*)event withReplyEvent:(NSAppleEventDescriptor*)replyEvent;
 @end
 
 @implementation NsoAuthUrlDelegate
+- (void)handleGetURLEvent:(NSAppleEventDescriptor*)event withReplyEvent:(NSAppleEventDescriptor*)replyEvent {
+    (void)replyEvent;
+    NSString* urlString = [[event paramDescriptorForKeyword:keyDirectObject] stringValue];
+    if (urlString != nil) {
+        const char* utf8 = urlString.UTF8String;
+        if (utf8 != nullptr) nso::publish_nintendo_auth_callback(utf8);
+    }
+}
+
 - (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
     (void)application;
     for (NSURL* url in urls) {
@@ -18,6 +28,15 @@
         if (utf8 != nullptr) nso::publish_nintendo_auth_callback(utf8);
     }
 }
+
+- (BOOL)application:(NSApplication*)application openURL:(NSURL*)url {
+    (void)application;
+    if (url != nil && url.absoluteString != nil) {
+        const char* utf8 = url.absoluteString.UTF8String;
+        if (utf8 != nullptr) return nso::publish_nintendo_auth_callback(utf8);
+    }
+    return YES;
+}
 @end
 
 namespace nso {
@@ -26,36 +45,32 @@ namespace {
 NsoAuthUrlDelegate* g_auth_url_delegate = nil;
 
 void install_auth_delegate() {
-    if (g_auth_url_delegate == nil) g_auth_url_delegate = [NsoAuthUrlDelegate new];
-    [NSApp setDelegate:g_auth_url_delegate];
+    static dispatch_once_t once_token;
+    dispatch_once(&once_token, ^{
+        g_auth_url_delegate = [NsoAuthUrlDelegate new];
+        [[NSAppleEventManager sharedAppleEventManager]
+            setEventHandler:g_auth_url_delegate
+            andSelector:@selector(handleGetURLEvent:withReplyEvent:)
+            forEventClass:kInternetEventClass
+            andEventID:kAEGetURL];
+        [NSApp setDelegate:g_auth_url_delegate];
+    });
 }
 
 }  // namespace
 
 bool register_nintendo_auth_protocol() {
-    NSString* bundle_id = [[NSBundle mainBundle] bundleIdentifier];
-    if (bundle_id == nil) return false;
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    CFStringRef current = LSCopyDefaultHandlerForURLScheme(CFSTR("npf71b963c1b7b6d119"));
-#pragma clang diagnostic pop
-
-    if (current != nullptr) {
-        const bool ours = CFStringCompare(current, (CFStringRef)bundle_id,
-            kCFCompareCaseInsensitive) == kCFCompareEqualTo;
-        CFRelease(current);
-        if (!ours) return false;
-    } else {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        const OSStatus status = LSSetDefaultHandlerForURLScheme(
-            CFSTR("npf71b963c1b7b6d119"), (CFStringRef)bundle_id);
-#pragma clang diagnostic pop
-        if (status != noErr) return false;
-    }
-
     install_auth_delegate();
+
+    NSString* bundle_id = [[NSBundle mainBundle] bundleIdentifier];
+    if (bundle_id == nil) return true;
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    LSSetDefaultHandlerForURLScheme(
+        CFSTR("npf71b963c1b7b6d119"), (CFStringRef)bundle_id);
+#pragma clang diagnostic pop
+
     return true;
 }
 

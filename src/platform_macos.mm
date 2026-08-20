@@ -1,4 +1,5 @@
 #include "nso_album_sync/platform.hpp"
+#include "nso_album_sync/auth_callback.hpp"
 #include "nso_album_sync/util.hpp"
 
 #ifdef __APPLE__
@@ -388,6 +389,8 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
 
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+
+        register_nintendo_auth_protocol();
 
         g_notification_delegate = [NsoNotificationDelegate new];
         [UNUserNotificationCenter currentNotificationCenter].delegate =
