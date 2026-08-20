@@ -118,10 +118,13 @@ jobs:
           codesign --verify --deep --strict "$app"
           "$binary" --self-test
 
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$app" dist/nso-album-sync.zip
+
       - uses: actions/upload-artifact@v7
         with:
           name: nso-album-sync-macos
-          path: build/nso-album-sync.app
+          path: dist/nso-album-sync.zip
           if-no-files-found: error
 
   linux:
@@ -244,7 +247,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-dist
           (cd release-artifacts/nso-album-sync-windows && zip -9 ../../release-dist/nso-album-sync-windows.zip nso-album-sync.exe)
-          (cd release-artifacts/nso-album-sync-macos && zip -9 -r -y ../../release-dist/nso-album-sync-macos.zip nso-album-sync.app)
+          cp release-artifacts/nso-album-sync-macos/nso-album-sync.zip release-dist/nso-album-sync-macos.zip
           (cd release-artifacts/nso-album-sync-linux && zip -9 ../../release-dist/nso-album-sync-linux.zip nso-album-sync.AppImage)
 
           files=(
