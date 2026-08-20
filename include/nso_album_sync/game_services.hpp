@@ -18,8 +18,6 @@ namespace nso {
 // locally cached token in the desktop client.
 inline constexpr std::uint64_t kAnimalCrossingGameServiceId = 4953919198265344ULL;
 inline constexpr std::uint64_t kAnimalCrossingNintendoGameServiceId = 4953919198265344ULL;
-inline constexpr std::uint64_t kSmashBrosGameServiceId = 5598642853249024ULL;
-inline constexpr std::uint64_t kSmashBrosGameServiceIdAlt = 5614999764533248ULL;
 inline constexpr std::uint64_t kSplatoon2GameServiceId = 5741031244955648ULL;
 
 struct AnimalCrossingPresence {
@@ -37,26 +35,6 @@ struct AnimalCrossingPresence {
         if (resident_name.empty()) return island_name;
         if (island_name.empty()) return resident_name;
         return resident_name + " • " + island_name;
-    }
-};
-
-struct SmashBrosPresence {
-    // Smash World is session/cookie based. These fields are intentionally only
-    // populated when a value is observed in a verified Nintendo response.
-    std::string main_fighter;
-    std::string smash_tag;
-    std::int64_t gsp = 0;
-    bool is_elite = false;
-    std::string fighter_image_uri;
-    bool active = false;
-
-    std::string format_state() const {
-        if (!main_fighter.empty()) return "Fighter: " + main_fighter;
-        return {};
-    }
-
-    std::string format_details() const {
-        return smash_tag.empty() ? std::string{} : "Smash Tag: " + smash_tag;
     }
 };
 
@@ -95,7 +73,6 @@ public:
     explicit GameServicesClient(HttpClient& http);
 
     AnimalCrossingPresence fetch_animal_crossing_presence(const std::string& web_service_token);
-    SmashBrosPresence fetch_smash_presence(const std::string& web_service_token);
     Splatoon2Presence fetch_splatoon2_presence(const std::string& web_service_token);
 
     void set_locale(const std::string& language, const std::string& country) {

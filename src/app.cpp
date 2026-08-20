@@ -73,7 +73,6 @@ enum class RpcGameService {
     Splatoon3,
     ZeldaNotes,
     AnimalCrossing,
-    SmashBros,
     Splatoon2,
 };
 
@@ -91,7 +90,6 @@ RpcGameService rpc_game_service_for(const NintendoPresence& presence) {
     if (presence.title_id == "0100c2500fc20000") return RpcGameService::Splatoon3;
     if (presence.title_id == "01003bc0000a0000") return RpcGameService::Splatoon2;
     if (presence.title_id == "01006f8002326000") return RpcGameService::AnimalCrossing;
-    if (presence.title_id == "01006a800016e000") return RpcGameService::SmashBros;
     if (presence.title_id == "01007ef00011e000" ||
         presence.title_id == "0100f2c0115b6000") {
         return RpcGameService::ZeldaNotes;
@@ -111,10 +109,6 @@ RpcGameService rpc_game_service_for(const NintendoPresence& presence) {
     if (contains_any(presence.game_name, {
             "Animal Crossing", "New Horizons", "どうぶつの森", "あつ森"})) {
         return RpcGameService::AnimalCrossing;
-    }
-    if (contains_any(presence.game_name, {
-            "Super Smash Bros", "大乱闘スマッシュブラザーズ", "スマブラSP"})) {
-        return RpcGameService::SmashBros;
     }
     if (contains_any(presence.game_name, {"Splatoon 2", "スプラトゥーン2"})) {
         return RpcGameService::Splatoon2;
@@ -583,26 +577,7 @@ void App::presence_loop() {
                                     } catch (...) {
                                     }
                                     break;
-                                case RpcGameService::SmashBros:
-                                    try {
-                                        const auto web_token = coral_.get_web_service_token(
-                                            session_token, kSmashBrosGameServiceId);
-                                        if (!web_token.empty()) {
-                                            const auto smash_presence =
-                                                game_services_.fetch_smash_presence(web_token);
-                                            if (smash_presence.active) {
-                                                const auto state_str = smash_presence.format_state();
-                                                const auto details_str = smash_presence.format_details();
-                                                if (!state_str.empty()) presence.custom_state = state_str;
-                                                if (!details_str.empty()) presence.custom_details = details_str;
-                                                if (!smash_presence.fighter_image_uri.empty()) {
-                                                    presence.custom_image_uri = smash_presence.fighter_image_uri;
-                                                }
-                                            }
-                                        }
-                                    } catch (...) {
-                                    }
-                                    break;
+
                                 case RpcGameService::Splatoon2:
                                     try {
                                         const auto web_token = coral_.get_web_service_token(

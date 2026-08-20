@@ -14,7 +14,6 @@ namespace nso {
 namespace {
 
 constexpr char kNookLinkBaseUrl[] = "https://web.sd.lp1.acbaa.srv.nintendo.net";
-constexpr char kSmashWorldBaseUrl[] = "https://app.smashbros.nintendo.net";
 constexpr char kSplatNet2BaseUrl[] = "https://app.splatoon2.nintendo.net";
 constexpr char kWebServiceUserAgent[] =
     "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.125 Mobile Safari/537.36";
@@ -466,55 +465,6 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         sessions_.erase("nooklink");
         return {};
     }
-}
-
-SmashBrosPresence GameServicesClient::fetch_smash_presence(
-    const std::string& web_service_token) {
-    if (web_service_token.empty()) return {};
-
-    ServiceSession session;
-    std::string language;
-    std::string country;
-    {
-        std::lock_guard lock(mutex_);
-        language = language_;
-        country = country_;
-        const auto it = sessions_.find("smash");
-        if (it != sessions_.end() && it->second.source_token == web_service_token &&
-            std::chrono::system_clock::now() < it->second.expires_at) {
-            return {};
-        }
-    }
-
-    try {
-        const auto bootstrap = http_.get(
-            launch_url(kSmashWorldBaseUrl, language, country),
-            bootstrap_headers(
-                web_service_token,
-                language,
-                kNxapiWebServiceUserAgent,
-                true),
-            10,
-            8 * 1024 * 1024);
-        if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return {};
-        auto cookie = cookie_value(bootstrap, "super_smash_session");
-        if (!cookie.empty()) cookie = "super_smash_session=" + cookie;
-        if (cookie.empty()) cookie = first_session_cookie(bootstrap);
-        if (!cookie.empty()) {
-            session.source_token = web_service_token;
-            session.cookie = cookie;
-            session.expires_at = std::chrono::system_clock::now() + kSessionTtl;
-            std::lock_guard lock(mutex_);
-            if (language_ == language && country_ == country) {
-                sessions_["smash"] = session;
-            }
-        }
-        // No stable structured self/GSP endpoint is exposed by nxapi or by the
-        // working WebView proxy. A successful session bootstrap alone must not
-        // be presented as fighter/GSP activity.
-    } catch (...) {
-    }
-    return {};
 }
 
 Splatoon2Presence GameServicesClient::fetch_splatoon2_presence(
