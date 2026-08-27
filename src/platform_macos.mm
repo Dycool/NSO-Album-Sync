@@ -146,7 +146,10 @@ void dispatch_menu_action(PlatformUi::Impl* impl, NSInteger command) {
 }
 @end
 
-@interface NsoNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+@interface NsoNotificationDelegate : NSObject <UNUserNotificationCenterDelegate, NSUserNotificationCenterDelegate>
 @end
 
 @implementation NsoNotificationDelegate
@@ -159,6 +162,13 @@ void dispatch_menu_action(PlatformUi::Impl* impl, NSInteger command) {
         UNNotificationPresentationOptionList |
         UNNotificationPresentationOptionBanner |
         UNNotificationPresentationOptionSound);
+}
+
+- (BOOL)userNotificationCenter:(NSUserNotificationCenter*)center
+     shouldPresentNotification:(NSUserNotification*)notification {
+    (void)center;
+    (void)notification;
+    return YES;
 }
 @end
 
@@ -328,55 +338,33 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         @"xmark.circle");
 }
 
-void enqueue_notification(NSString* title, NSString* message) {
-    auto* content = [UNMutableNotificationContent new];
-    content.title = title;
-    content.body = message;
-    content.sound = [UNNotificationSound defaultSound];
-
-    auto* request = [UNNotificationRequest
-        requestWithIdentifier:[NSUUID UUID].UUIDString
-                      content:content
-                      trigger:nil];
-
-    [[UNUserNotificationCenter currentNotificationCenter]
-        addNotificationRequest:request
-        withCompletionHandler:^(NSError* error) {
-            if (error != nil) {
-                NSLog(@"NSO Album Sync notification failed: %@", error);
-            }
-        }];
-}
-
 void deliver_notification(NSString* title, NSString* message) {
-    auto* center = [UNUserNotificationCenter currentNotificationCenter];
-    [center getNotificationSettingsWithCompletionHandler:^(
-        UNNotificationSettings* settings) {
-        const auto status = settings.authorizationStatus;
-        if (status == UNAuthorizationStatusAuthorized ||
-            status == UNAuthorizationStatusProvisional) {
-            enqueue_notification(title, message);
-            return;
-        }
+    NSString* safeTitle = title != nil ? title : @"NSO Album Sync";
+    NSString* safeMessage = message != nil ? message : @"";
 
-        if (status != UNAuthorizationStatusNotDetermined) {
-            return;
-        }
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString* escapedTitle = [[safeTitle stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+                                  stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+        NSString* escapedMessage = [[safeMessage stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+                                    stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
 
-        [center
-            requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
-                                             UNAuthorizationOptionSound)
-            completionHandler:^(BOOL granted, NSError* error) {
-                if (error != nil) {
-                    NSLog(@"NSO Album Sync notification permission failed: %@", error);
-                    return;
-                }
-                if (granted) {
-                    enqueue_notification(title, message);
-                }
-            }];
-    }];
+        NSString* script = [NSString stringWithFormat:
+            @"display notification \"%@\" with title \"%@\" sound name \"default\"",
+            escapedMessage, escapedTitle];
+
+        NSTask* task = [NSTask new];
+        task.launchPath = @"/usr/bin/osascript";
+        task.arguments = @[@"-e", script];
+        @try {
+            [task launch];
+            [task waitUntilExit];
+        } @catch (NSException* e) {
+            NSLog(@"NSO Album Sync notification failed: %@", e);
+        }
+    });
 }
+
+#pragma clang diagnostic pop
 
 }  // namespace
 
@@ -398,6 +386,8 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
         g_notification_delegate = [NsoNotificationDelegate new];
         [UNUserNotificationCenter currentNotificationCenter].delegate =
             g_notification_delegate;
+        [NSUserNotificationCenter defaultUserNotificationCenter].delegate =
+            g_notification_delegate;
 
         g_menu_target = [NsoMenuTarget new];
         g_menu_target->impl = impl_;
@@ -408,11 +398,13 @@ void PlatformUi::run(const PlatformCallbacks& callbacks) {
         NSString* icon_path = [[NSBundle mainBundle]
             pathForResource:@"app"
                      ofType:@"icns"];
-        NSImage* status_icon = icon_path != nil
+        NSImage* app_icon = icon_path != nil
             ? [[NSImage alloc] initWithContentsOfFile:icon_path]
             : nil;
 
-        if (status_icon != nil) {
+        if (app_icon != nil) {
+            [NSApp setApplicationIconImage:app_icon];
+            NSImage* status_icon = [app_icon copy];
             [status_icon setTemplate:YES];
             [status_icon setSize:NSMakeSize(18.0, 18.0)];
             impl_->status_item.button.image = status_icon;
