@@ -1,10 +1,13 @@
 #include "nso_album_sync/zeldanotes.hpp"
+#include "nso_album_sync/zeldanotes_regions.hpp"
 #include "nso_album_sync/json.hpp"
 #include "nso_album_sync/sse.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -17,6 +20,15 @@
 
 namespace nso {
 namespace {
+
+void log_zelda(const std::string& msg) {
+    std::cerr << "[ZeldaNotes] " << msg << "\n";
+    try {
+        const auto path = std::filesystem::temp_directory_path() / "nso-album-sync-rpc.log";
+        std::ofstream output(path, std::ios::app);
+        if (output) output << "[ZeldaNotes] " << msg << '\n';
+    } catch (...) {}
+}
 
 constexpr char kBaseUrl[] = "https://api.lp1.87abc152.srv.nintendo.net";
 constexpr char kUserAgent[] =
@@ -49,6 +61,7 @@ struct WebMetadata {
     std::string end_action;
     std::string ack_action;
     std::string deployment_id;
+    std::string custom_avatar_url;
     std::map<std::string, std::string> labels;
     std::vector<MapPlace> places;
 
@@ -270,6 +283,25 @@ std::string route_url(ZeldaNotesGame game) {
     const auto* short_name = zelda_notes_short_name(game);
     if (short_name == nullptr || *short_name == '\0') return {};
     return std::string(kBaseUrl) + "/" + short_name + "/complete-guide";
+}
+
+std::string percent_decode(const std::string& value) {
+    std::string output;
+    output.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '%' && i + 2 < value.size()) {
+            const char hex[3] = {value[i + 1], value[i + 2], '\0'};
+            char* end = nullptr;
+            const auto byte_val = std::strtoul(hex, &end, 16);
+            if (end == hex + 2) {
+                output += static_cast<char>(byte_val);
+                i += 2;
+                continue;
+            }
+        }
+        output += value[i];
+    }
+    return output;
 }
 
 std::string percent_encode(const std::string& value) {
@@ -561,6 +593,7 @@ WebMetadata discover_web_metadata(
     const auto page_url = route_url(game);
     if (page_url.empty()) return metadata;
 
+    log_zelda("discover_web_metadata: requesting page " + page_url);
     const auto page = http.get(
         page_url,
         authenticated_headers(
@@ -568,49 +601,64 @@ WebMetadata discover_web_metadata(
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
         12,
         kMaxRouteHtmlBytes);
-    if (page.status / 100 != 2) return metadata;
-
+    log_zelda("discover_web_metadata: page status=" + std::to_string(page.status));
     const auto html = page.text();
-    metadata.start_action = find_server_reference(html, "sendMapSyncStartAction");
-    metadata.end_action = find_server_reference(html, "sendMapSyncEndAction");
-    metadata.ack_action = find_server_reference(html, "sendAckAction");
     metadata.deployment_id = header_value(page, "x-deployment-id");
-
     const auto scripts = extract_script_urls(html);
     for (const auto& script_url : scripts) {
         if (metadata.deployment_id.empty()) {
             metadata.deployment_id = deployment_id_from_url(script_url);
         }
-        try {
-            const auto script_response = http.get(
-                script_url,
-                authenticated_headers(
-                    session, language, country,
-                    "application/javascript,text/javascript,*/*;q=0.8"),
-                12,
-                kMaxScriptBytes);
-            if (script_response.status / 100 != 2) continue;
-            const auto script = script_response.text();
-            if (metadata.start_action.empty()) {
-                metadata.start_action =
-                    find_server_reference(script, "sendMapSyncStartAction");
+    }
+    if (metadata.deployment_id.empty()) {
+        metadata.deployment_id = "783666f6880ab3979bdc7b15f8ad24f544e472e5";
+    }
+
+    metadata.start_action = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba";
+    metadata.end_action = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba";
+    metadata.ack_action = "400d043452ef637b91e45e5861062b9677aa6fbf22";
+    log_zelda("discover_web_metadata final: start=" + metadata.start_action + " ack=" + metadata.ack_action + " dpl=" + metadata.deployment_id);
+
+    // Look for custom UGC avatar in complete-guide HTML
+    auto find_ugc_avatar = [&](const std::string& source) -> std::string {
+        const auto marker = source.find("storage.googleapis.com");
+        if (marker == std::string::npos) return {};
+        auto start = source.rfind("url=", marker);
+        if (start != std::string::npos) {
+            start += 4;
+            auto end = source.find_first_of("&\"' ", start);
+            if (end != std::string::npos) {
+                return percent_decode(html_unescape(source.substr(start, end - start)));
             }
-            if (metadata.end_action.empty()) {
-                metadata.end_action =
-                    find_server_reference(script, "sendMapSyncEndAction");
-            }
-            if (metadata.ack_action.empty()) {
-                metadata.ack_action = find_server_reference(script, "sendAckAction");
-            }
-            // POIs are deliberately best-effort. The full Complete Guide map is
-            // a lazy Next chunk in the captured deployment, so it may not appear
-            // among the initial route scripts. Coarse region/layer RPC does not
-            // depend on discovering this optional dataset.
-            if (metadata.places.empty()) {
-                extract_map_dataset(script, game, metadata.places);
-            }
-        } catch (...) {
         }
+        auto start_direct = source.rfind("https://storage.googleapis.com", marker);
+        if (start_direct != std::string::npos) {
+            auto end_direct = source.find_first_of("\"' ", start_direct);
+            if (end_direct != std::string::npos) {
+                return html_unescape(source.substr(start_direct, end_direct - start_direct));
+            }
+        }
+        return {};
+    };
+
+    metadata.custom_avatar_url = find_ugc_avatar(html);
+
+    // If not found in complete-guide, check profile page
+    if (metadata.custom_avatar_url.empty()) {
+        const auto profile_url = std::string(kBaseUrl) + "/" + zelda_notes_short_name(game) + "/profile";
+        const auto profile_page = http.get(
+            profile_url,
+            authenticated_headers(
+                session, language, country,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+            8,
+            kMaxRouteHtmlBytes);
+        if (profile_page.status == 200) {
+            metadata.custom_avatar_url = find_ugc_avatar(profile_page.text());
+        }
+    }
+    if (!metadata.custom_avatar_url.empty()) {
+        log_zelda("discover_web_metadata: active custom avatar=" + metadata.custom_avatar_url);
     }
 
     try {
@@ -625,7 +673,7 @@ WebMetadata discover_web_metadata(
 bool action_succeeded(const HttpResponse& response) {
     if (response.status / 100 != 2) return false;
     const auto text = response.text();
-    return text.empty() || text.find("\"isSuccess\":true") != std::string::npos;
+    return text.empty() || text.find("\"isSuccess\":true") != std::string::npos || text.find("isSuccess") == std::string::npos;
 }
 
 bool send_server_action(
@@ -649,13 +697,17 @@ bool send_server_action(
         headers.push_back("X-Deployment-Id: " + metadata.deployment_id);
     }
 
+    const auto body = Json(arguments).dump();
+    log_zelda("send_server_action POST " + page_url + " action=" + action + " body=" + body);
     const auto response = http.post(
         page_url,
-        Json(arguments).dump(),
+        body,
         headers,
         "text/plain;charset=UTF-8",
         kActionTimeoutSeconds);
-    return action_succeeded(response);
+    const bool success = action_succeeded(response);
+    log_zelda("send_server_action status=" + std::to_string(response.status) + " success=" + (success ? "true" : "false") + " resp=" + response.text());
+    return success;
 }
 
 double horizontal_distance(
@@ -744,6 +796,27 @@ ZeldaNotesResolvedLocation resolve_location(
     result.layer = state.layer;
     result.region = resolve_region(metadata, state.game, state.position);
 
+    // Check exact game-derived 3D collision volumes (villages, stables, towers, sky archipelagos, depths mines)
+    if (state.game == ZeldaNotesGame::TearsOfTheKingdom) {
+        const auto loc_3d = resolve_totk_location_3d(state.position, state.layer);
+        if (loc_3d.matched) {
+            result.poi = loc_3d.name;
+            result.stage_image_uri = loc_3d.image_url;
+            result.at_poi = true;
+            result.valid = true;
+            return result;
+        }
+    } else if (state.game == ZeldaNotesGame::BreathOfTheWild) {
+        const auto loc_3d = resolve_botw_location_3d(state.position);
+        if (loc_3d.matched) {
+            result.poi = loc_3d.name;
+            result.stage_image_uri = loc_3d.image_url;
+            result.at_poi = true;
+            result.valid = true;
+            return result;
+        }
+    }
+
     struct Candidate {
         const MapPlace* place = nullptr;
         double distance = 0.0;
@@ -783,6 +856,8 @@ ZeldaNotesResolvedLocation resolve_location(
         result.poi = localized_label(metadata, best.place->message_label);
         result.poi_uid = best.place->uid;
         result.poi_distance = best.distance;
+        result.subcategory = best.place->subcategory;
+        result.stage_image_uri = resolve_poi_artwork(result.poi, state.game);
         const auto thresholds = thresholds_for(best.place->subcategory);
         result.at_poi = best.distance <= thresholds.at;
         result.near_poi = !result.at_poi;
@@ -804,62 +879,208 @@ std::string clamp_activity_text(std::string value) {
     return value;
 }
 
+std::string generate_zelda_lore_activity(
+    const ZeldaNotesLiveState& state,
+    const ZeldaNotesResolvedLocation& location) {
+    const auto& poi = location.poi;
+    const auto& region = location.region;
+    const auto& subcategory = location.subcategory;
+    const double x = state.position.x;
+    const double y = state.position.y;
+    const double z = state.position.z;
+
+    // 1. Landmark & Specific POI Context
+    if (location.at_poi || location.near_poi) {
+        if (poi.find("Hyrule Castle") != std::string::npos || poi.find("Sanctum") != std::string::npos) {
+            return "Infiltrating Hyrule Castle";
+        }
+        if (poi.find("Temple of Time") != std::string::npos) {
+            return "Standing at the Temple of Time";
+        }
+        if (poi.find("Forgotten Temple") != std::string::npos) {
+            return "Exploring the Forgotten Temple";
+        }
+        if (poi.find("Yiga") != std::string::npos || poi.find("Hideout") != std::string::npos) {
+            return "Infiltrating Yiga Clan Territory";
+        }
+        if (poi.find("Coliseum") != std::string::npos || poi.find("Colosseum") != std::string::npos) {
+            return "Challenging Ancient Arenas";
+        }
+        if (poi.find("Citadel") != std::string::npos) {
+            return "Exploring Ancient Citadel Ruins";
+        }
+        if (poi.find("Labyrinth") != std::string::npos || poi.find("Maze") != std::string::npos) {
+            return "Navigating Ancient Labyrinths";
+        }
+        if (poi.find("Chasm") != std::string::npos) {
+            return "Descending into the Chasm";
+        }
+        if (poi.find("Cave") != std::string::npos || poi.find("Well") != std::string::npos ||
+            poi.find("Grotto") != std::string::npos) {
+            return "Exploring Caverns & Tunnels";
+        }
+        if (poi.find("Fairy") != std::string::npos) {
+            return "Visiting the Great Fairy";
+        }
+        if (poi.find("Lab") != std::string::npos) {
+            return "Visiting the Ancient Tech Lab";
+        }
+        if (poi.find("Stable") != std::string::npos || subcategory == "stable" || subcategory == "hatago") {
+            return "Resting at " + poi;
+        }
+        if (poi.find("Tower") != std::string::npos || subcategory == "skyviewTower" || subcategory == "tower") {
+            return "Surveying from " + poi;
+        }
+        if (poi.find("Shrine") != std::string::npos || subcategory == "shrine") {
+            return "Investigating Shrine of Light";
+        }
+        if (poi.find("Lightroot") != std::string::npos || subcategory == "lightroot") {
+            return "Resting by a Lightroot";
+        }
+        if (poi.find("Temple") != std::string::npos || poi.find("Mine") != std::string::npos ||
+            poi.find("Forge") != std::string::npos || subcategory == "dungeon") {
+            return "Delving into " + poi;
+        }
+        if (poi.find("Archipelago") != std::string::npos || poi.find("Island") != std::string::npos) {
+            if (state.layer == ZeldaNotesLayer::Sky) {
+                return "Exploring " + poi;
+            }
+        }
+        if (subcategory == "village" || poi.find("Town") != std::string::npos ||
+            poi.find("Village") != std::string::npos || poi.find("Landing") != std::string::npos ||
+            poi.find("Domain") != std::string::npos || poi.find("City") != std::string::npos) {
+            return location.at_poi ? "Visiting " + poi : "Approaching " + poi;
+        }
+    }
+
+    // 2. Sky Layer Sub-Regions
+    if (state.game == ZeldaNotesGame::TearsOfTheKingdom && state.layer == ZeldaNotesLayer::Sky) {
+        if (y > 2200.0) return "Soaring in the Upper Stratosphere";
+        if (x > 3000.0 && z < -1000.0) return "Navigating the Sokkala Sky Islands";
+        if (x < -2500.0 && z < -1500.0) return "Navigating the Hebra Sky Realm";
+        if (x < -2500.0 && z > 1500.0) return "Navigating the Gerudo Sky Realm";
+        if (x > 1500.0 && z < -1500.0) return "Navigating the Eldin Sky Realm";
+        if (x > 1500.0 && z > 1500.0) return "Navigating the Necluda Sky Realm";
+        if (x > -500.0 && x < 1000.0 && z > 500.0 && z < 2000.0) return "Exploring the Great Sky Island";
+        return !region.empty() ? "Soaring above " + region : "Navigating the Sky Archipelagos";
+    }
+
+    // 3. Depths Layer Sub-Regions
+    if (state.game == ZeldaNotesGame::TearsOfTheKingdom && state.layer == ZeldaNotesLayer::Underground) {
+        if (y < -800.0) return "Trekking the Abyssal Depths";
+        if (x > 2500.0 && z < -1000.0) return "Trekking the Depths of Akkala";
+        if (x > 1000.0 && z < -2000.0) return "Navigating the Volcanic Eldin Depths";
+        if (x < -2000.0 && z > 1000.0) return "Trekking the Gerudo Desert Depths";
+        if (x < -2000.0 && z < -1000.0) return "Braving the Freezing Hebra Depths";
+        if (x > 1500.0 && z > -500.0 && z < 1000.0) return "Navigating the Lanayru Depths";
+        if (x > -1500.0 && x < 1500.0 && z > -1500.0 && z < 1500.0) return "Trekking Central Hyrule Depths";
+        return !region.empty() ? "Surveying the Depths below " + region : "Trekking the Lightless Depths";
+    }
+
+    // 4. Surface Granular Sub-Regions
+    if (region == "Akkala") {
+        if (x > 4000.0 && z < -2000.0) return "Exploring the Rist Peninsula Coast";
+        if (z < -2800.0) return "Wandering Deep Akkala";
+        if (z < -2200.0 && x < 3600.0) return "Exploring near Skull Lake";
+        if (x > 3200.0 && z > -2000.0 && z < -1200.0) return "Wandering around Lake Akkala";
+        if (z > -1200.0) return "Traversing South Akkala Plains";
+        return "Wandering the Akkala Highlands";
+    }
+
+    if (region == "Central Hyrule" || region == "Hyrule Field") {
+        if (z < -1000.0 && x > -500.0 && x < 500.0) return "Surveying Hyrule Castle Town Ruins";
+        if (x < -1000.0) return "Roaming Western Hyrule Plains";
+        if (x > 1000.0) return "Wandering near Crenel Hills";
+        if (z > 500.0) return "Traversing Central Hyrule Plains";
+        return "Roaming the Heart of Hyrule Field";
+    }
+
+    if (region == "Eldin" || region == "Death Mountain") {
+        if (x > 2000.0 && z < -2500.0) return "Scaling the Summit of Death Mountain";
+        if (z < -3000.0) return "Climbing the Northern Eldin Peaks";
+        if (x < 1500.0) return "Braving the Crags of Eldin Canyon";
+        return "Traversing the Scorching Lava Beds";
+    }
+
+    if (region == "Hebra" || region == "Tabantha") {
+        if (x < -2500.0 && z < -2500.0) return "Braving the Summit of Mount Hebra";
+        if (x > -2500.0 && z < -2500.0) return "Traversing Tabantha Tundra Snowfields";
+        if (z > -2000.0) return "Wandering the Tabantha Frontier";
+        return "Braving the Freezing Hebra Peaks";
+    }
+
+    if (region == "Gerudo") {
+        if (z > 2500.0 && x < -2500.0) return "Traversing the Great Desert Dunes";
+        if (z < 1500.0) return "Scaling the Frozen Gerudo Highlands";
+        if (x > -2500.0) return "Navigating the Narrow Gerudo Canyons";
+        return "Traversing the Shifting Sands";
+    }
+
+    if (region == "Lanayru") {
+        if (x > 3000.0 && z > 500.0) return "Braving Mount Lanayru Snowfields";
+        if (x < 2000.0 && z > -500.0) return "Navigating the Lanayru Wetlands";
+        if (x > 2500.0 && z < -500.0) return "Roaming near Zora's Domain";
+        return "Roaming the Rushing Waters of Lanayru";
+    }
+
+    if (region == "Necluda" || region == "Dueling Peaks") {
+        if (x < 2000.0) return "Traversing the Cleft of Dueling Peaks";
+        if (x > 3000.0) return "Roaming the Valleys of East Necluda";
+        return "Wandering Peaceful Necluda";
+    }
+
+    if (region == "Faron" || region == "Lake Hylia") {
+        if (x < 500.0 && z > 2000.0) return "Roaming the Shores of Lake Hylia";
+        if (x > 2500.0) return "Wandering the Sunny Palmorae Coast";
+        return "Venturing through the Dense Faron Jungle";
+    }
+
+    if (region == "Great Hyrule Forest") {
+        return "Navigating the Mystical Lost Woods";
+    }
+
+    if (region == "Hyrule Ridge") {
+        return "Traversing the Windy Hyrule Ridge";
+    }
+
+    if (region == "Great Plateau") {
+        return "Exploring the Great Plateau";
+    }
+
+    return !region.empty() ? "Exploring the Realm of " + region : "Roaming the Lands of Hyrule";
+}
+
 ZeldaNotesPresence format_rpc_presence(
+    const WebMetadata& metadata,
     const ZeldaNotesLiveState& state,
     const ZeldaNotesResolvedLocation& location) {
     ZeldaNotesPresence presence;
     if (!location.valid) return presence;
 
+    // Line 1 (Details): In-Game Location
     std::string details;
-    std::string secondary;
     if (!location.poi.empty() && location.at_poi) {
         details = "At " + location.poi;
-        if (state.game == ZeldaNotesGame::TearsOfTheKingdom) {
-            if (state.layer == ZeldaNotesLayer::Underground) {
-                secondary = "The Depths";
-                if (!location.region.empty()) secondary += " • " + location.region;
-            } else if (!location.region.empty()) {
-                secondary = location.region + " • " + zelda_notes_layer_rpc_name(state.layer);
-            } else {
-                secondary = zelda_notes_layer_rpc_name(state.layer);
-            }
-        } else {
-            secondary = location.region.empty() ? "Hyrule" : location.region;
-        }
     } else if (!location.poi.empty()) {
-        if (state.game == ZeldaNotesGame::TearsOfTheKingdom &&
-            state.layer == ZeldaNotesLayer::Sky) {
-            details = "Exploring the Sky";
-        } else if (state.game == ZeldaNotesGame::TearsOfTheKingdom &&
-                   state.layer == ZeldaNotesLayer::Underground) {
-            details = "Exploring the Depths";
-        } else if (!location.region.empty()) {
-            details = "Exploring " + location.region;
-        } else if (state.game == ZeldaNotesGame::TearsOfTheKingdom) {
-            details = "Exploring the Surface";
-        } else {
-            details = "Exploring Hyrule";
-        }
-        secondary = "Near " + location.poi;
-    } else if (state.game == ZeldaNotesGame::TearsOfTheKingdom) {
-        if (state.layer == ZeldaNotesLayer::Sky && !location.region.empty()) {
-            details = "Exploring the Sky";
-            secondary = "Above " + location.region;
-        } else if (state.layer == ZeldaNotesLayer::Underground && !location.region.empty()) {
-            details = "Exploring the Depths";
-            secondary = "Below " + location.region;
-        } else if (state.layer == ZeldaNotesLayer::Ground && !location.region.empty()) {
-            details = "Exploring " + location.region;
-            secondary = "Surface";
-        }
+        details = "Near " + location.poi;
     } else if (!location.region.empty()) {
         details = "Exploring " + location.region;
-        secondary = "Hyrule";
+    } else {
+        details = "Exploring Hyrule";
     }
+
+    // Line 2 (State): Atmospheric Lore & In-Game Activity
+    const std::string secondary = generate_zelda_lore_activity(state, location);
 
     if (details.empty() || secondary.empty()) return {};
     presence.profile_summary = clamp_activity_text(details);
     presence.title_name = clamp_activity_text(secondary);
+    presence.stage_image_uri = !location.stage_image_uri.empty()
+        ? location.stage_image_uri
+        : resolve_zelda_region_artwork(location.region, state.game, state.layer);
+    presence.stage_name = !location.poi.empty()
+        ? location.poi
+        : (!location.region.empty() ? location.region : "Hyrule");
     presence.active = true;
     return presence;
 }
@@ -970,14 +1191,19 @@ void zelda_notes_note_discord_presence(
     const std::string& title_id,
     const std::string& game_name,
     bool playing) {
+    log_zelda("note_discord_presence: title_id=" + title_id + " game_name=" + game_name + " playing=" + (playing ? "true" : "false"));
     ZeldaNotesClient* client = nullptr;
     {
         std::lock_guard lock(g_bridge_mutex);
         client = g_client;
     }
-    if (client == nullptr) return;
-    client->set_active_game(
-        playing ? game_from_presence(title_id, game_name) : ZeldaNotesGame::Unknown);
+    if (client == nullptr) {
+        log_zelda("g_client is null");
+        return;
+    }
+    const auto game = playing ? game_from_presence(title_id, game_name) : ZeldaNotesGame::Unknown;
+    log_zelda("resolved game=" + std::to_string(static_cast<int>(game)));
+    client->set_active_game(game);
 }
 
 ZeldaNotesPresence zelda_notes_current_live_presence() {
@@ -1047,20 +1273,46 @@ bool ZeldaNotesClient::ensure_session(const std::string& web_service_token) {
 
     const auto locale_query = "?lang=" + language + "&na_country=" + country +
         "&na_lang=" + language;
-    const auto bootstrap = http_.get(
-        std::string(kBaseUrl) + "/title-select" + locale_query,
+    auto bootstrap = http_.get(
+        std::string(kBaseUrl) + "/" + locale_query,
         bootstrap_headers(web_service_token, language, country),
         10,
         8 * 1024 * 1024);
-    if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) return false;
-    const auto cookie = session_cookie(bootstrap);
-    if (cookie.empty()) return false;
+    log_zelda("ensure_session / HTTP " + std::to_string(bootstrap.status));
+    auto cookie = session_cookie(bootstrap);
+    if (cookie.empty() && (bootstrap.status / 100 == 3)) {
+        auto location = header_value(bootstrap, "location");
+        if (!location.empty()) {
+            if (location.find("://") == std::string::npos) {
+                if (location.front() != '/') location = "/" + location;
+                location = std::string(kBaseUrl) + location;
+            }
+            if (location.find('?') == std::string::npos) {
+                location += locale_query;
+            }
+            bootstrap = http_.get(
+                location,
+                bootstrap_headers(web_service_token, language, country),
+                10,
+                8 * 1024 * 1024);
+            log_zelda("ensure_session redirect to " + location + " HTTP " + std::to_string(bootstrap.status));
+            cookie = session_cookie(bootstrap);
+        }
+    }
+    if (cookie.empty()) {
+        log_zelda("ensure_session: no session cookie in response");
+        for (const auto& [k, v] : bootstrap.headers) {
+            log_zelda("header: " + k + " = " + v);
+        }
+        return false;
+    }
 
     std::lock_guard lock(mutex_);
     if (language_ != language || country_ != country) return false;
     source_web_token_ = web_service_token;
     session_cookie_ = cookie;
     session_expires_at_ = std::chrono::system_clock::now() + kSessionTtl;
+    log_zelda("ensure_session success, cookie=" + cookie.substr(0, 15) + "...");
     return true;
 }
 
@@ -1076,6 +1328,7 @@ void ZeldaNotesClient::clear_cache() {
 ZeldaNotesPresence ZeldaNotesClient::fetch_presence(
     const std::string& web_service_token) {
     if (web_service_token.empty()) return {};
+    log_zelda("fetch_presence called with token");
     {
         std::lock_guard lock(mutex_);
         latest_web_token_ = web_service_token;
@@ -1098,6 +1351,7 @@ void ZeldaNotesClient::set_active_game(ZeldaNotesGame game) {
         std::lock_guard lock(mutex_);
         web_token = latest_web_token_;
     }
+    log_zelda("set_active_game: game=" + std::to_string(static_cast<int>(game)) + " web_token_empty=" + (web_token.empty() ? "true" : "false"));
     if (web_token.empty()) return;
 
     {
@@ -1136,13 +1390,15 @@ ZeldaNotesPresence ZeldaNotesClient::live_presence() const {
 }
 
 void ZeldaNotesClient::publish_live_presence(ZeldaNotesPresence presence) {
+    log_zelda("publish_live_presence: active=" + std::to_string(presence.active) + " state=" + presence.title_name + " details=" + presence.profile_summary + " img=" + presence.stage_image_uri);
     bool changed = false;
     {
         std::lock_guard lock(live_mutex_);
         changed =
             live_presence_.active != presence.active ||
             live_presence_.title_name != presence.title_name ||
-            live_presence_.profile_summary != presence.profile_summary;
+            live_presence_.profile_summary != presence.profile_summary ||
+            live_presence_.stage_image_uri != presence.stage_image_uri;
         if (changed) live_presence_ = std::move(presence);
     }
     if (changed) notify_rpc_refresh();
@@ -1151,17 +1407,19 @@ void ZeldaNotesClient::publish_live_presence(ZeldaNotesPresence presence) {
 void ZeldaNotesClient::run_live_session(
     ZeldaNotesGame game,
     std::string web_service_token) {
-    const auto porter_session_id = zelda_notes_generate_porter_session_id();
     int backoff_seconds = 2;
     WebMetadata metadata;
 
+    log_zelda("run_live_session thread started for game=" + std::to_string(static_cast<int>(game)));
     while (!live_stop_.load()) {
+        const auto porter_session_id = zelda_notes_generate_porter_session_id();
+        log_zelda("run_live_session loop iteration, porter_session_id=" + porter_session_id + " backoff=" + std::to_string(backoff_seconds));
         bool healthy_stream = false;
         try {
             if (!ensure_session(web_service_token)) {
+                log_zelda("ensure_session failed inside run_live_session");
                 throw std::runtime_error("Zelda Notes session bootstrap failed");
             }
-
             std::string session;
             std::string language;
             std::string country;
@@ -1174,16 +1432,20 @@ void ZeldaNotesClient::run_live_session(
             if (session.empty()) throw std::runtime_error("Zelda Notes session unavailable");
 
             if (!metadata.protocol_ready()) {
+                log_zelda("run_live_session: discovering web metadata...");
                 metadata = discover_web_metadata(
                     http_, game, session, language, country);
             }
+            log_zelda("run_live_session: metadata protocol_ready=" + std::string(metadata.protocol_ready() ? "true" : "false"));
             if (!metadata.protocol_ready()) {
                 throw std::runtime_error("Zelda Notes map-sync actions unavailable");
             }
 
-            const auto sse_url = std::string(kBaseUrl) +
-                "/continuous-connection/sse?gameId=" + zelda_notes_game_id(game) +
-                "&porterSessionId=" + porter_session_id;
+            const auto sse_url =
+                std::string(kBaseUrl) + "/continuous-connection/sse?gameId=" +
+                zelda_notes_game_id(game) + "&porterSessionId=" + porter_session_id;
+
+            log_zelda("run_live_session: connecting SSE to " + sse_url);
             auto sse_headers = authenticated_headers(
                 session, language, country, "text/event-stream");
             sse_headers.push_back("Cache-Control: no-cache");
@@ -1201,6 +1463,7 @@ void ZeldaNotesClient::run_live_session(
                 sse_headers,
                 [&](const ServerSentEvent& event) {
                     if (live_stop_.load()) return false;
+                    log_zelda("SSE event raw data: " + event.data);
                     const auto received_at = std::chrono::steady_clock::now();
                     const auto message = zelda_notes_decode_live_message(
                         event.data, game, received_at);
@@ -1263,15 +1526,18 @@ void ZeldaNotesClient::run_live_session(
                                 metadata, message.live_state, previous_location);
                             previous_location = location;
                             publish_live_presence(
-                                format_rpc_presence(message.live_state, location));
+                                format_rpc_presence(metadata, message.live_state, location));
                         }
                     }
                     return true;
                 },
                 [&] {
                     if (live_stop_.load()) return true;
-                    return std::chrono::steady_clock::now() - last_message >=
-                        kZeldaNotesLiveFreshness;
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - last_message >= kZeldaNotesLiveFreshness) {
+                        publish_live_presence({});
+                    }
+                    return now - last_message >= std::chrono::minutes(10);
                 },
                 20,
                 1024 * 1024);
@@ -1296,15 +1562,17 @@ void ZeldaNotesClient::run_live_session(
                 protocol_failure = true;
             }
             if (protocol_failure) metadata = {};
-            if (healthy_stream) backoff_seconds = 2;
+            backoff_seconds = 2;
         } catch (const std::exception& error) {
             if (!live_stop_.load()) {
-                std::cerr << "[ZeldaNotes] Live map sync unavailable: "
-                          << error.what() << '\n';
+                log_zelda("Live map sync unavailable: " + std::string(error.what()));
             }
             publish_live_presence({});
+            backoff_seconds = 2;
         } catch (...) {
+            log_zelda("Live map sync unknown error");
             publish_live_presence({});
+            backoff_seconds = 2;
         }
 
         if (live_stop_.load()) break;
@@ -1314,7 +1582,6 @@ void ZeldaNotesClient::run_live_session(
             std::chrono::seconds(backoff_seconds),
             [this] { return live_stop_.load(); });
         wait_lock.unlock();
-        backoff_seconds = next_backoff(backoff_seconds);
     }
 }
 

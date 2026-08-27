@@ -137,12 +137,14 @@ NintendoPresence with_live_zelda_location(const NintendoPresence& base) {
     const auto live = zelda_notes_current_live_presence();
     if (!live.active) return effective;
 
-    // Zelda owns only the two free-form text rows. Keep Coral's game name,
-    // artwork, shop link, timestamp and Nintendo profile small image unchanged.
     const auto details = live.format_details();
     const auto state = live.format_state();
     if (!details.empty()) effective.custom_details = details;
     if (!state.empty()) effective.custom_state = state;
+    if (!live.stage_image_uri.empty()) {
+        effective.custom_large_image_uri = live.stage_image_uri;
+        effective.custom_large_text = live.stage_name.empty() ? effective.game_name : live.stage_name;
+    }
     return effective;
 }
 
@@ -344,11 +346,11 @@ struct DiscordPresence::Impl {
             activity.SetTimestamps(timestamps);
         }
 
-        // Coral's current-game artwork is always the primary image. Zelda live
-        // location changes only the text rows, so the normal Nintendo profile
-        // small image remains untouched as well.
         const auto large_image_uri = normalize_discord_image_url(
-            presence, presence.image_uri);
+            presence,
+            !presence.custom_large_image_uri.empty()
+                ? presence.custom_large_image_uri
+                : presence.image_uri);
         const auto small_image_uri = normalize_discord_image_url(
             presence, presence.custom_image_uri);
         if (!presence.custom_image_uri.empty() &&
@@ -361,13 +363,21 @@ struct DiscordPresence::Impl {
             discordpp::ActivityAssets assets;
             if (is_valid_discord_image_url(large_image_uri)) {
                 assets.SetLargeImage(large_image_uri);
-                assets.SetLargeText(presence.game_name);
+                assets.SetLargeText(
+                    !presence.custom_large_text.empty()
+                        ? presence.custom_large_text
+                        : presence.game_name);
                 if (is_valid_discord_image_url(presence.shop_uri)) {
                     assets.SetLargeUrl(presence.shop_uri);
                 }
             }
             if (is_valid_discord_image_url(small_image_uri)) {
                 assets.SetSmallImage(small_image_uri);
+                if (!presence.user_name.empty()) {
+                    assets.SetSmallText(presence.user_name);
+                } else if (!presence.custom_details.empty()) {
+                    assets.SetSmallText(presence.custom_details);
+                }
             }
             activity.SetAssets(assets);
         }

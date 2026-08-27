@@ -22,8 +22,10 @@
 #include <cwchar>
 #else
 #include <openssl/bio.h>
+#include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <cerrno>
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -743,6 +745,13 @@ inline bool connect_tcp(
         wait_for_connect(connection.raw, deadline, should_cancel);
     }
     BIO_set_nbio(connection.raw, 0);
+    int fd = -1;
+    if (BIO_get_fd(connection.raw, &fd) >= 0 && fd >= 0) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+        }
+    }
     apply_socket_timeout(connection.raw, timeout_seconds);
     connection.io = connection.raw;
     return true;
@@ -801,9 +810,35 @@ inline bool establish_proxy_tunnel(
     return true;
 }
 
+inline void wait_for_ssl(SSL* ssl, int error, std::chrono::steady_clock::time_point deadline) {
+    int fd = SSL_get_fd(ssl);
+    if (fd < 0) throw std::runtime_error("TLS socket descriptor error");
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) throw std::runtime_error("TLS handshake timed out");
+    const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+    timeval timeout{
+        static_cast<time_t>(remaining.count() / 1'000'000),
+        static_cast<suseconds_t>(remaining.count() % 1'000'000),
+    };
+
+    fd_set read_set;
+    fd_set write_set;
+    FD_ZERO(&read_set);
+    FD_ZERO(&write_set);
+    if (error == SSL_ERROR_WANT_READ) FD_SET(fd, &read_set);
+    if (error == SSL_ERROR_WANT_WRITE) FD_SET(fd, &write_set);
+    const int ready = select(fd + 1, &read_set, &write_set, nullptr, &timeout);
+    if (ready == 0) throw std::runtime_error("TLS handshake timed out");
+    if (ready < 0 && errno != EINTR) throw std::runtime_error("TLS handshake wait failed");
+}
+
 inline void enable_tls(Connection& connection, const ParsedUrl& destination) {
     connection.context = SSL_CTX_new(TLS_client_method());
     if (connection.context == nullptr) throw std::runtime_error("SSL_CTX_new failed");
+#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
+    SSL_CTX_set_options(connection.context, SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
     SSL_CTX_set_verify(connection.context, SSL_VERIFY_PEER, nullptr);
     if (SSL_CTX_set_default_verify_paths(connection.context) != 1) {
         throw std::runtime_error("Could not load system TLS trust store");
@@ -817,8 +852,25 @@ inline void enable_tls(Connection& connection, const ParsedUrl& destination) {
     SSL_set_bio(connection.ssl, connection.raw, connection.raw);
     connection.raw = nullptr;
     connection.io = nullptr;
-    const int result = SSL_connect(connection.ssl);
-    if (result != 1) throw std::runtime_error("SSE TLS handshake failed");
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    for (;;) {
+        const int result = SSL_connect(connection.ssl);
+        if (result == 1) break;
+        const int error = SSL_get_error(connection.ssl, result);
+        if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+            wait_for_ssl(connection.ssl, error, deadline);
+            continue;
+        }
+        if (error == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            wait_for_ssl(connection.ssl, SSL_ERROR_WANT_READ, deadline);
+            continue;
+        }
+        char err_buf[256];
+        ERR_error_string_n(ERR_get_error(), err_buf, sizeof(err_buf));
+        throw std::runtime_error(std::string("SSE TLS handshake failed: ") + err_buf);
+    }
+
     connection.io = BIO_new(BIO_f_ssl());
     if (connection.io == nullptr) {
         throw std::runtime_error("BIO_new(BIO_f_ssl()) failed");

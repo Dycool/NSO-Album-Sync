@@ -33,6 +33,7 @@ struct MediaItem {
 struct NintendoPresence {
     std::string state = "OFFLINE";
     std::string platform;
+    std::string user_name;
     std::string game_name;
     std::string title_id;
     std::string image_uri;
@@ -44,6 +45,8 @@ struct NintendoPresence {
     std::string custom_state;
     std::string custom_details;
     std::string custom_image_uri;
+    std::string custom_large_image_uri;
+    std::string custom_large_text;
 
     bool is_playing() const { return state == "ONLINE" || state == "PLAYING"; }
     std::string console_name() const;

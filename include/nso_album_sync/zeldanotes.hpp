@@ -80,6 +80,8 @@ struct ZeldaNotesResolvedLocation {
     ZeldaNotesLayer layer = ZeldaNotesLayer::Unknown;
     std::string region;
     std::string poi;
+    std::string stage_image_uri;
+    std::string subcategory;
     std::int64_t poi_uid = 0;
     double poi_distance = 0.0;
     bool valid = false;
@@ -150,12 +152,11 @@ bool zelda_notes_live_state_is_fresh(
         std::chrono::steady_clock::now());
 
 struct ZeldaNotesPresence {
-    // Keep the legacy shape because App's game-service branch already consumes
-    // this interface. Live location updates are overlaid again by Discord so the
-    // generic game name, artwork, profile image and Coral timer remain intact.
     std::string title_name;
     std::string profile_summary;
     std::string stage_image_uri;
+    std::string stage_name;
+    std::string avatar_url;
     bool active = false;
 
     std::string format_state() const { return title_name; }

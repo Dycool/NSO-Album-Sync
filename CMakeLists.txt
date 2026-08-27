@@ -159,6 +159,7 @@ set(NSO_SOURCES
     src/sync.cpp
     src/util.cpp
     src/zeldanotes.cpp
+    src/zeldanotes_regions.cpp
 )
 
 set(NSO_HEADERS
@@ -179,6 +180,7 @@ set(NSO_HEADERS
     include/nso_album_sync/sync.hpp
     include/nso_album_sync/util.hpp
     include/nso_album_sync/zeldanotes.hpp
+    include/nso_album_sync/zeldanotes_regions.hpp
 )
 
 if(WIN32)

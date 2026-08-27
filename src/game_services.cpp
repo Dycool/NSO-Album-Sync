@@ -1,4 +1,5 @@
 #include "nso_album_sync/game_services.hpp"
+#include "nso_album_sync/util.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -220,6 +221,33 @@ GameServicesClient::GameServicesClient(HttpClient& http) : http_(http) {}
 void GameServicesClient::clear_cache() {
     std::lock_guard lock(mutex_);
     sessions_.clear();
+    shortened_urls_.clear();
+}
+
+std::string GameServicesClient::shorten_image_url(const std::string& url) {
+    if (url.empty() || url.size() <= 300) return url;
+    {
+        std::lock_guard lock(mutex_);
+        const auto it = shortened_urls_.find(url);
+        if (it != shortened_urls_.end()) return it->second;
+    }
+
+    try {
+        const auto response = http_.get(
+            "https://tinyurl.com/api-create.php?url=" + url_encode(url),
+            {},
+            5);
+        if (response.status == 200) {
+            auto short_url = trim_cookie_piece(response.text());
+            if (!short_url.empty() && short_url.rfind("https://", 0) == 0 && short_url.size() <= 300) {
+                std::lock_guard lock(mutex_);
+                shortened_urls_[url] = short_url;
+                return short_url;
+            }
+        }
+    } catch (...) {
+    }
+    return url;
 }
 
 AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
@@ -307,6 +335,12 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         AnimalCrossingPresence presence;
         presence.resident_name = user.string("name");
         presence.image_uri = user.string("image");
+        if (presence.image_uri.empty()) {
+            presence.image_uri = user.string("image_url");
+        }
+        if (!presence.image_uri.empty() && presence.image_uri.size() > 300) {
+            presence.image_uri = shorten_image_url(presence.image_uri);
+        }
         session.user_id = user.string("id");
         std::string land_id;
         if (const auto* land = user.find("land"); land && land->is_object()) {
@@ -377,8 +411,15 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
                     if (!resident_name.empty()) presence.resident_name = resident_name;
                     const auto island_name = profile_json.string("landName");
                     if (!island_name.empty()) presence.island_name = island_name;
-                    const auto image = profile_json.string("mJpeg");
-                    if (!image.empty()) presence.image_uri = image;
+                    const auto profile_image = profile_json.string("image");
+                    if (!profile_image.empty()) {
+                        presence.image_uri = profile_image;
+                    } else {
+                        const auto profile_image_url = profile_json.string("image_url");
+                        if (!profile_image_url.empty()) {
+                            presence.image_uri = profile_image_url;
+                        }
+                    }
                 } catch (...) {
                     log_nooklink_failure("resident profile response is not valid JSON");
                 }
