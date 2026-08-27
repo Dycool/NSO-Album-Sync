@@ -889,19 +889,19 @@ std::string generate_zelda_lore_activity(
     const double y = state.position.y;
     const double z = state.position.z;
 
-    // 1. Landmark & Specific POI Context
+    // 1. Landmark & Specific POI Context (Complementary lore that avoids repeating Line 1)
     if (location.at_poi || location.near_poi) {
         if (poi.find("Hyrule Castle") != std::string::npos || poi.find("Sanctum") != std::string::npos) {
-            return "Infiltrating Hyrule Castle";
+            return "Infiltrating the Sacred Seat of Hyrule";
         }
         if (poi.find("Temple of Time") != std::string::npos) {
-            return "Standing at the Temple of Time";
+            return "Sacred Ruins of the Ancient Realm";
         }
         if (poi.find("Forgotten Temple") != std::string::npos) {
-            return "Exploring the Forgotten Temple";
+            return "Exploring the Ancient Hidden Temple";
         }
         if (poi.find("Yiga") != std::string::npos || poi.find("Hideout") != std::string::npos) {
-            return "Infiltrating Yiga Clan Territory";
+            return "Infiltrating Enemy Stronghold";
         }
         if (poi.find("Coliseum") != std::string::npos || poi.find("Colosseum") != std::string::npos) {
             return "Challenging Ancient Arenas";
@@ -913,7 +913,7 @@ std::string generate_zelda_lore_activity(
             return "Navigating Ancient Labyrinths";
         }
         if (poi.find("Chasm") != std::string::npos) {
-            return "Descending into the Chasm";
+            return "Descending into the Depths";
         }
         if (poi.find("Cave") != std::string::npos || poi.find("Well") != std::string::npos ||
             poi.find("Grotto") != std::string::npos) {
@@ -925,114 +925,142 @@ std::string generate_zelda_lore_activity(
         if (poi.find("Lab") != std::string::npos) {
             return "Visiting the Ancient Tech Lab";
         }
-        if (poi.find("Stable") != std::string::npos || subcategory == "stable" || subcategory == "hatago") {
-            return "Resting at " + poi;
+        if (poi.find("Hudson Construction") != std::string::npos) {
+            return "Building the Future of Hyrule";
         }
         if (poi.find("Tower") != std::string::npos || subcategory == "skyviewTower" || subcategory == "tower") {
-            return "Surveying from " + poi;
+            if (region == "Hebra" || region == "Tabantha") return "Surveying the Frozen Mountain Peaks";
+            if (region == "Akkala") return "Surveying the Autumn Highlands";
+            if (region == "Eldin" || region == "Death Mountain") return "Overlooking the Volcanic Realm";
+            if (region == "Gerudo") return "Overlooking the Shifting Sands";
+            if (region == "Lanayru") return "Surveying the Rushing Waterways";
+            if (region == "Necluda" || region == "Dueling Peaks") return "Surveying the Peaceful Valleys";
+            if (region == "Faron" || region == "Lake Hylia") return "Overlooking the Dense Jungle Wilds";
+            if (region == "Great Plateau") return "Surveying the Ancient Plateau";
+            return "Surveying from High Vantage Point";
+        }
+        if (poi.find("Stable") != std::string::npos || subcategory == "stable" || subcategory == "hatago") {
+            if (region == "Hebra" || region == "Tabantha") return "Resting by the Frozen Snowfields";
+            if (region == "Akkala") return "Resting on the Road to the Sea";
+            if (region == "Eldin") return "Resting by the Foot of the Volcano";
+            if (region == "Gerudo") return "Resting on the Way to the Desert";
+            if (region == "Lanayru") return "Resting along the Waterways";
+            if (region == "Necluda" || region == "Dueling Peaks") return "Resting near the Cleft of the Peaks";
+            if (region == "Faron" || region == "Lake Hylia") return "Resting by the Southern Shores";
+            return "Resting at the Stable";
         }
         if (poi.find("Shrine") != std::string::npos || subcategory == "shrine") {
-            return "Investigating Shrine of Light";
+            return "Investigating a Sacred Shrine";
         }
         if (poi.find("Lightroot") != std::string::npos || subcategory == "lightroot") {
-            return "Resting by a Lightroot";
+            return "Resting in the Glow of a Lightroot";
         }
         if (poi.find("Temple") != std::string::npos || poi.find("Mine") != std::string::npos ||
             poi.find("Forge") != std::string::npos || subcategory == "dungeon") {
-            return "Delving into " + poi;
+            return "Delving into Ancient Ruins";
         }
         if (poi.find("Archipelago") != std::string::npos || poi.find("Island") != std::string::npos) {
             if (state.layer == ZeldaNotesLayer::Sky) {
-                return "Exploring " + poi;
+                return "Navigating High Sky Islands";
             }
         }
+        if (poi.find("Tarrey Town") != std::string::npos) return "Settlement on the Island Bluff";
+        if (poi.find("Lookout Landing") != std::string::npos) return "Heart of the Resistance";
+        if (poi.find("Rito Village") != std::string::npos) return "Home of the Champions";
+        if (poi.find("Goron City") != std::string::npos) return "City in the Mountain Crags";
+        if (poi.find("Zora") != std::string::npos && poi.find("Domain") != std::string::npos) return "Domain of the Water Tribe";
+        if (poi.find("Gerudo Town") != std::string::npos || poi.find("Kara Kara") != std::string::npos) return "Oasis in the Desert Sands";
+        if (poi.find("Hateno Village") != std::string::npos) return "Idyllic Countryside Pastures";
+        if (poi.find("Kakariko Village") != std::string::npos) return "Hidden Haven of the Sheikah";
+        if (poi.find("Lurelin Village") != std::string::npos) return "Tropical Seaside Haven";
+        if (poi.find("Korok Forest") != std::string::npos) return "Sanctuary of the Great Deku Tree";
         if (subcategory == "village" || poi.find("Town") != std::string::npos ||
             poi.find("Village") != std::string::npos || poi.find("Landing") != std::string::npos ||
             poi.find("Domain") != std::string::npos || poi.find("City") != std::string::npos) {
-            return location.at_poi ? "Visiting " + poi : "Approaching " + poi;
+            return "Visiting Local Settlement";
         }
     }
 
     // 2. Sky Layer Sub-Regions
     if (state.game == ZeldaNotesGame::TearsOfTheKingdom && state.layer == ZeldaNotesLayer::Sky) {
         if (y > 2200.0) return "Soaring in the Upper Stratosphere";
-        if (x > 3000.0 && z < -1000.0) return "Navigating the Sokkala Sky Islands";
-        if (x < -2500.0 && z < -1500.0) return "Navigating the Hebra Sky Realm";
-        if (x < -2500.0 && z > 1500.0) return "Navigating the Gerudo Sky Realm";
-        if (x > 1500.0 && z < -1500.0) return "Navigating the Eldin Sky Realm";
-        if (x > 1500.0 && z > 1500.0) return "Navigating the Necluda Sky Realm";
-        if (x > -500.0 && x < 1000.0 && z > 500.0 && z < 2000.0) return "Exploring the Great Sky Island";
-        return !region.empty() ? "Soaring above " + region : "Navigating the Sky Archipelagos";
+        if (x > 3000.0 && z < -1000.0) return "Navigating High Sky Islands";
+        if (x < -2500.0 && z < -1500.0) return "Navigating the Cold Sky Realm";
+        if (x < -2500.0 && z > 1500.0) return "Navigating the Desert Sky Realm";
+        if (x > 1500.0 && z < -1500.0) return "Navigating the Volcanic Sky Realm";
+        if (x > 1500.0 && z > 1500.0) return "Navigating the Southern Sky Realm";
+        if (x > -500.0 && x < 1000.0 && z > 500.0 && z < 2000.0) return "Exploring Ancient Sky Ruins";
+        return "Soaring above the Clouds";
     }
 
     // 3. Depths Layer Sub-Regions
     if (state.game == ZeldaNotesGame::TearsOfTheKingdom && state.layer == ZeldaNotesLayer::Underground) {
         if (y < -800.0) return "Trekking the Abyssal Depths";
-        if (x > 2500.0 && z < -1000.0) return "Trekking the Depths of Akkala";
-        if (x > 1000.0 && z < -2000.0) return "Navigating the Volcanic Eldin Depths";
-        if (x < -2000.0 && z > 1000.0) return "Trekking the Gerudo Desert Depths";
-        if (x < -2000.0 && z < -1000.0) return "Braving the Freezing Hebra Depths";
-        if (x > 1500.0 && z > -500.0 && z < 1000.0) return "Navigating the Lanayru Depths";
-        if (x > -1500.0 && x < 1500.0 && z > -1500.0 && z < 1500.0) return "Trekking Central Hyrule Depths";
-        return !region.empty() ? "Surveying the Depths below " + region : "Trekking the Lightless Depths";
+        if (x > 2500.0 && z < -1000.0) return "Trekking the Eastern Depths";
+        if (x > 1000.0 && z < -2000.0) return "Navigating the Volcanic Depths";
+        if (x < -2000.0 && z > 1000.0) return "Trekking the Desert Depths";
+        if (x < -2000.0 && z < -1000.0) return "Braving the Freezing Depths";
+        if (x > 1500.0 && z > -500.0 && z < 1000.0) return "Navigating the Underground Waterways";
+        if (x > -1500.0 && x < 1500.0 && z > -1500.0 && z < 1500.0) return "Trekking the Central Depths";
+        return "Trekking the Lightless Depths";
     }
 
-    // 4. Surface Granular Sub-Regions
+    // 4. Surface Granular Sub-Regions (Avoiding duplicate region/verb names)
     if (region == "Akkala") {
-        if (x > 4000.0 && z < -2000.0) return "Exploring the Rist Peninsula Coast";
-        if (z < -2800.0) return "Wandering Deep Akkala";
-        if (z < -2200.0 && x < 3600.0) return "Exploring near Skull Lake";
-        if (x > 3200.0 && z > -2000.0 && z < -1200.0) return "Wandering around Lake Akkala";
-        if (z > -1200.0) return "Traversing South Akkala Plains";
-        return "Wandering the Akkala Highlands";
+        if (x > 4000.0 && z < -2000.0) return "Wandering the Rist Peninsula Coast";
+        if (z < -2800.0) return "Traversing the Deep Highlands";
+        if (z < -2200.0 && x < 3600.0) return "Investigating Skull Lake";
+        if (x > 3200.0 && z > -2000.0 && z < -1200.0) return "Wandering around the Lake Caldera";
+        if (z > -1200.0) return "Traversing the Southern Plains";
+        return "Wandering the Autumn Highlands";
     }
 
     if (region == "Central Hyrule" || region == "Hyrule Field") {
-        if (z < -1000.0 && x > -500.0 && x < 500.0) return "Surveying Hyrule Castle Town Ruins";
-        if (x < -1000.0) return "Roaming Western Hyrule Plains";
+        if (z < -1000.0 && x > -500.0 && x < 500.0) return "Surveying Ancient Castle Town Ruins";
+        if (x < -1000.0) return "Roaming the Western Plains";
         if (x > 1000.0) return "Wandering near Crenel Hills";
-        if (z > 500.0) return "Traversing Central Hyrule Plains";
-        return "Roaming the Heart of Hyrule Field";
+        if (z > 500.0) return "Traversing the Vast Plains";
+        return "Roaming the Heart of the Plains";
     }
 
     if (region == "Eldin" || region == "Death Mountain") {
-        if (x > 2000.0 && z < -2500.0) return "Scaling the Summit of Death Mountain";
-        if (z < -3000.0) return "Climbing the Northern Eldin Peaks";
-        if (x < 1500.0) return "Braving the Crags of Eldin Canyon";
+        if (x > 2000.0 && z < -2500.0) return "Scaling the Summit of the Volcano";
+        if (z < -3000.0) return "Climbing the Northern Peaks";
+        if (x < 1500.0) return "Braving the Crags of the Canyon";
         return "Traversing the Scorching Lava Beds";
     }
 
     if (region == "Hebra" || region == "Tabantha") {
-        if (x < -2500.0 && z < -2500.0) return "Braving the Summit of Mount Hebra";
-        if (x > -2500.0 && z < -2500.0) return "Traversing Tabantha Tundra Snowfields";
-        if (z > -2000.0) return "Wandering the Tabantha Frontier";
-        return "Braving the Freezing Hebra Peaks";
+        if (x < -2500.0 && z < -2500.0) return "Braving the Summit of the Mountain";
+        if (x > -2500.0 && z < -2500.0) return "Traversing the Tundra Snowfields";
+        if (z > -2000.0) return "Wandering the Western Frontier";
+        return "Braving the Freezing Mountain Peaks";
     }
 
     if (region == "Gerudo") {
         if (z > 2500.0 && x < -2500.0) return "Traversing the Great Desert Dunes";
-        if (z < 1500.0) return "Scaling the Frozen Gerudo Highlands";
-        if (x > -2500.0) return "Navigating the Narrow Gerudo Canyons";
+        if (z < 1500.0) return "Scaling the Frozen Highlands";
+        if (x > -2500.0) return "Navigating the Narrow Canyons";
         return "Traversing the Shifting Sands";
     }
 
     if (region == "Lanayru") {
-        if (x > 3000.0 && z > 500.0) return "Braving Mount Lanayru Snowfields";
-        if (x < 2000.0 && z > -500.0) return "Navigating the Lanayru Wetlands";
-        if (x > 2500.0 && z < -500.0) return "Roaming near Zora's Domain";
-        return "Roaming the Rushing Waters of Lanayru";
+        if (x > 3000.0 && z > 500.0) return "Braving the High Peak Snowfields";
+        if (x < 2000.0 && z > -500.0) return "Navigating the Vast Wetlands";
+        if (x > 2500.0 && z < -500.0) return "Roaming the Domain Waterways";
+        return "Roaming the Rushing Waterways";
     }
 
     if (region == "Necluda" || region == "Dueling Peaks") {
-        if (x < 2000.0) return "Traversing the Cleft of Dueling Peaks";
-        if (x > 3000.0) return "Roaming the Valleys of East Necluda";
-        return "Wandering Peaceful Necluda";
+        if (x < 2000.0) return "Traversing the Cleft of the Peaks";
+        if (x > 3000.0) return "Roaming the Eastern Valleys";
+        return "Wandering the Peaceful Countryside";
     }
 
     if (region == "Faron" || region == "Lake Hylia") {
-        if (x < 500.0 && z > 2000.0) return "Roaming the Shores of Lake Hylia";
+        if (x < 500.0 && z > 2000.0) return "Roaming the Shores of the Great Lake";
         if (x > 2500.0) return "Wandering the Sunny Palmorae Coast";
-        return "Venturing through the Dense Faron Jungle";
+        return "Venturing through the Dense Jungle";
     }
 
     if (region == "Great Hyrule Forest") {
@@ -1040,14 +1068,14 @@ std::string generate_zelda_lore_activity(
     }
 
     if (region == "Hyrule Ridge") {
-        return "Traversing the Windy Hyrule Ridge";
+        return "Traversing the Windy Plateaus";
     }
 
     if (region == "Great Plateau") {
-        return "Exploring the Great Plateau";
+        return "Trekking the Ancient Plateau";
     }
 
-    return !region.empty() ? "Exploring the Realm of " + region : "Roaming the Lands of Hyrule";
+    return "Roaming the Open Wilds";
 }
 
 ZeldaNotesPresence format_rpc_presence(
