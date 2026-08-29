@@ -1,0 +1,88 @@
+name: Publish v1.1.1
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    if: github.event.head_commit.message == 'chore(release): publish v1.1.1'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v1.1.1
+      TARGET_SHA: c1adbf4cee2d56516e40daa4abb0e8c0c8ef727c
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            remote_sha="$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}')"
+            test "$remote_sha" = "$TARGET_SHA"
+          else
+            git tag "$TAG" "$TARGET_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+
+      - name: Wait for tagged release build
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=""
+          for attempt in $(seq 1 60); do
+            run_id="$(gh api "repos/$GH_REPO/actions/runs?head_sha=$TARGET_SHA&event=push&per_page=20" \
+              --jq ".workflow_runs[] | select(.head_branch == \"$TAG\" and .name == \"Build\") | .id" \
+              | head -n 1)"
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+            sleep 5
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "Could not find the Build workflow run for $TAG" >&2
+            exit 1
+          fi
+          gh run watch "$run_id" --exit-status
+
+      - name: Publish release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          ## What's changed
+
+          ### Discord Rich Presence
+          - Significantly richer RPC context for supported Nintendo games, including Zelda: Breath of the Wild / Tears of the Kingdom, Splatoon 2 / 3, and Animal Crossing: New Horizons.
+          - Improved Zelda live-location context, POI/region activity text, dynamic stage/location artwork, and player/game context.
+          - Improved session handling so enriched RPC data is reused without repeatedly hitting Nintendo game-service endpoints every minute.
+          - Long signed NookLink profile-image URLs are no longer sent to an external URL-shortening service; overlong assets are safely omitted instead.
+
+          ### macOS fixes
+          - Restored macOS Keychain storage for Nintendo credentials, preserving sign-in across upgrades instead of falling back to a plaintext credentials file.
+          - Improved Nintendo sign-in callback and URL handling, notification compatibility, path handling, and TLS robustness.
+          - Corrected the release deployment target to macOS 11.0. The macOS package is Apple Silicon (arm64).
+
+          ### Reliability and packaging
+          - Improved TLS handshake/error handling and HTTP/proxy robustness.
+          - Corrected application version metadata to 1.1.1 on packaged builds.
+          - Additional cross-platform packaging and stability fixes.
+
+          ## Compatibility
+          - Windows 10+ x64
+          - macOS 11+ Apple Silicon (arm64)
+          - Linux x64 with glibc 2.35+
+          NOTES
+
+          gh release edit "$TAG" \
+            --title "v1.1.1 - RPC and macOS improvements" \
+            --notes-file release-notes.md \
+            --draft=false
