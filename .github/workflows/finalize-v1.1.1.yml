@@ -17,8 +17,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: v1.1.1
-      TARGET_SHA: 05a82c45975a637f776c894afa6b02824995b3ff
-      BUILD_RUN_ID: '33277449810'
+      TARGET_SHA: 4bf68e57532fe91844ac7a95fd39d00c0f228559
+      BUILD_RUN_ID: '33277474833'
     steps:
       - uses: actions/checkout@v6
         with:
