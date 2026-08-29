@@ -7,8 +7,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
-#include <filesystem>
-#include <fstream>
 #include <initializer_list>
 #include <iostream>
 #include <random>
@@ -21,15 +19,6 @@ constexpr auto kPresencePollInterval = std::chrono::seconds(60);
 constexpr auto kAuthCallbackPollInterval = std::chrono::milliseconds(150);
 constexpr auto kExitWatchdogDelay = std::chrono::seconds(5);
 constexpr std::int64_t kPollingJitterDivisor = 50;  // +/- 2%
-
-void log_app_presence(const std::string& msg) {
-    std::cerr << "[AppPresence] " << msg << "\n";
-    try {
-        const auto path = std::filesystem::temp_directory_path() / "nso-album-sync-rpc.log";
-        std::ofstream output(path, std::ios::app);
-        if (output) output << "[AppPresence] " << msg << '\n';
-    } catch (...) {}
-}
 
 constexpr char kNxapiDisclosureTitle[] = "Third-Party Service Disclosure";
 constexpr char kNxapiDisclosure[] =
@@ -473,10 +462,8 @@ void App::presence_loop() {
             if (!stopping_ && config.discord_presence &&
                 config.session_token == session_token &&
                 account_generation_.load() == generation) {
-                log_app_presence("Polled presence: is_playing=" + std::string(presence.is_playing() ? "true" : "false") + " title_id=" + presence.title_id + " game_name=" + presence.game_name);
                 if (presence.is_playing()) {
                     const auto service = rpc_game_service_for(presence);
-                    log_app_presence("Service routing: service=" + std::to_string(static_cast<int>(service)));
                     const auto game_key = !presence.title_id.empty()
                         ? presence.title_id
                         : presence.game_name;
