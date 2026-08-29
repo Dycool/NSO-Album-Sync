@@ -2,89 +2,85 @@
 
 #ifdef __APPLE__
 
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <sys/stat.h>
-#include <unistd.h>
+#import <Foundation/Foundation.h>
+#import <Security/Security.h>
 
 namespace nso {
 namespace {
 
-std::filesystem::path credentials_directory() {
-    const char* home = std::getenv("HOME");
-    if (home == nullptr || *home == '\0') {
-        return {};
-    }
-    const auto dir = std::filesystem::path(home) / "Library" / "Application Support" / "NSOAlbumSync" / "credentials";
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    if (!ec) {
-        chmod(dir.c_str(), 0700);
-    }
-    return dir;
-}
+NSString* const kKeychainService = @"org.nsoalbumsync.session-token";
 
-std::filesystem::path credential_file_path(const std::string& account) {
-    const auto dir = credentials_directory();
-    if (dir.empty()) return {};
-
-    // Sanitize account name for safe filename
-    std::string safe_name;
-    for (char c : account) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
-            safe_name += c;
-        } else {
-            safe_name += '_';
-        }
-    }
-    if (safe_name.empty()) safe_name = "default";
-    return dir / (safe_name + ".dat");
+NSDictionary* keychain_query(NSString* account) {
+    return @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrService : kKeychainService,
+        (id)kSecAttrAccount : account,
+    };
 }
 
 }  // namespace
 
 bool SecureStore::available() {
-    return !credentials_directory().empty();
+    return true;
 }
 
 bool SecureStore::put(
     const std::string& account,
     const std::string& secret) {
-    const auto file_path = credential_file_path(account);
-    if (file_path.empty()) return false;
+    @autoreleasepool {
+        NSString* account_string = [NSString stringWithUTF8String:account.c_str()];
+        NSData* secret_data = [NSData
+            dataWithBytes:secret.data()
+                   length:secret.size()];
 
-    std::ofstream file(file_path, std::ios::binary | std::ios::trunc);
-    if (!file.is_open()) return false;
+        // Delete the previous value first so SecItemAdd has simple, predictable
+        // semantics and we never leave more than one token for this account.
+        SecItemDelete((CFDictionaryRef)keychain_query(account_string));
 
-    file.write(secret.data(), static_cast<std::streamsize>(secret.size()));
-    file.close();
+        NSMutableDictionary* item = [NSMutableDictionary
+            dictionaryWithDictionary:keychain_query(account_string)];
+        item[(id)kSecValueData] = secret_data;
 
-    chmod(file_path.c_str(), 0600);
-    return true;
+        return SecItemAdd(
+                   (CFDictionaryRef)item,
+                   nullptr) == errSecSuccess;
+    }
 }
 
 std::optional<std::string> SecureStore::get(const std::string& account) {
-    const auto file_path = credential_file_path(account);
-    if (file_path.empty() || !std::filesystem::exists(file_path)) {
-        return std::nullopt;
+    @autoreleasepool {
+        NSString* account_string = [NSString stringWithUTF8String:account.c_str()];
+        NSMutableDictionary* query = [NSMutableDictionary
+            dictionaryWithDictionary:keychain_query(account_string)];
+
+        query[(id)kSecReturnData] = @YES;
+        query[(id)kSecMatchLimit] = (id)kSecMatchLimitOne;
+
+        CFTypeRef result = nullptr;
+        const OSStatus status = SecItemCopyMatching(
+            (CFDictionaryRef)query,
+            &result);
+
+        if (status != errSecSuccess || result == nullptr) {
+            if (result != nullptr) {
+                CFRelease(result);
+            }
+            return std::nullopt;
+        }
+
+        NSData* data = (NSData*)result;
+        std::string secret(
+            static_cast<const char*>(data.bytes),
+            static_cast<const char*>(data.bytes) + data.length);
+        CFRelease(result);
+        return secret;
     }
-
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file.is_open()) return std::nullopt;
-
-    std::string content(
-        (std::istreambuf_iterator<char>(file)),
-        std::istreambuf_iterator<char>());
-    if (content.empty()) return std::nullopt;
-    return content;
 }
 
 void SecureStore::erase(const std::string& account) {
-    const auto file_path = credential_file_path(account);
-    if (!file_path.empty()) {
-        std::error_code ec;
-        std::filesystem::remove(file_path, ec);
+    @autoreleasepool {
+        NSString* account_string = [NSString stringWithUTF8String:account.c_str()];
+        SecItemDelete((CFDictionaryRef)keychain_query(account_string));
     }
 }
 
