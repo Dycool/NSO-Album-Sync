@@ -340,6 +340,7 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         }
         if (!presence.image_uri.empty() && presence.image_uri.size() > 300) {
             presence.image_uri = shorten_image_url(presence.image_uri);
+            if (presence.image_uri.size() > 300) presence.image_uri.clear();
         }
         session.user_id = user.string("id");
         std::string land_id;
@@ -466,6 +467,10 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
             }
         }
 
+        if (!presence.image_uri.empty() && presence.image_uri.size() > 300) {
+            presence.image_uri = shorten_image_url(presence.image_uri);
+            if (presence.image_uri.size() > 300) presence.image_uri.clear();
+        }
         if (!presence.active) {
             log_nooklink_failure("/users returned no usable resident or island name");
         }
