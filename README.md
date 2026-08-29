@@ -32,7 +32,7 @@
 
 Discord Rich Presence is optional and disabled by default. It requires the Discord desktop client to be running.
 
-Release builds target **Windows 10+ x64**, **macOS 11+ Universal 2**, and **Linux x64 with glibc 2.35+**.
+Release builds target **Windows 10+ x64**, **macOS 11+ Apple Silicon (arm64)**, and **Linux x64 with glibc 2.35+**.
 
 ---
 
