@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(
     nso-album-sync
-    VERSION 2.0.0
+    VERSION 1.1.1
     LANGUAGES CXX
 )
 
