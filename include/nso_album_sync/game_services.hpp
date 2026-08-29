@@ -74,7 +74,6 @@ public:
 
     AnimalCrossingPresence fetch_animal_crossing_presence(const std::string& web_service_token);
     Splatoon2Presence fetch_splatoon2_presence(const std::string& web_service_token);
-    std::string shorten_image_url(const std::string& url);
 
     void set_locale(const std::string& language, const std::string& country) {
         const auto next_language = language.empty() ? std::string("en-GB") : language;
@@ -84,7 +83,6 @@ public:
         language_ = next_language;
         country_ = next_country;
         sessions_.clear();
-        shortened_urls_.clear();
     }
 
     void clear_cache();
@@ -105,7 +103,6 @@ private:
     };
 
     std::unordered_map<std::string, ServiceSession> sessions_;
-    std::unordered_map<std::string, std::string> shortened_urls_;
 };
 
 }  // namespace nso
