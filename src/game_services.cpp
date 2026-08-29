@@ -221,6 +221,33 @@ GameServicesClient::GameServicesClient(HttpClient& http) : http_(http) {}
 void GameServicesClient::clear_cache() {
     std::lock_guard lock(mutex_);
     sessions_.clear();
+    shortened_urls_.clear();
+}
+
+std::string GameServicesClient::shorten_image_url(const std::string& url) {
+    if (url.empty() || url.size() <= 300) return url;
+    {
+        std::lock_guard lock(mutex_);
+        const auto it = shortened_urls_.find(url);
+        if (it != shortened_urls_.end()) return it->second;
+    }
+
+    try {
+        const auto response = http_.get(
+            "https://tinyurl.com/api-create.php?url=" + url_encode(url),
+            {},
+            5);
+        if (response.status == 200) {
+            auto short_url = trim_cookie_piece(response.text());
+            if (!short_url.empty() && short_url.rfind("https://", 0) == 0 && short_url.size() <= 300) {
+                std::lock_guard lock(mutex_);
+                shortened_urls_[url] = short_url;
+                return short_url;
+            }
+        }
+    } catch (...) {
+    }
+    return url;
 }
 
 AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
@@ -311,11 +338,8 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
         if (presence.image_uri.empty()) {
             presence.image_uri = user.string("image_url");
         }
-        if (presence.image_uri.size() > 300) {
-            // Discord currently rejects activity image URLs longer than 300
-            // characters. Do not forward a user-specific/signed NookLink URL to
-            // a third-party shortening service just to fit that presentation cap.
-            presence.image_uri.clear();
+        if (!presence.image_uri.empty() && presence.image_uri.size() > 300) {
+            presence.image_uri = shorten_image_url(presence.image_uri);
         }
         session.user_id = user.string("id");
         std::string land_id;
@@ -442,11 +466,6 @@ AnimalCrossingPresence GameServicesClient::fetch_animal_crossing_presence(
             }
         }
 
-        // The detailed profile may replace the initial /users image with a
-        // longer signed URL, so enforce Discord's cap again before returning.
-        if (presence.image_uri.size() > 300) {
-            presence.image_uri.clear();
-        }
         if (!presence.active) {
             log_nooklink_failure("/users returned no usable resident or island name");
         }
