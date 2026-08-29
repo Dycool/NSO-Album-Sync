@@ -2,7 +2,8 @@ name: Publish audited v1.1.1
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - .github/workflows/publish-v1.1.1.yml
 
@@ -12,29 +13,28 @@ permissions:
 
 jobs:
   publish:
-    if: github.event.head_commit.message == 'chore(release): publish audited v1.1.1'
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      TAG: v1.1.1
-      TARGET_SHA: 609a7438786fca98d758da9bea7f3a7a091b7cdc
-      BUILD_RUN_ID: '33277341742'
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Verify audited build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_RUN_ID: '33277341742'
+          TARGET_SHA: 609a7438786fca98d758da9bea7f3a7a091b7cdc
         shell: bash
         run: |
           set -euo pipefail
-          conclusion="$(gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" --jq .conclusion)"
-          head_sha="$(gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" --jq .head_sha)"
-          test "$conclusion" = success
-          test "$head_sha" = "$TARGET_SHA"
+          test "$(gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" --jq .conclusion)" = success
+          test "$(gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" --jq .head_sha)" = "$TARGET_SHA"
 
       - name: Download audited artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: '33277341742'
         shell: bash
         run: |
           set -euo pipefail
@@ -45,6 +45,9 @@ jobs:
           (cd release-artifacts/nso-album-sync-linux && zip -9 ../../release-dist/nso-album-sync-linux.zip nso-album-sync.AppImage)
 
       - name: Create audited tag
+        env:
+          TAG: v1.1.1
+          TARGET_SHA: 609a7438786fca98d758da9bea7f3a7a091b7cdc
         shell: bash
         run: |
           set -euo pipefail
@@ -57,6 +60,9 @@ jobs:
           fi
 
       - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v1.1.1
         shell: bash
         run: |
           set -euo pipefail
@@ -96,12 +102,7 @@ jobs:
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
-            gh release edit "$TAG" \
-              --title "v1.1.1 - RPC and macOS improvements" \
-              --notes-file release-notes.md \
-              --draft=false
+            gh release edit "$TAG" --title "v1.1.1 - RPC and macOS improvements" --notes-file release-notes.md --draft=false
           else
-            gh release create "$TAG" "${files[@]}" \
-              --title "v1.1.1 - RPC and macOS improvements" \
-              --notes-file release-notes.md
+            gh release create "$TAG" "${files[@]}" --title "v1.1.1 - RPC and macOS improvements" --notes-file release-notes.md
           fi
