@@ -474,7 +474,7 @@ std::vector<unsigned char> NxapiClient::encrypt_request(
     const auto version = nso_version();
     const Json payload(Json::object{
         {"url", url},
-        {"token", coral_token},
+        {"token", coral_token.empty() ? Json(nullptr) : Json(coral_token)},
         {"data", json},
     });
     const auto response = znca_request(

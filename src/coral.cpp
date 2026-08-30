@@ -612,7 +612,7 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
         });
         const Json request_body(Json::object{{"parameter", parameter}});
         const auto encrypted_login = nxapi_.encrypt_request(
-            coral_url(kLoginPath), nintendo_tokens.id_token, request_body.dump());
+            coral_url(kLoginPath), "", request_body.dump());
 
         auto response = http_.post_bytes(
             coral_url(kLoginPath),
