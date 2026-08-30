@@ -1,329 +1,264 @@
-name: Apply f rejection fallback
+name: Build
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  BUILD_TYPE: Release
+  DISCORD_SDK_REPOSITORY: Dycool/NSO-Album-Sync-SDK
+  DISCORD_SDK_REF: 21aa7516c44e2856d1fe0927f0c13c092182e2b7
 
 jobs:
-  patch:
-    if: github.event.head_commit.message == 'chore-f-fallback-stage'
-    runs-on: ubuntu-latest
+  windows:
+    name: Windows
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
-      - name: Apply fallback patch
+      - name: Discord SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 -DNSO_STATIC_RUNTIME=ON
+          cmake --build build --config $env:BUILD_TYPE --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = (Resolve-Path "build/$env:BUILD_TYPE/nso-album-sync.exe").Path
+          Copy-Item $exe dist/nso-album-sync.exe
+          $test = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "Self-test failed: $($test.ExitCode)" }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-windows
+          path: dist/nso-album-sync.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Discord SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Dependencies
+        run: brew install cmake ninja openssl@3
+
+      - name: Build
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_CXX_FLAGS_RELEASE="-Oz -DNDEBUG" \
+            -DCMAKE_OBJCXX_FLAGS_RELEASE="-Oz -DNDEBUG" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DNSO_STATIC_RUNTIME=ON
+          cmake --build build --parallel
 
-          path = Path('src/coral.cpp')
-          text = path.read_text()
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="build/nso-album-sync.app"
+          binary="$app/Contents/MacOS/nso-album-sync"
+          framework_root="$app/Contents/Frameworks/discord_partner_sdk.framework"
+          framework="$framework_root/Versions/A/discord_partner_sdk"
 
-          old = '#include <sstream>\n#include <stdexcept>\n'
-          new = '#include <sstream>\n#include <stdexcept>\n#include <utility>\n'
-          assert old in text
-          text = text.replace(old, new, 1)
+          if [[ "$(lipo -archs "$framework")" == *x86_64* ]]; then
+            lipo "$framework" -thin arm64 -output "$framework.arm64"
+            mv "$framework.arm64" "$framework"
+          fi
 
-          old = '''constexpr std::size_t kMaxCoralAuthAttemptsPerHour = 4;
-          constexpr auto kDefaultCoralRateLimitBackoff = std::chrono::minutes(15);
+          rm -rf \
+            "$framework_root/Versions/A/Frameworks/libdiscord_krisp.dylib" \
+            "$framework_root/Versions/A/Resources/Krisp" \
+            "$framework_root/Versions/A/Headers" \
+            "$framework_root/Versions/A/_CodeSignature"
+          rm -f "$framework_root/Headers"
+          find "$framework_root" -type f \( -iname '*krisp*' -o -iname '*.kef' -o -iname '*.kw' \) -delete
+          find "$framework_root" -type d -name '*.dSYM' -prune -exec rm -rf {} + 2>/dev/null || true
 
-          std::string upper(std::string text) {'''
-          new = '''constexpr std::size_t kMaxCoralAuthAttemptsPerHour = 4;
-          constexpr auto kDefaultCoralRateLimitBackoff = std::chrono::minutes(15);
-          constexpr auto kWorkerFCircuitBreakerDuration = std::chrono::hours(6);
+          codesign --remove-signature "$binary" 2>/dev/null || true
+          codesign --remove-signature "$framework" 2>/dev/null || true
+          strip -S -x "$binary" 2>/dev/null || true
+          strip -S -x "$framework" 2>/dev/null || true
+          codesign --force --deep --sign - --timestamp=none "$app"
+          codesign --verify --deep --strict "$app"
+          "$binary" --self-test
 
-          std::mutex g_worker_f_health_mutex;
-          std::chrono::system_clock::time_point g_worker_f_method1_disabled_until{};
-          std::chrono::system_clock::time_point g_worker_f_method2_disabled_until{};
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$app" dist/nso-album-sync.zip
 
-          bool worker_f_enabled(int hash_method) {
-              std::lock_guard lock(g_worker_f_health_mutex);
-              const auto now = std::chrono::system_clock::now();
-              if (hash_method == 1) return now >= g_worker_f_method1_disabled_until;
-              if (hash_method == 2) return now >= g_worker_f_method2_disabled_until;
-              return false;
-          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-macos
+          path: dist/nso-album-sync.zip
+          if-no-files-found: error
 
-          void disable_worker_f(int hash_method) {
-              std::lock_guard lock(g_worker_f_health_mutex);
-              const auto until = std::chrono::system_clock::now() +
-                  kWorkerFCircuitBreakerDuration;
-              if (hash_method == 1) {
-                  g_worker_f_method1_disabled_until = until;
-              } else if (hash_method == 2) {
-                  g_worker_f_method2_disabled_until = until;
-              }
-          }
+  linux:
+    name: Linux
+    runs-on: ubuntu-24.04
+    container: ubuntu:22.04
+    steps:
+      - name: Checkout tools
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
 
-          std::string upper(std::string text) {'''
-          assert old in text
-          text = text.replace(old, new, 1)
+      - uses: actions/checkout@v6
 
-          old = '''    return attestation;
-          }
+      - name: Discord SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
 
-          std::string session_hash(const std::string& session_token) {'''
-          new = '''    return attestation;
-          }
+      - name: Dependencies
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils build-essential cmake curl file ninja-build \
+            libssl-dev libsecret-1-dev libpulse0 libasound2-dev libgtk-3-dev \
+            libayatana-appindicator3-dev zip
 
-          bool is_f_rejection_payload(const std::string& payload) {
-              if (payload.empty()) return false;
-              try {
-                  const auto json = Json::parse(payload);
-                  const auto status = json.integer("status");
-                  if (status == 9403 || status == 9599) return true;
-                  const auto message = json.string("errorMessage");
-                  return message == "Invalid token." || message == "Unexpected error.";
-              } catch (...) {
-                  return false;
-              }
-          }
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_CXX_FLAGS_RELEASE="-Os -DNDEBUG" \
+            -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-Wl,--as-needed" \
+            -DNSO_STATIC_RUNTIME=ON \
+            -DNSO_ENABLE_LINUX_TRAY=ON
+          cmake --build build --parallel
+          strip --strip-unneeded build/nso-album-sync
+          strip --strip-unneeded build/libdiscord_partner_sdk.so
+          LD_LIBRARY_PATH="$PWD/build" build/nso-album-sync --self-test
 
-          std::string session_hash(const std::string& session_token) {'''
-          assert old in text
-          text = text.replace(old, new, 1)
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist tools AppDir/usr/lib AppDir/usr/share/doc/nso-album-sync
 
-          start_marker = '''    // Cloudflare is deliberately used for f generation only. All SDS
-              // request encryption/decryption remains on nxapi, and Nintendo is
-              // contacted directly by the desktop client. If the native f endpoint
-              // is unavailable, fall back to nxapi /f for compatibility.'''
-          end_marker = '    const auto login = Json::parse(decrypted_login);'
-          start = text.index(start_marker)
-          end = text.index(end_marker, start) + len(end_marker)
-          replacement = '''    // Cloudflare is deliberately used for f generation only. All SDS
-              // request encryption/decryption remains on nxapi, and Nintendo is
-              // contacted directly by the desktop client. If the native f endpoint
-              // is unavailable, fall back to nxapi /f for compatibility. If Nintendo
-              // rejects a structurally valid Worker f token, retry once with nxapi f.
-              bool used_worker_f = false;
-              FAttestation attestation;
-              if (worker_f_enabled(1)) {
-                  try {
-                      attestation = worker_generate_f(
-                          http_, 1, nintendo_tokens.id_token, profile.id, "");
-                      used_worker_f = true;
-                  } catch (...) {
-                      attestation = nxapi_.generate_f(
-                          1, nintendo_tokens.id_token, profile.id, "");
-                  }
-              } else {
-                  attestation = nxapi_.generate_f(
-                      1, nintendo_tokens.id_token, profile.id, "");
-              }
+          cat > nso-album-sync.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=NSO Album Sync
+          Comment=Sync Nintendo Switch Online album captures
+          Exec=nso-album-sync
+          Icon=nso-album-sync
+          Categories=Utility;Photography;
+          Terminal=false
+          DESKTOP
 
-              const auto nso_version = nxapi_.nso_version();
-              const auto perform_login_request =
-                  [&](const FAttestation& candidate)
-                      -> std::pair<HttpResponse, std::string> {
-                  const Json parameter(Json::object{
-                      {"naIdToken", nintendo_tokens.id_token},
-                      {"naBirthday", profile.birthday},
-                      {"naCountry", profile.country},
-                      {"language", profile.language},
-                      {"f", candidate.f},
-                      {"requestId", candidate.request_id},
-                      {"timestamp", static_cast<double>(candidate.timestamp)},
-                  });
-                  const Json request_body(Json::object{{"parameter", parameter}});
-                  const auto encrypted_login = nxapi_.encrypt_request(
-                      coral_url(kLoginPath), nintendo_tokens.id_token, request_body.dump());
+          cp build/libdiscord_partner_sdk.so AppDir/usr/lib/libdiscord_partner_sdk.so
+          cp THIRD-PARTY-NOTICES.txt AppDir/usr/share/doc/nso-album-sync/THIRD-PARTY-NOTICES.txt
+          cp icon.svg nso-album-sync.svg
 
-                  auto response = http_.post_bytes(
-                      coral_url(kLoginPath),
-                      encrypted_login,
-                      {
-                          "X-Platform: Android",
-                          "X-ProductVersion: " + nso_version,
-                          "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
-                      });
-                  apply_coral_rate_limit_response(response);
+          deploy="tools/linuxdeploy-x86_64.AppImage"
+          plugin="tools/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          curl -fL --retry 3 -o "$deploy" \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+          curl -fL --retry 3 -o "$plugin" \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          chmod +x "$deploy" "$plugin"
 
-                  std::string decoded;
-                  if (!response.body.empty()) {
-                      try {
-                          decoded = nxapi_.decrypt_response(response.body);
-                      } catch (...) {
-                          const auto raw = response.text();
-                          const auto first = raw.find_first_not_of(" \\t\\r\\n");
-                          if (first != std::string::npos &&
-                              (raw[first] == '{' || raw[first] == '[')) {
-                              decoded = raw;
-                          } else if (response.status / 100 == 2) {
-                              throw;
-                          }
-                      }
-                  }
-                  return {std::move(response), std::move(decoded)};
-              };
+          export PATH="$PWD/tools:$PATH"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export LDAI_COMP=zstd
+          export OUTPUT="$PWD/dist/nso-album-sync.AppImage"
+          "$deploy" --appimage-extract-and-run \
+            --appdir AppDir \
+            --executable build/nso-album-sync \
+            --desktop-file nso-album-sync.desktop \
+            --icon-file nso-album-sync.svg \
+            --output appimage
 
-              auto login_attempt = perform_login_request(attestation);
-              bool recovered_from_worker_f = false;
-              if (used_worker_f && is_f_rejection_payload(login_attempt.second)) {
-                  const auto nxapi_attestation = nxapi_.generate_f(
-                      1, nintendo_tokens.id_token, profile.id, "");
-                  login_attempt = perform_login_request(nxapi_attestation);
-                  recovered_from_worker_f = true;
-              }
+          chmod +x dist/nso-album-sync.AppImage
+          dist/nso-album-sync.AppImage --self-test
 
-              const auto& response = login_attempt.first;
-              const auto& decrypted_login = login_attempt.second;
-              if (response.status / 100 != 2) {
-                  throw std::runtime_error(
-                      "Coral login failed (HTTP " + std::to_string(response.status) + ")" +
-                      (decrypted_login.empty() ? std::string{} : ": " + decrypted_login));
-              }
-              if (decrypted_login.empty()) {
-                  throw std::runtime_error("Coral login returned an empty response");
-              }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-linux
+          path: dist/nso-album-sync.AppImage
+          if-no-files-found: error
 
-              const auto login = Json::parse(decrypted_login);'''
-          text = text[:start] + replacement + text[end:]
+  release:
+    name: Release
+    needs: [windows, macos, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
 
-          old = '''    const auto access_token = credential->string("accessToken");
-              if (access_token.empty()) {
-                  throw std::runtime_error("Coral login missing access token");
-              }
-              std::string user_id = exact_integer_field_in_object(decrypted_login, "user", "id");'''
-          new = '''    const auto access_token = credential->string("accessToken");
-              if (access_token.empty()) {
-                  throw std::runtime_error("Coral login missing access token");
-              }
-              if (recovered_from_worker_f) {
-                  // The same Nintendo request failed with the Worker f but succeeded
-                  // with nxapi f. Bypass Worker method 1 for six hours in this process.
-                  disable_worker_f(1);
-              }
-              std::string user_id = exact_integer_field_in_object(decrypted_login, "user", "id");'''
-          assert old in text
-          text = text.replace(old, new, 1)
+      - uses: actions/download-artifact@v5
+        with:
+          path: release-artifacts
 
-          start_marker = '''        FAttestation attestation;
-                  try {
-                      attestation = worker_generate_f(
-                          http_, 2, access_token, na_id, coral_user_id);'''
-          end_marker = '        const auto json = Json::parse(decrypted);'
-          start = text.index(start_marker)
-          end = text.index(end_marker, start) + len(end_marker)
-          replacement = '''        bool used_worker_f = false;
-                  FAttestation attestation;
-                  if (worker_f_enabled(2)) {
-                      try {
-                          attestation = worker_generate_f(
-                              http_, 2, access_token, na_id, coral_user_id);
-                          used_worker_f = true;
-                      } catch (...) {
-                          attestation = nxapi_.generate_f(
-                              2, access_token, na_id, coral_user_id);
-                      }
-                  } else {
-                      attestation = nxapi_.generate_f(
-                          2, access_token, na_id, coral_user_id);
-                  }
+      - name: Publish Draft Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-dist
+          (cd release-artifacts/nso-album-sync-windows && zip -9 ../../release-dist/nso-album-sync-windows.zip nso-album-sync.exe)
+          cp release-artifacts/nso-album-sync-macos/nso-album-sync.zip release-dist/nso-album-sync-macos.zip
+          (cd release-artifacts/nso-album-sync-linux && zip -9 ../../release-dist/nso-album-sync-linux.zip nso-album-sync.AppImage)
 
-                  const auto nso_version = nxapi_.nso_version();
-                  const auto perform_web_service_token_request =
-                      [&](const FAttestation& candidate)
-                          -> std::pair<HttpResponse, std::string> {
-                      const Json parameter(Json::object{
-                          {"id", static_cast<double>(target_service_id)},
-                          {"registrationToken", ""},
-                          {"f", candidate.f},
-                          {"requestId", candidate.request_id},
-                          {"timestamp", static_cast<double>(candidate.timestamp)},
-                      });
-                      const Json request_body(Json::object{{"parameter", parameter}});
-                      const auto encrypted_request = nxapi_.encrypt_request(
-                          coral_url("/v4/Game/GetWebServiceToken"),
-                          access_token,
-                          request_body.dump());
+          files=(
+            release-dist/nso-album-sync-windows.zip
+            release-dist/nso-album-sync-macos.zip
+            release-dist/nso-album-sync-linux.zip
+          )
 
-                      auto response = http_.post_bytes(
-                          coral_url("/v4/Game/GetWebServiceToken"),
-                          encrypted_request,
-                          {
-                              "Content-Type: application/octet-stream",
-                              "Accept: application/octet-stream,application/json",
-                              "Accept-Language: en-US",
-                              "Authorization: Bearer " + access_token,
-                              "X-Platform: Android",
-                              "X-ProductVersion: " + nso_version,
-                              "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
-                          });
-                      apply_coral_rate_limit_response(response);
-
-                      std::string decoded;
-                      if (!response.body.empty()) {
-                          try {
-                              decoded = nxapi_.decrypt_response(response.body);
-                          } catch (...) {
-                              const auto raw = response.text();
-                              const auto first = raw.find_first_not_of(" \\t\\r\\n");
-                              if (first != std::string::npos &&
-                                  (raw[first] == '{' || raw[first] == '[')) {
-                                  decoded = raw;
-                              } else if (response.status / 100 == 2) {
-                                  throw;
-                              }
-                          }
-                      }
-                      return {std::move(response), std::move(decoded)};
-                  };
-
-                  auto token_attempt = perform_web_service_token_request(attestation);
-                  bool recovered_from_worker_f = false;
-                  if (used_worker_f && is_f_rejection_payload(token_attempt.second)) {
-                      const auto nxapi_attestation = nxapi_.generate_f(
-                          2, access_token, na_id, coral_user_id);
-                      token_attempt = perform_web_service_token_request(nxapi_attestation);
-                      recovered_from_worker_f = true;
-                  }
-
-                  const auto& response = token_attempt.first;
-                  const auto& decrypted = token_attempt.second;
-                  if (response.status / 100 != 2) {
-                      if (response.status == 401 || response.status == 403) {
-                          clear_cached_session();
-                      }
-                      throw std::runtime_error(
-                          "Coral GetWebServiceToken failed (HTTP " +
-                          std::to_string(response.status) + ")" +
-                          (decrypted.empty() ? std::string{} : ": " + decrypted));
-                  }
-                  if (decrypted.empty()) return {};
-
-                  const auto json = Json::parse(decrypted);'''
-          text = text[:start] + replacement + text[end:]
-
-          old = '''        const auto token = result->string("accessToken");
-                  if (token.empty()) return {};
-
-                  const auto expires_in = result->integer("expiresIn", 10800);'''
-          new = '''        const auto token = result->string("accessToken");
-                  if (token.empty()) return {};
-
-                  if (recovered_from_worker_f) {
-                      // The Worker f was rejected and nxapi f succeeded for the same
-                      // Coral credential. Bypass Worker method 2 for six hours.
-                      disable_worker_f(2);
-                  }
-
-                  const auto expires_in = result->integer("expiresIn", 10800);'''
-          assert old in text
-          text = text.replace(old, new, 1)
-
-          path.write_text(text)
-          PY
-
-          git diff --check
-          git config user.name "Diogo Enes"
-          git config user.email "65285981+Dycool@users.noreply.github.com"
-          git add src/coral.cpp
-          git commit -m "fix: retry rejected worker f tokens via nxapi"
-          git push origin HEAD:main
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --draft
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --draft --generate-notes
+          fi
