@@ -55,11 +55,39 @@ std::string worker_url(const char* path) {
     return url;
 }
 
-std::string coral_path(const std::string& url) {
-    const std::string base(kCoralBaseUrl);
-    if (url.rfind(base, 0) != 0) return {};
-    const auto path = url.substr(base.size());
-    return path.empty() ? "/" : path;
+FAttestation worker_generate_f(
+    HttpClient& http,
+    int hash_method,
+    const std::string& token,
+    const std::string& na_id,
+    const std::string& coral_user_id) {
+    const Json body(Json::object{
+        {"clientId", kWorkerClientId},
+        {"hashMethod", std::to_string(hash_method)},
+        {"token", token},
+        {"naId", na_id},
+        {"coralUserId", coral_user_id},
+    });
+    const auto response = http.post(
+        worker_url("/api/nso/f"),
+        body.dump(),
+        {"Accept: application/json", "User-Agent: nso-album-sync/2.0.0"});
+    if (response.status / 100 != 2) {
+        throw std::runtime_error(
+            "Native f-token generation failed (HTTP " +
+            std::to_string(response.status) + "): " + response.text());
+    }
+
+    const auto json = Json::parse(response.text());
+    FAttestation attestation;
+    attestation.f = json.string("f");
+    attestation.request_id = json.string("requestId", json.string("request_id"));
+    attestation.timestamp = json.integer("timestamp");
+    if (attestation.f.empty() || attestation.request_id.empty() ||
+        attestation.timestamp == 0) {
+        throw std::runtime_error("Native f-token response was incomplete");
+    }
+    return attestation;
 }
 
 std::string session_hash(const std::string& session_token) {
@@ -510,85 +538,57 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
     const auto nintendo_tokens = auth_.exchange_session_token(session_token);
     const auto profile = auth_.fetch_profile(nintendo_tokens.access_token);
 
-    // nso-webapp's current backend performs the complete Coral cryptographic
-    // pipeline natively at the edge. Use that first so normal operation has no
-    // nxapi dependency; keep the existing nxapi implementation as a transport/
-    // compatibility fallback if the Worker-native path is unavailable.
-    std::string decrypted_login;
-    std::string exact_user_id;
-    bool use_nxapi_fallback = true;
+    // Cloudflare is deliberately used for f generation only. All SDS
+    // request encryption/decryption remains on nxapi, and Nintendo is
+    // contacted directly by the desktop client. If the native f endpoint
+    // is unavailable, fall back to nxapi /f for compatibility.
+    FAttestation attestation;
     try {
-        const Json worker_body(Json::object{
-            {"clientId", kWorkerClientId},
-            {"idToken", nintendo_tokens.id_token},
-            {"naId", profile.id},
-            {"language", profile.language},
-            {"country", profile.country},
-            {"birthday", profile.birthday},
-        });
-        const auto worker_response = http_.post(
-            worker_url("/api/nso/cache/coral/get-or-create"),
-            worker_body.dump(),
-            {"Accept: application/json", "User-Agent: nso-album-sync/2.0.0"});
-        apply_coral_rate_limit_response(worker_response);
-
-        if (worker_response.status / 100 == 2) {
-            const auto wrapper = Json::parse(worker_response.text());
-            const auto* coral = wrapper.find("coral");
-            const auto* session = coral == nullptr ? nullptr : coral->find("session");
-            if (session != nullptr) {
-                decrypted_login = session->dump();
-                exact_user_id = exact_integer_field_in_object(
-                    worker_response.text(), "user", "id");
-                use_nxapi_fallback = false;
-            }
-        } else if (worker_response.status == 401 || worker_response.status == 403 ||
-                   worker_response.status == 429) {
-            throw std::runtime_error(
-                "Coral login rejected by native Worker path (HTTP " +
-                std::to_string(worker_response.status) + "): " + worker_response.text());
-        }
-    } catch (const std::runtime_error& error) {
-        const std::string message = error.what();
-        if (message.find("rejected by native Worker path") != std::string::npos) {
-            throw;
-        }
-        use_nxapi_fallback = true;
+        attestation = worker_generate_f(
+            http_, 1, nintendo_tokens.id_token, profile.id, "");
     } catch (...) {
-        use_nxapi_fallback = true;
+        attestation = nxapi_.generate_f(
+            1, nintendo_tokens.id_token, profile.id, "");
     }
 
-    if (use_nxapi_fallback) {
-        const auto encrypted_login =
-            nxapi_.encrypted_login_body(nintendo_tokens.id_token, profile);
-        const auto nso_version = nxapi_.nso_version();
+    const Json parameter(Json::object{
+        {"naIdToken", nintendo_tokens.id_token},
+        {"naBirthday", profile.birthday},
+        {"naCountry", profile.country},
+        {"language", profile.language},
+        {"f", attestation.f},
+        {"requestId", attestation.request_id},
+        {"timestamp", static_cast<double>(attestation.timestamp)},
+    });
+    const Json request_body(Json::object{{"parameter", parameter}});
+    const auto nso_version = nxapi_.nso_version();
+    const auto encrypted_login = nxapi_.encrypt_request(
+        coral_url(kLoginPath), nintendo_tokens.id_token, request_body.dump());
 
-        const auto response = http_.post_bytes(
-            coral_url(kLoginPath),
-            encrypted_login,
-            {
-                "X-Platform: Android",
-                "X-ProductVersion: " + nso_version,
-                "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
-            });
-        apply_coral_rate_limit_response(response);
+    const auto response = http_.post_bytes(
+        coral_url(kLoginPath),
+        encrypted_login,
+        {
+            "X-Platform: Android",
+            "X-ProductVersion: " + nso_version,
+            "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
+        });
+    apply_coral_rate_limit_response(response);
 
-        if (response.status / 100 != 2) {
-            std::string detail;
-            if (!response.body.empty()) {
-                try {
-                    detail = nxapi_.decrypt_response(response.body);
-                } catch (...) {
-                }
+    if (response.status / 100 != 2) {
+        std::string detail;
+        if (!response.body.empty()) {
+            try {
+                detail = nxapi_.decrypt_response(response.body);
+            } catch (...) {
             }
-            throw std::runtime_error(
-                "Coral login failed (HTTP " + std::to_string(response.status) + ")" +
-                (detail.empty() ? std::string{} : ": " + detail));
         }
-
-        decrypted_login = nxapi_.decrypt_response(response.body);
+        throw std::runtime_error(
+            "Coral login failed (HTTP " + std::to_string(response.status) + ")" +
+            (detail.empty() ? std::string{} : ": " + detail));
     }
 
+    const auto decrypted_login = nxapi_.decrypt_response(response.body);
     const auto login = Json::parse(decrypted_login);
     const auto* result = login.find("result");
     if (result == nullptr) throw std::runtime_error("Coral login missing result");
@@ -601,28 +601,17 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
     if (access_token.empty()) {
         throw std::runtime_error("Coral login missing access token");
     }
-    // Coral user IDs are JSON numbers in Nintendo's API and can exceed the
-    // exact-integer range of IEEE-754 doubles. Preserve the original decimal
-    // text whenever possible instead of letting the generic JSON number
-    // representation round a 64-bit ID.
-    std::string user_id = std::move(exact_user_id);
-    if (user_id.empty()) {
-        user_id = exact_integer_field_in_object(decrypted_login, "user", "id");
-    }
+    std::string user_id = exact_integer_field_in_object(decrypted_login, "user", "id");
     if (user_id.empty()) {
         if (const auto* user = result->find("user")) {
             user_id = user->string("id", user->string("nsaId"));
         }
     }
 
-    // If sign-out happened while authentication was in flight, do not put the
-    // just-returned credential back into memory or the OS secure store.
     if (session_generation_.load() != generation) {
         throw std::runtime_error("Coral authentication cancelled");
     }
 
-    // Use the server-provided lifetime. 7200 seconds is commonly returned, but
-    // it is deliberately not hard-coded because Nintendo can change it.
     const auto expires_in = credential->integer("expiresIn", 7200);
     {
         std::lock_guard cache_lock(session_mutex_);
@@ -644,61 +633,10 @@ Json CoralClient::coral_call(
     const std::string& url,
     const std::string& access_token,
     const std::string& request_body) {
-    // Presence and album sync can wake at the same time. Serialize Coral calls
-    // to prevent avoidable request bursts and keep either backend ordered.
     std::lock_guard request_lock(request_mutex_);
 
-    // Native Worker path: it encrypts the request, calls Nintendo, decrypts the
-    // response, and returns normal JSON in one request. nxapi is only used when
-    // the Worker path is unavailable or reports a non-authoritative failure.
-    try {
-        std::string na_id;
-        {
-            std::lock_guard lock(session_mutex_);
-            na_id = na_id_;
-        }
-        const auto path = coral_path(url);
-        if (!path.empty()) {
-            const Json worker_body(Json::object{
-                {"clientId", kWorkerClientId},
-                {"path", path},
-                {"requestBody", Json::parse(request_body)},
-                {"coralAccessToken", access_token},
-                {"naId", na_id},
-                {"locale", "en-GB"},
-            });
-            const auto worker_response = http_.post(
-                worker_url("/api/nso/coral/call"),
-                worker_body.dump(),
-                {"Accept: application/json", "User-Agent: nso-album-sync/2.0.0"});
-            apply_coral_rate_limit_response(worker_response);
-
-            if (worker_response.status / 100 == 2) {
-                return Json::parse(worker_response.text());
-            }
-            if (worker_response.status == 401 || worker_response.status == 403) {
-                clear_cached_session();
-                throw std::runtime_error(
-                    "Coral request failed (HTTP " +
-                    std::to_string(worker_response.status) + "): " + worker_response.text());
-            }
-            if (worker_response.status == 429) {
-                throw std::runtime_error(
-                    "Coral request rate-limited by Nintendo: " + worker_response.text());
-            }
-        }
-    } catch (const std::runtime_error& error) {
-        const std::string message = error.what();
-        if (message.find("Coral request failed (HTTP 401") != std::string::npos ||
-            message.find("Coral request failed (HTTP 403") != std::string::npos ||
-            message.find("Coral request rate-limited") != std::string::npos) {
-            throw;
-        }
-        // Worker transport/decoding/native failures fall through to nxapi.
-    } catch (...) {
-        // Worker transport/decoding/native failures fall through to nxapi.
-    }
-
+    // Cloudflare is not on the normal Coral call path. nxapi performs SDS
+    // encryption/decryption and the desktop client talks to Nintendo directly.
     const auto nso_version = nxapi_.nso_version();
     const auto encrypted_request =
         nxapi_.encrypt_request(url, access_token, request_body);
@@ -774,19 +712,10 @@ std::string CoralClient::get_web_service_token(
     {
         std::lock_guard lock(session_mutex_);
         if (cached_session_token_ == session_token) {
-            if (game_service_id != 0) {
-                const auto it = web_service_tokens_.find(game_service_id);
-                if (it != web_service_tokens_.end() &&
-                    !it->second.token.empty() &&
-                    now < it->second.expires_at) {
-                    return it->second.token;
-                }
-            } else {
-                // If game_service_id == 0, reuse any currently active valid token
-                for (const auto& [id, cached] : web_service_tokens_) {
-                    if (!cached.token.empty() && now < cached.expires_at) {
-                        return cached.token;
-                    }
+            for (const auto& [id, cached] : web_service_tokens_) {
+                (void)id;
+                if (!cached.token.empty() && now < cached.expires_at) {
+                    return cached.token;
                 }
             }
         }
@@ -811,76 +740,32 @@ std::string CoralClient::get_web_service_token(
 
         const std::uint64_t target_service_id = (game_service_id != 0)
             ? game_service_id
-            : 4834290508791808ULL; // Universal fallback service ID
+            : 4834290508791808ULL;
 
         std::lock_guard request_lock(request_mutex_);
 
-        // Native Worker method-2 path first. The Worker generates f, encrypts the
-        // request, calls Nintendo and decrypts the response without nxapi.
+        FAttestation attestation;
         try {
-            const Json worker_body(Json::object{
-                {"clientId", kWorkerClientId},
-                {"serviceId", std::to_string(target_service_id)},
-                {"coralAccessToken", access_token},
-                {"naId", na_id},
-                {"coralUserId", coral_user_id},
-            });
-            const auto worker_response = http_.post(
-                worker_url("/api/nso/service/token"),
-                worker_body.dump(),
-                {"Accept: application/json", "User-Agent: nso-album-sync/2.0.0"});
-            apply_coral_rate_limit_response(worker_response);
-
-            if (worker_response.status / 100 == 2) {
-                const auto wrapper = Json::parse(worker_response.text());
-                const auto* token_json = wrapper.find("token");
-                const auto token = token_json == nullptr ? std::string{} : token_json->string("token");
-                if (!token.empty()) {
-                    const auto expires_in = token_json->integer("expiresIn", 10800);
-                    const auto ttl = std::chrono::seconds(
-                        std::max<std::int64_t>(60, expires_in - 120));
-                    {
-                        std::lock_guard lock(session_mutex_);
-                        if (cached_session_token_ == session_token) {
-                            web_service_tokens_[target_service_id] =
-                                CachedWebServiceToken{token, Clock::now() + ttl};
-                        }
-                    }
-                    return token;
-                }
-            } else if (worker_response.status == 401 || worker_response.status == 403) {
-                clear_cached_session();
-                return {};
-            } else if (worker_response.status == 429) {
-                return {};
-            }
+            attestation = worker_generate_f(
+                http_, 2, access_token, na_id, coral_user_id);
         } catch (...) {
-            // Compatibility fallback below.
+            attestation = nxapi_.generate_f(
+                2, access_token, na_id, coral_user_id);
         }
 
+        const Json parameter(Json::object{
+            {"id", static_cast<double>(target_service_id)},
+            {"registrationToken", ""},
+            {"f", attestation.f},
+            {"requestId", attestation.request_id},
+            {"timestamp", static_cast<double>(attestation.timestamp)},
+        });
+        const Json request_body(Json::object{{"parameter", parameter}});
         const auto nso_version = nxapi_.nso_version();
-
-        std::vector<unsigned char> encrypted_request;
-        try {
-            encrypted_request = nxapi_.encrypted_web_service_token_body(
-                access_token, na_id, coral_user_id, target_service_id);
-        } catch (...) {
-            const auto attestation = nxapi_.generate_f(2, access_token, na_id, coral_user_id);
-            const Json parameter(Json::object{
-                {"id", static_cast<double>(target_service_id)},
-                {"registrationToken", ""},
-                {"f", attestation.f},
-                {"requestId", attestation.request_id},
-                {"timestamp", static_cast<double>(attestation.timestamp)},
-            });
-            const Json request_body(Json::object{
-                {"parameter", parameter},
-            });
-            encrypted_request = nxapi_.encrypt_request(
-                coral_url("/v4/Game/GetWebServiceToken"),
-                access_token,
-                request_body.dump());
-        }
+        const auto encrypted_request = nxapi_.encrypt_request(
+            coral_url("/v4/Game/GetWebServiceToken"),
+            access_token,
+            request_body.dump());
 
         const auto response = http_.post_bytes(
             coral_url("/v4/Game/GetWebServiceToken"),
@@ -928,7 +813,8 @@ std::string CoralClient::get_web_service_token(
         {
             std::lock_guard lock(session_mutex_);
             if (cached_session_token_ == session_token) {
-                web_service_tokens_[target_service_id] = CachedWebServiceToken{token, now + ttl};
+                web_service_tokens_[target_service_id] =
+                    CachedWebServiceToken{token, Clock::now() + ttl};
             }
         }
 
