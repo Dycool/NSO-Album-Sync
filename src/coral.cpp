@@ -27,7 +27,8 @@ constexpr char kLoginPath[] = "/v4/Account/Login";
 constexpr char kMediaListPath[] = "/v4/Media/List";
 constexpr char kShowSelfPath[] = "/v4/User/ShowSelf";
 constexpr char kCoralCredentialAccount[] = "CoralCredential";
-constexpr char kWebServiceCredentialAccount[] = "GameWebServiceToken";
+constexpr char kWebServiceCredentialsAccount[] = "GameWebServiceTokens";
+constexpr char kLegacyWebServiceCredentialAccount[] = "GameWebServiceToken";
 constexpr char kWorkerBaseUrl[] = "https://nso-worker-backend.diogoenes0.workers.dev";
 constexpr char kWorkerClientId[] = "nso-album-sync";
 
@@ -473,7 +474,8 @@ void CoralClient::clear_cached_session() {
         web_service_tokens_.clear();
     }
     SecureStore::erase(kCoralCredentialAccount);
-    SecureStore::erase(kWebServiceCredentialAccount);
+    SecureStore::erase(kWebServiceCredentialsAccount);
+    SecureStore::erase(kLegacyWebServiceCredentialAccount);
 }
 
 std::string CoralClient::ensure_session(const std::string& session_token) {
@@ -705,39 +707,57 @@ std::string CoralClient::get_web_service_token(
     {
         std::lock_guard lock(session_mutex_);
         if (cached_session_token_ == session_token) {
-            for (const auto& [id, cached] : web_service_tokens_) {
-                (void)id;
-                if (!cached.token.empty() && now < cached.expires_at) {
-                    return cached.token;
-                }
+            const auto cached = web_service_tokens_.find(target_service_id);
+            if (cached != web_service_tokens_.end() &&
+                !cached->second.token.empty() &&
+                now < cached->second.expires_at) {
+                return cached->second.token;
             }
         }
     }
 
-    // The same Game Web Service Token can be reused across supported games
-    // until its server-provided expiry. Keep it in the OS secure store so a
-    // normal app restart does not force method-2 f generation again.
+    // GameWebServiceTokens are scoped to a specific service ID. A method-2
+    // attestation can be shared while minting several service tokens, but the
+    // resulting tokens themselves must never be substituted across services.
+    // Persist the per-service map in the OS credential store so a normal app
+    // restart can still reuse the correct unexpired token.
     if (SecureStore::available()) {
+        // v1.1.1 briefly persisted one cross-service singleton token. Delete
+        // that format unconditionally so an old NookLink/SplatNet token cannot
+        // poison Zelda Notes (or vice versa) after upgrading.
+        SecureStore::erase(kLegacyWebServiceCredentialAccount);
         try {
-            if (const auto stored = SecureStore::get(kWebServiceCredentialAccount)) {
+            if (const auto stored = SecureStore::get(kWebServiceCredentialsAccount)) {
                 const auto json = Json::parse(*stored);
-                const auto stored_session_hash = json.string("sessionHash");
-                const auto token = json.string("accessToken");
-                const auto expires_at = time_from_epoch(json.integer("expiresAt"));
-                if (stored_session_hash == session_hash(session_token) &&
-                    !token.empty() && now < expires_at) {
-                    std::lock_guard lock(session_mutex_);
-                    if (session_generation_.load() == generation) {
-                        web_service_tokens_[target_service_id] =
-                            CachedWebServiceToken{token, expires_at};
-                        return token;
+                if (json.string("sessionHash") == session_hash(session_token)) {
+                    if (const auto* tokens = json.find("tokens");
+                        tokens != nullptr && tokens->is_object()) {
+                        const auto key = std::to_string(target_service_id);
+                        const auto found = tokens->as_object().find(key);
+                        if (found != tokens->as_object().end() &&
+                            found->second.is_object()) {
+                            const auto token = found->second.string("accessToken");
+                            const auto expires_at =
+                                time_from_epoch(found->second.integer("expiresAt"));
+                            if (!token.empty() && now < expires_at) {
+                                std::lock_guard lock(session_mutex_);
+                                if (session_generation_.load() == generation) {
+                                    web_service_tokens_[target_service_id] =
+                                        CachedWebServiceToken{token, expires_at};
+                                    return token;
+                                }
+                                return {};
+                            }
+                        }
                     }
-                    return {};
+                } else {
+                    // Only one Nintendo Account session can be active in this
+                    // desktop app. Drop tokens belonging to another session.
+                    SecureStore::erase(kWebServiceCredentialsAccount);
                 }
-                SecureStore::erase(kWebServiceCredentialAccount);
             }
         } catch (...) {
-            SecureStore::erase(kWebServiceCredentialAccount);
+            SecureStore::erase(kWebServiceCredentialsAccount);
         }
     }
 
@@ -874,12 +894,40 @@ std::string CoralClient::get_web_service_token(
 
         if (SecureStore::available()) {
             try {
+                Json::object token_records;
+                if (const auto stored =
+                        SecureStore::get(kWebServiceCredentialsAccount)) {
+                    const auto existing = Json::parse(*stored);
+                    if (existing.string("sessionHash") ==
+                        session_hash(session_token)) {
+                        if (const auto* tokens = existing.find("tokens");
+                            tokens != nullptr && tokens->is_object()) {
+                            for (const auto& [id, record] : tokens->as_object()) {
+                                if (!record.is_object()) continue;
+                                const auto existing_token =
+                                    record.string("accessToken");
+                                const auto existing_expiry =
+                                    time_from_epoch(record.integer("expiresAt"));
+                                if (!existing_token.empty() &&
+                                    Clock::now() < existing_expiry) {
+                                    token_records.emplace(id, record);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                token_records[std::to_string(target_service_id)] =
+                    Json(Json::object{
+                        {"accessToken", token},
+                        {"expiresAt", epoch_seconds(expires_at)},
+                    });
                 const Json stored(Json::object{
                     {"sessionHash", session_hash(session_token)},
-                    {"accessToken", token},
-                    {"expiresAt", epoch_seconds(expires_at)},
+                    {"tokens", Json(std::move(token_records))},
                 });
-                SecureStore::put(kWebServiceCredentialAccount, stored.dump());
+                SecureStore::put(kWebServiceCredentialsAccount, stored.dump());
+                SecureStore::erase(kLegacyWebServiceCredentialAccount);
             } catch (...) {
                 // Persistence is only a startup optimization. Keep the valid
                 // in-memory token even if the OS credential store is unavailable.
