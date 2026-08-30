@@ -602,22 +602,74 @@ WebMetadata discover_web_metadata(
         12,
         kMaxRouteHtmlBytes);
     log_zelda("discover_web_metadata: page status=" + std::to_string(page.status));
+    if (page.status / 100 != 2) return metadata;
+
     const auto html = page.text();
+    metadata.start_action =
+        find_server_reference(html, "sendMapSyncStartAction");
+    metadata.end_action =
+        find_server_reference(html, "sendMapSyncEndAction");
+    metadata.ack_action =
+        find_server_reference(html, "sendAckAction");
     metadata.deployment_id = header_value(page, "x-deployment-id");
+
     const auto scripts = extract_script_urls(html);
     for (const auto& script_url : scripts) {
         if (metadata.deployment_id.empty()) {
             metadata.deployment_id = deployment_id_from_url(script_url);
         }
+
+        try {
+            const auto script_response = http.get(
+                script_url,
+                authenticated_headers(
+                    session, language, country,
+                    "application/javascript,text/javascript,*/*;q=0.8"),
+                12,
+                kMaxScriptBytes);
+            if (script_response.status / 100 != 2) continue;
+
+            const auto script = script_response.text();
+            if (metadata.start_action.empty()) {
+                metadata.start_action =
+                    find_server_reference(script, "sendMapSyncStartAction");
+            }
+            if (metadata.end_action.empty()) {
+                metadata.end_action =
+                    find_server_reference(script, "sendMapSyncEndAction");
+            }
+            if (metadata.ack_action.empty()) {
+                metadata.ack_action =
+                    find_server_reference(script, "sendAckAction");
+            }
+            if (metadata.places.empty()) {
+                extract_map_dataset(script, game, metadata.places);
+            }
+        } catch (...) {
+        }
+    }
+
+    // Keep the currently captured deployment values only as a fail-closed
+    // compatibility fallback. Runtime discovery above wins whenever Nintendo
+    // publishes new Next.js server action IDs.
+    if (metadata.start_action.empty()) {
+        metadata.start_action = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba";
+    }
+    if (metadata.end_action.empty()) {
+        metadata.end_action = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba";
+    }
+    if (metadata.ack_action.empty()) {
+        metadata.ack_action = "400d043452ef637b91e45e5861062b9677aa6fbf22";
     }
     if (metadata.deployment_id.empty()) {
         metadata.deployment_id = "783666f6880ab3979bdc7b15f8ad24f544e472e5";
     }
 
-    metadata.start_action = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba";
-    metadata.end_action = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba";
-    metadata.ack_action = "400d043452ef637b91e45e5861062b9677aa6fbf22";
-    log_zelda("discover_web_metadata final: start=" + metadata.start_action + " ack=" + metadata.ack_action + " dpl=" + metadata.deployment_id);
+    log_zelda(
+        "discover_web_metadata final: start=" + metadata.start_action +
+        " end=" + metadata.end_action +
+        " ack=" + metadata.ack_action +
+        " dpl=" + metadata.deployment_id);
 
     // Look for custom UGC avatar in complete-guide HTML
     auto find_ugc_avatar = [&](const std::string& source) -> std::string {
@@ -1301,37 +1353,22 @@ bool ZeldaNotesClient::ensure_session(const std::string& web_service_token) {
 
     const auto locale_query = "?lang=" + language + "&na_country=" + country +
         "&na_lang=" + language;
-    auto bootstrap = http_.get(
-        std::string(kBaseUrl) + "/" + locale_query,
+    const auto bootstrap = http_.get(
+        std::string(kBaseUrl) + "/title-select" + locale_query,
         bootstrap_headers(web_service_token, language, country),
         10,
         8 * 1024 * 1024);
-    log_zelda("ensure_session / HTTP " + std::to_string(bootstrap.status));
-    auto cookie = session_cookie(bootstrap);
-    if (cookie.empty() && (bootstrap.status / 100 == 3)) {
-        auto location = header_value(bootstrap, "location");
-        if (!location.empty()) {
-            if (location.find("://") == std::string::npos) {
-                if (location.front() != '/') location = "/" + location;
-                location = std::string(kBaseUrl) + location;
-            }
-            if (location.find('?') == std::string::npos) {
-                location += locale_query;
-            }
-            bootstrap = http_.get(
-                location,
-                bootstrap_headers(web_service_token, language, country),
-                10,
-                8 * 1024 * 1024);
-            log_zelda("ensure_session redirect to " + location + " HTTP " + std::to_string(bootstrap.status));
-            cookie = session_cookie(bootstrap);
-        }
+    log_zelda(
+        "ensure_session /title-select HTTP " +
+        std::to_string(bootstrap.status));
+    if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) {
+        return false;
     }
+
+    const auto cookie = session_cookie(bootstrap);
     if (cookie.empty()) {
-        log_zelda("ensure_session: no session cookie in response");
-        for (const auto& [k, v] : bootstrap.headers) {
-            log_zelda("header: " + k + " = " + v);
-        }
+        log_zelda(
+            "ensure_session: no session cookie in title-select response");
         return false;
     }
 
@@ -1340,7 +1377,7 @@ bool ZeldaNotesClient::ensure_session(const std::string& web_service_token) {
     source_web_token_ = web_service_token;
     session_cookie_ = cookie;
     session_expires_at_ = std::chrono::system_clock::now() + kSessionTtl;
-    log_zelda("ensure_session success, cookie=" + cookie.substr(0, 15) + "...");
+    log_zelda("ensure_session success");
     return true;
 }
 
@@ -1596,11 +1633,11 @@ void ZeldaNotesClient::run_live_session(
                 log_zelda("Live map sync unavailable: " + std::string(error.what()));
             }
             publish_live_presence({});
-            backoff_seconds = 2;
+            backoff_seconds = next_backoff(backoff_seconds);
         } catch (...) {
             log_zelda("Live map sync unknown error");
             publish_live_presence({});
-            backoff_seconds = 2;
+            backoff_seconds = next_backoff(backoff_seconds);
         }
 
         if (live_stop_.load()) break;
