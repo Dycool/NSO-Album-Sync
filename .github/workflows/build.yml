@@ -9,19 +9,20 @@ permissions:
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'chore: stage Coral login encryption fix'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Patch nxapi login encryption semantics
-        shell: python
+      - name: Patch source
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 <<'PY'
           from pathlib import Path
 
-          nxapi = Path('src/nxapi.cpp')
+          nxapi = Path("src/nxapi.cpp")
           text = nxapi.read_text()
           old = '''    const Json payload(Json::object{
               {"url", url},
@@ -35,11 +36,10 @@ jobs:
               {"token", coral_token.empty() ? Json(nullptr) : Json(coral_token)},
               {"data", json},
           });'''
-          if old not in text:
-              raise SystemExit('nxapi encrypt payload pattern not found')
-          nxapi.write_text(text.replace(old, new, 1))
+          if old in text:
+              nxapi.write_text(text.replace(old, new, 1))
 
-          coral = Path('src/coral.cpp')
+          coral = Path("src/coral.cpp")
           text = coral.read_text()
           old = '''        const auto encrypted_login = nxapi_.encrypt_request(
               coral_url(kLoginPath), nintendo_tokens.id_token, request_body.dump());'''
@@ -47,14 +47,15 @@ jobs:
           // nxapi encryption token must be JSON null rather than the NA id_token.
           const auto encrypted_login = nxapi_.encrypt_request(
               coral_url(kLoginPath), "", request_body.dump());'''
-          if old not in text:
-              raise SystemExit('Coral login encrypt call pattern not found')
-          coral.write_text(text.replace(old, new, 1))
+          if old in text:
+              coral.write_text(text.replace(old, new, 1))
+          PY
 
-      - name: Commit fix
-        shell: bash
-        run: |
-          set -euo pipefail
+          if git diff --quiet -- src/nxapi.cpp src/coral.cpp; then
+            echo "Source already patched"
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/nxapi.cpp src/coral.cpp
