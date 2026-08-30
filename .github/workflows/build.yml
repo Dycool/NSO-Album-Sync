@@ -1,234 +1,21 @@
-name: Refresh v1.1.1
+name: Finish v1.1.1 refresh
 
 on:
   push:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
+  actions: read
 
 env:
-  BUILD_TYPE: Release
-  DISCORD_SDK_REPOSITORY: Dycool/NSO-Album-Sync-SDK
-  DISCORD_SDK_REF: 21aa7516c44e2856d1fe0927f0c13c092182e2b7
   TARGET_TAG: v1.1.1
-  TARGET_SHA: d375c1ebe1c5af80f718cfe6983367d5d58f7a92
+  TARGET_SHA: 8d5018cb4b215a4d747c4869f92950777623bdd1
+  SOURCE_RUN_ID: 33318669193
 
 jobs:
-  windows:
-    name: Windows
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Discord SDK
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
-          ref: ${{ env.DISCORD_SDK_REF }}
-          path: third_party/discord_social_sdk
-          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Build
-        shell: pwsh
-        run: |
-          cmake -S . -B build -A x64 -DNSO_STATIC_RUNTIME=ON
-          cmake --build build --config $env:BUILD_TYPE --parallel
-
-      - name: Package
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          $exe = (Resolve-Path "build/$env:BUILD_TYPE/nso-album-sync.exe").Path
-          Copy-Item $exe dist/nso-album-sync.exe
-          $test = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
-          if ($test.ExitCode -ne 0) { throw "Self-test failed: $($test.ExitCode)" }
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: nso-album-sync-windows
-          path: dist/nso-album-sync.exe
-          if-no-files-found: error
-
-  macos:
-    name: macOS
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Discord SDK
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
-          ref: ${{ env.DISCORD_SDK_REF }}
-          path: third_party/discord_social_sdk
-          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Dependencies
-        run: brew install cmake ninja openssl@3
-
-      - name: Build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
-            -DCMAKE_CXX_FLAGS_RELEASE="-Oz -DNDEBUG" \
-            -DCMAKE_OBJCXX_FLAGS_RELEASE="-Oz -DNDEBUG" \
-            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
-            -DOPENSSL_USE_STATIC_LIBS=TRUE \
-            -DNSO_STATIC_RUNTIME=ON
-          cmake --build build --parallel
-
-      - name: Package
-        shell: bash
-        run: |
-          set -euo pipefail
-          app="build/nso-album-sync.app"
-          binary="$app/Contents/MacOS/nso-album-sync"
-          framework_root="$app/Contents/Frameworks/discord_partner_sdk.framework"
-          framework="$framework_root/Versions/A/discord_partner_sdk"
-
-          if [[ "$(lipo -archs "$framework")" == *x86_64* ]]; then
-            lipo "$framework" -thin arm64 -output "$framework.arm64"
-            mv "$framework.arm64" "$framework"
-          fi
-
-          rm -rf \
-            "$framework_root/Versions/A/Frameworks/libdiscord_krisp.dylib" \
-            "$framework_root/Versions/A/Resources/Krisp" \
-            "$framework_root/Versions/A/Headers" \
-            "$framework_root/Versions/A/_CodeSignature"
-          rm -f "$framework_root/Headers"
-          find "$framework_root" -type f \( -iname '*krisp*' -o -iname '*.kef' -o -iname '*.kw' \) -delete
-          find "$framework_root" -type d -name '*.dSYM' -prune -exec rm -rf {} + 2>/dev/null || true
-
-          codesign --remove-signature "$binary" 2>/dev/null || true
-          codesign --remove-signature "$framework" 2>/dev/null || true
-          strip -S -x "$binary" 2>/dev/null || true
-          strip -S -x "$framework" 2>/dev/null || true
-          codesign --force --deep --sign - --timestamp=none "$app"
-          codesign --verify --deep --strict "$app"
-          "$binary" --self-test
-
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "$app" dist/nso-album-sync.zip
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: nso-album-sync-macos
-          path: dist/nso-album-sync.zip
-          if-no-files-found: error
-
-  linux:
-    name: Linux
-    runs-on: ubuntu-24.04
-    container: ubuntu:22.04
-    steps:
-      - name: Checkout tools
-        shell: bash
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
-
-      - uses: actions/checkout@v6
-
-      - name: Discord SDK
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
-          ref: ${{ env.DISCORD_SDK_REF }}
-          path: third_party/discord_social_sdk
-          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Dependencies
-        shell: bash
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            binutils build-essential cmake curl file ninja-build \
-            libssl-dev libsecret-1-dev libpulse0 libasound2-dev libgtk-3-dev \
-            libayatana-appindicator3-dev zip
-
-      - name: Build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-            -DCMAKE_CXX_FLAGS_RELEASE="-Os -DNDEBUG" \
-            -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-Wl,--as-needed" \
-            -DNSO_STATIC_RUNTIME=ON \
-            -DNSO_ENABLE_LINUX_TRAY=ON
-          cmake --build build --parallel
-          strip --strip-unneeded build/nso-album-sync
-          strip --strip-unneeded build/libdiscord_partner_sdk.so
-          LD_LIBRARY_PATH="$PWD/build" build/nso-album-sync --self-test
-
-      - name: Package
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist tools AppDir/usr/lib AppDir/usr/share/doc/nso-album-sync
-
-          cat > nso-album-sync.desktop <<'DESKTOP'
-          [Desktop Entry]
-          Type=Application
-          Name=NSO Album Sync
-          Comment=Sync Nintendo Switch Online album captures
-          Exec=nso-album-sync
-          Icon=nso-album-sync
-          Categories=Utility;Photography;
-          Terminal=false
-          DESKTOP
-
-          cp build/libdiscord_partner_sdk.so AppDir/usr/lib/libdiscord_partner_sdk.so
-          cp THIRD-PARTY-NOTICES.txt AppDir/usr/share/doc/nso-album-sync/THIRD-PARTY-NOTICES.txt
-          cp icon.svg nso-album-sync.svg
-
-          deploy="tools/linuxdeploy-x86_64.AppImage"
-          plugin="tools/linuxdeploy-plugin-appimage-x86_64.AppImage"
-          curl -fL --retry 3 -o "$deploy" \
-            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
-          curl -fL --retry 3 -o "$plugin" \
-            "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage"
-          chmod +x "$deploy" "$plugin"
-
-          export PATH="$PWD/tools:$PATH"
-          export APPIMAGE_EXTRACT_AND_RUN=1
-          export LDAI_COMP=zstd
-          export OUTPUT="$PWD/dist/nso-album-sync.AppImage"
-          "$deploy" --appimage-extract-and-run \
-            --appdir AppDir \
-            --executable build/nso-album-sync \
-            --desktop-file nso-album-sync.desktop \
-            --icon-file nso-album-sync.svg \
-            --output appimage
-
-          chmod +x dist/nso-album-sync.AppImage
-          dist/nso-album-sync.AppImage --self-test
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: nso-album-sync-linux
-          path: dist/nso-album-sync.AppImage
-          if-no-files-found: error
-
-  release:
-    name: Refresh v1.1.1
-    needs: [windows, macos, linux]
+  finish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -236,6 +23,8 @@ jobs:
 
       - uses: actions/download-artifact@v5
         with:
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
           path: release-artifacts
 
       - name: Retag and replace release artifacts
