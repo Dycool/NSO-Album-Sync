@@ -1,4 +1,4 @@
-name: Refresh v1.1.1
+name: Restore build workflow
 
 on:
   push:
@@ -6,46 +6,26 @@ on:
 
 permissions:
   contents: write
-  actions: read
 
 env:
-  TARGET_TAG: v1.1.1
   TARGET_SHA: fdce1a35dabf8ec03692a8e4a28927eb12da4aa7
-  SOURCE_RUN_ID: 33319700689
 
 jobs:
-  refresh:
+  restore:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Retag and replace release assets
+      - name: Restore normal workflow
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-
           git fetch origin "$TARGET_SHA" --depth=1
-          git tag -f "$TARGET_TAG" "$TARGET_SHA"
-          git push origin "refs/tags/$TARGET_TAG" --force
-
-          mkdir -p release-artifacts release-dist
-          gh run download "$SOURCE_RUN_ID" --name nso-album-sync-windows --dir release-artifacts/nso-album-sync-windows
-          gh run download "$SOURCE_RUN_ID" --name nso-album-sync-macos --dir release-artifacts/nso-album-sync-macos
-          gh run download "$SOURCE_RUN_ID" --name nso-album-sync-linux --dir release-artifacts/nso-album-sync-linux
-
-          (cd release-artifacts/nso-album-sync-windows && zip -9 ../../release-dist/nso-album-sync-windows.zip nso-album-sync.exe)
-          cp release-artifacts/nso-album-sync-macos/nso-album-sync.zip release-dist/nso-album-sync-macos.zip
-          (cd release-artifacts/nso-album-sync-linux && zip -9 ../../release-dist/nso-album-sync-linux.zip nso-album-sync.AppImage)
-
-          gh release edit "$TARGET_TAG" --draft
-          gh release upload "$TARGET_TAG" \
-            release-dist/nso-album-sync-windows.zip \
-            release-dist/nso-album-sync-macos.zip \
-            release-dist/nso-album-sync-linux.zip \
-            --clobber
-          gh release edit "$TARGET_TAG" --draft=false
+          git checkout "$TARGET_SHA" -- .github/workflows/build.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/build.yml
+          git commit -m "chore(release): restore build workflow"
+          git push origin HEAD:main
