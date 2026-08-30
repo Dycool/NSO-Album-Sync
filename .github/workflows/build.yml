@@ -24,35 +24,27 @@ jobs:
 
           nxapi = Path("src/nxapi.cpp")
           text = nxapi.read_text()
-          old = '''    const Json payload(Json::object{
-              {"url", url},
-              {"token", coral_token},
-              {"data", json},
-          });'''
-          new = '''    const Json payload(Json::object{
-              {"url", url},
-              // nxapi requires JSON null when the Nintendo Coral request does
-              // not carry an Authorization header (Account/Login/GetToken).
-              {"token", coral_token.empty() ? Json(nullptr) : Json(coral_token)},
-              {"data", json},
-          });'''
-          if old in text:
-              nxapi.write_text(text.replace(old, new, 1))
+          needle = '{"token", coral_token},'
+          replacement = '{"token", coral_token.empty() ? Json(nullptr) : Json(coral_token)},'
+          count = text.count(needle)
+          if count == 1:
+              nxapi.write_text(text.replace(needle, replacement, 1))
+          elif replacement not in text:
+              raise SystemExit(f"expected one nxapi token field, found {count}")
 
           coral = Path("src/coral.cpp")
           text = coral.read_text()
-          old = '''        const auto encrypted_login = nxapi_.encrypt_request(
-              coral_url(kLoginPath), nintendo_tokens.id_token, request_body.dump());'''
-          new = '''        // Account/Login has no Nintendo Coral Authorization header, so the
-          // nxapi encryption token must be JSON null rather than the NA id_token.
-          const auto encrypted_login = nxapi_.encrypt_request(
-              coral_url(kLoginPath), "", request_body.dump());'''
-          if old in text:
-              coral.write_text(text.replace(old, new, 1))
+          needle = 'coral_url(kLoginPath), nintendo_tokens.id_token, request_body.dump());'
+          replacement = 'coral_url(kLoginPath), "", request_body.dump());'
+          count = text.count(needle)
+          if count == 1:
+              coral.write_text(text.replace(needle, replacement, 1))
+          elif replacement not in text:
+              raise SystemExit(f"expected one Coral login encrypt call, found {count}")
           PY
 
           if git diff --quiet -- src/nxapi.cpp src/coral.cpp; then
-            echo "Source already patched"
+            echo "No source change needed"
             exit 0
           fi
 
@@ -60,5 +52,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/nxapi.cpp src/coral.cpp
           git diff --cached --check
+          git diff --cached
           git commit -m "fix: send null token for Coral login encryption"
           git push origin HEAD:main
