@@ -11,6 +11,7 @@
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 #ifdef _WIN32
 #include "nso_album_sync/windows_compat.hpp"
@@ -34,6 +35,30 @@ constexpr char kWorkerClientId[] = "nso-album-sync";
 // and also applies when the compatibility fallback has to use nxapi.
 constexpr std::size_t kMaxCoralAuthAttemptsPerHour = 4;
 constexpr auto kDefaultCoralRateLimitBackoff = std::chrono::minutes(15);
+constexpr auto kWorkerFCircuitBreakerDuration = std::chrono::hours(6);
+
+std::mutex g_worker_f_health_mutex;
+std::chrono::system_clock::time_point g_worker_f_method1_disabled_until{};
+std::chrono::system_clock::time_point g_worker_f_method2_disabled_until{};
+
+bool worker_f_enabled(int hash_method) {
+    std::lock_guard lock(g_worker_f_health_mutex);
+    const auto now = std::chrono::system_clock::now();
+    if (hash_method == 1) return now >= g_worker_f_method1_disabled_until;
+    if (hash_method == 2) return now >= g_worker_f_method2_disabled_until;
+    return false;
+}
+
+void disable_worker_f(int hash_method) {
+    std::lock_guard lock(g_worker_f_health_mutex);
+    const auto until = std::chrono::system_clock::now() +
+        kWorkerFCircuitBreakerDuration;
+    if (hash_method == 1) {
+        g_worker_f_method1_disabled_until = until;
+    } else if (hash_method == 2) {
+        g_worker_f_method2_disabled_until = until;
+    }
+}
 
 std::string upper(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
@@ -88,6 +113,19 @@ FAttestation worker_generate_f(
         throw std::runtime_error("Native f-token response was incomplete");
     }
     return attestation;
+}
+
+bool is_f_rejection_payload(const std::string& payload) {
+    if (payload.empty()) return false;
+    try {
+        const auto json = Json::parse(payload);
+        const auto status = json.integer("status");
+        if (status == 9403 || status == 9599) return true;
+        const auto message = json.string("errorMessage");
+        return message == "Invalid token." || message == "Unexpected error.";
+    } catch (...) {
+        return false;
+    }
 }
 
 std::string session_hash(const std::string& session_token) {
@@ -541,54 +579,89 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
     // Cloudflare is deliberately used for f generation only. All SDS
     // request encryption/decryption remains on nxapi, and Nintendo is
     // contacted directly by the desktop client. If the native f endpoint
-    // is unavailable, fall back to nxapi /f for compatibility.
+    // is unavailable, fall back to nxapi /f for compatibility. If Nintendo
+    // rejects a structurally valid Worker f token, retry once with nxapi f.
+    bool used_worker_f = false;
     FAttestation attestation;
-    try {
-        attestation = worker_generate_f(
-            http_, 1, nintendo_tokens.id_token, profile.id, "");
-    } catch (...) {
+    if (worker_f_enabled(1)) {
+        try {
+            attestation = worker_generate_f(
+                http_, 1, nintendo_tokens.id_token, profile.id, "");
+            used_worker_f = true;
+        } catch (...) {
+            attestation = nxapi_.generate_f(
+                1, nintendo_tokens.id_token, profile.id, "");
+        }
+    } else {
         attestation = nxapi_.generate_f(
             1, nintendo_tokens.id_token, profile.id, "");
     }
 
-    const Json parameter(Json::object{
-        {"naIdToken", nintendo_tokens.id_token},
-        {"naBirthday", profile.birthday},
-        {"naCountry", profile.country},
-        {"language", profile.language},
-        {"f", attestation.f},
-        {"requestId", attestation.request_id},
-        {"timestamp", static_cast<double>(attestation.timestamp)},
-    });
-    const Json request_body(Json::object{{"parameter", parameter}});
     const auto nso_version = nxapi_.nso_version();
-    const auto encrypted_login = nxapi_.encrypt_request(
-        coral_url(kLoginPath), nintendo_tokens.id_token, request_body.dump());
-
-    const auto response = http_.post_bytes(
-        coral_url(kLoginPath),
-        encrypted_login,
-        {
-            "X-Platform: Android",
-            "X-ProductVersion: " + nso_version,
-            "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
+    const auto perform_login_request =
+        [&](const FAttestation& candidate)
+            -> std::pair<HttpResponse, std::string> {
+        const Json parameter(Json::object{
+            {"naIdToken", nintendo_tokens.id_token},
+            {"naBirthday", profile.birthday},
+            {"naCountry", profile.country},
+            {"language", profile.language},
+            {"f", candidate.f},
+            {"requestId", candidate.request_id},
+            {"timestamp", static_cast<double>(candidate.timestamp)},
         });
-    apply_coral_rate_limit_response(response);
+        const Json request_body(Json::object{{"parameter", parameter}});
+        const auto encrypted_login = nxapi_.encrypt_request(
+            coral_url(kLoginPath), nintendo_tokens.id_token, request_body.dump());
 
-    if (response.status / 100 != 2) {
-        std::string detail;
+        auto response = http_.post_bytes(
+            coral_url(kLoginPath),
+            encrypted_login,
+            {
+                "X-Platform: Android",
+                "X-ProductVersion: " + nso_version,
+                "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
+            });
+        apply_coral_rate_limit_response(response);
+
+        std::string decoded;
         if (!response.body.empty()) {
             try {
-                detail = nxapi_.decrypt_response(response.body);
+                decoded = nxapi_.decrypt_response(response.body);
             } catch (...) {
+                const auto raw = response.text();
+                const auto first = raw.find_first_not_of(" \t\r\n");
+                if (first != std::string::npos &&
+                    (raw[first] == '{' || raw[first] == '[')) {
+                    decoded = raw;
+                } else if (response.status / 100 == 2) {
+                    throw;
+                }
             }
         }
-        throw std::runtime_error(
-            "Coral login failed (HTTP " + std::to_string(response.status) + ")" +
-            (detail.empty() ? std::string{} : ": " + detail));
+        return {std::move(response), std::move(decoded)};
+    };
+
+    auto login_attempt = perform_login_request(attestation);
+    bool recovered_from_worker_f = false;
+    if (used_worker_f && is_f_rejection_payload(login_attempt.second)) {
+        const auto nxapi_attestation = nxapi_.generate_f(
+            1, nintendo_tokens.id_token, profile.id, "");
+        login_attempt = perform_login_request(nxapi_attestation);
+        recovered_from_worker_f = true;
     }
 
-    const auto decrypted_login = nxapi_.decrypt_response(response.body);
+    const auto& response = login_attempt.first;
+    const auto& decrypted_login = login_attempt.second;
+    if (response.status / 100 != 2) {
+        throw std::runtime_error(
+            "Coral login failed (HTTP " + std::to_string(response.status) + ")" +
+            (decrypted_login.empty() ? std::string{} : ": " + decrypted_login));
+    }
+    if (decrypted_login.empty()) {
+        throw std::runtime_error("Coral login returned an empty response");
+    }
+
     const auto login = Json::parse(decrypted_login);
     const auto* result = login.find("result");
     if (result == nullptr) throw std::runtime_error("Coral login missing result");
@@ -600,6 +673,11 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
     const auto access_token = credential->string("accessToken");
     if (access_token.empty()) {
         throw std::runtime_error("Coral login missing access token");
+    }
+    if (recovered_from_worker_f) {
+        // The same Nintendo request failed with the Worker f but succeeded
+        // with nxapi f. Bypass Worker method 1 for six hours in this process.
+        disable_worker_f(1);
     }
     std::string user_id = exact_integer_field_in_object(decrypted_login, "user", "id");
     if (user_id.empty()) {
@@ -744,67 +822,105 @@ std::string CoralClient::get_web_service_token(
 
         std::lock_guard request_lock(request_mutex_);
 
+        bool used_worker_f = false;
         FAttestation attestation;
-        try {
-            attestation = worker_generate_f(
-                http_, 2, access_token, na_id, coral_user_id);
-        } catch (...) {
+        if (worker_f_enabled(2)) {
+            try {
+                attestation = worker_generate_f(
+                    http_, 2, access_token, na_id, coral_user_id);
+                used_worker_f = true;
+            } catch (...) {
+                attestation = nxapi_.generate_f(
+                    2, access_token, na_id, coral_user_id);
+            }
+        } else {
             attestation = nxapi_.generate_f(
                 2, access_token, na_id, coral_user_id);
         }
 
-        const Json parameter(Json::object{
-            {"id", static_cast<double>(target_service_id)},
-            {"registrationToken", ""},
-            {"f", attestation.f},
-            {"requestId", attestation.request_id},
-            {"timestamp", static_cast<double>(attestation.timestamp)},
-        });
-        const Json request_body(Json::object{{"parameter", parameter}});
         const auto nso_version = nxapi_.nso_version();
-        const auto encrypted_request = nxapi_.encrypt_request(
-            coral_url("/v4/Game/GetWebServiceToken"),
-            access_token,
-            request_body.dump());
-
-        const auto response = http_.post_bytes(
-            coral_url("/v4/Game/GetWebServiceToken"),
-            encrypted_request,
-            {
-                "Content-Type: application/octet-stream",
-                "Accept: application/octet-stream,application/json",
-                "Accept-Language: en-US",
-                "Authorization: Bearer " + access_token,
-                "X-Platform: Android",
-                "X-ProductVersion: " + nso_version,
-                "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
+        const auto perform_web_service_token_request =
+            [&](const FAttestation& candidate)
+                -> std::pair<HttpResponse, std::string> {
+            const Json parameter(Json::object{
+                {"id", static_cast<double>(target_service_id)},
+                {"registrationToken", ""},
+                {"f", candidate.f},
+                {"requestId", candidate.request_id},
+                {"timestamp", static_cast<double>(candidate.timestamp)},
             });
-        apply_coral_rate_limit_response(response);
+            const Json request_body(Json::object{{"parameter", parameter}});
+            const auto encrypted_request = nxapi_.encrypt_request(
+                coral_url("/v4/Game/GetWebServiceToken"),
+                access_token,
+                request_body.dump());
 
+            auto response = http_.post_bytes(
+                coral_url("/v4/Game/GetWebServiceToken"),
+                encrypted_request,
+                {
+                    "Content-Type: application/octet-stream",
+                    "Accept: application/octet-stream,application/json",
+                    "Accept-Language: en-US",
+                    "Authorization: Bearer " + access_token,
+                    "X-Platform: Android",
+                    "X-ProductVersion: " + nso_version,
+                    "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
+                });
+            apply_coral_rate_limit_response(response);
+
+            std::string decoded;
+            if (!response.body.empty()) {
+                try {
+                    decoded = nxapi_.decrypt_response(response.body);
+                } catch (...) {
+                    const auto raw = response.text();
+                    const auto first = raw.find_first_not_of(" \t\r\n");
+                    if (first != std::string::npos &&
+                        (raw[first] == '{' || raw[first] == '[')) {
+                        decoded = raw;
+                    } else if (response.status / 100 == 2) {
+                        throw;
+                    }
+                }
+            }
+            return {std::move(response), std::move(decoded)};
+        };
+
+        auto token_attempt = perform_web_service_token_request(attestation);
+        bool recovered_from_worker_f = false;
+        if (used_worker_f && is_f_rejection_payload(token_attempt.second)) {
+            const auto nxapi_attestation = nxapi_.generate_f(
+                2, access_token, na_id, coral_user_id);
+            token_attempt = perform_web_service_token_request(nxapi_attestation);
+            recovered_from_worker_f = true;
+        }
+
+        const auto& response = token_attempt.first;
+        const auto& decrypted = token_attempt.second;
         if (response.status / 100 != 2) {
             if (response.status == 401 || response.status == 403) {
                 clear_cached_session();
             }
-            std::string detail;
-            if (!response.body.empty()) {
-                try {
-                    detail = nxapi_.decrypt_response(response.body);
-                } catch (...) {
-                }
-            }
             throw std::runtime_error(
                 "Coral GetWebServiceToken failed (HTTP " +
                 std::to_string(response.status) + ")" +
-                (detail.empty() ? std::string{} : ": " + detail));
+                (decrypted.empty() ? std::string{} : ": " + decrypted));
         }
+        if (decrypted.empty()) return {};
 
-        const auto decrypted = nxapi_.decrypt_response(response.body);
         const auto json = Json::parse(decrypted);
         const auto* result = json.find("result");
         if (result == nullptr) return {};
 
         const auto token = result->string("accessToken");
         if (token.empty()) return {};
+
+        if (recovered_from_worker_f) {
+            // The Worker f was rejected and nxapi f succeeded for the same
+            // Coral credential. Bypass Worker method 2 for six hours.
+            disable_worker_f(2);
+        }
 
         const auto expires_in = result->integer("expiresIn", 10800);
         const auto ttl = std::chrono::seconds(
