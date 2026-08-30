@@ -5,14 +5,11 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'chore: stage f-only architecture patch'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v6
 
@@ -171,10 +168,6 @@ jobs:
               if (access_token.empty()) {
                   throw std::runtime_error("Coral login missing access token");
               }
-              // Coral user IDs are JSON numbers in Nintendo's API and can exceed the
-              // exact-integer range of IEEE-754 doubles. Preserve the original decimal
-              // text whenever possible instead of letting the generic JSON number
-              // representation round a 64-bit ID.
               std::string user_id = exact_integer_field_in_object(decrypted_login, "user", "id");
               if (user_id.empty()) {
                   if (const auto* user = result->find("user")) {
@@ -182,14 +175,10 @@ jobs:
                   }
               }
 
-              // If sign-out happened while authentication was in flight, do not put the
-              // just-returned credential back into memory or the OS secure store.
               if (session_generation_.load() != generation) {
                   throw std::runtime_error("Coral authentication cancelled");
               }
 
-              // Use the server-provided lifetime. 7200 seconds is commonly returned, but
-              // it is deliberately not hard-coded because Nintendo can change it.
               const auto expires_in = credential->integer("expiresIn", 7200);
               {
                   std::lock_guard cache_lock(session_mutex_);
@@ -220,8 +209,6 @@ jobs:
               const std::string& url,
               const std::string& access_token,
               const std::string& request_body) {
-              // Presence and album sync can wake at the same time. Serialize Coral calls
-              // to prevent avoidable request bursts and keep nxapi encryption/decryption ordered.
               std::lock_guard request_lock(request_mutex_);
 
               // Cloudflare is not on the normal Coral call path. nxapi performs SDS
@@ -273,9 +260,6 @@ jobs:
               {
                   std::lock_guard lock(session_mutex_);
                   if (cached_session_token_ == session_token) {
-                      // Nintendo's GameWebServiceToken can be reused across the supported
-                      // game services until it expires. Reuse any valid token instead of
-                      // generating a new method-2 f merely because the active game changed.
                       for (const auto& [id, cached] : web_service_tokens_) {
                           (void)id;
                           if (!cached.token.empty() && now < cached.expires_at) {
@@ -304,12 +288,10 @@ jobs:
 
                   const std::uint64_t target_service_id = (game_service_id != 0)
                       ? game_service_id
-                      : 4834290508791808ULL; // Universal fallback service ID
+                      : 4834290508791808ULL;
 
                   std::lock_guard request_lock(request_mutex_);
 
-                  // Cloudflare generates method-2 f only. nxapi remains the fallback
-                  // f provider and always handles SDS encryption/decryption.
                   FAttestation attestation;
                   try {
                       attestation = worker_generate_f(
