@@ -258,7 +258,9 @@ jobs:
 
           if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
             TAG="v1.1.1"
-            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$TARGET_SHA" -F force=true >/dev/null
+            git fetch origin "$TARGET_SHA" --depth=1
+            git tag -f "$TAG" "$TARGET_SHA"
+            git push origin "refs/tags/$TAG" --force
             gh release upload "$TAG" "${files[@]}" --clobber
           else
             TAG="$GITHUB_REF_NAME"
