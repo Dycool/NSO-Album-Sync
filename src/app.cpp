@@ -165,6 +165,7 @@ void App::update_menu() {
 
 void App::invalidate_session(const std::string& reason) {
     account_generation_.fetch_add(1);
+    initial_sync_deferred_.store(false, std::memory_order_release);
     coral_.clear_cached_session();
     splatnet_.clear_cache();
     zeldanotes_.clear_cache();
@@ -308,10 +309,15 @@ void App::complete_pending_login(const std::string& redirect_url_or_code) {
             status_ = "Connected as " + config.user_nickname;
         }
         update_menu();
+        initial_sync_deferred_.store(
+            config.discord_presence && config.auto_sync,
+            std::memory_order_release);
         start_operational_workers();
         wake_workers();
         if (config.discord_presence) {
             request_presence_refresh();
+        } else if (config.auto_sync) {
+            queue_sync(true);
         }
     } catch (const std::exception& error) {
         const std::string message = error.what();
@@ -341,6 +347,7 @@ void App::sign_in_or_out() {
 
     if (!current.session_token.empty()) {
         account_generation_.fetch_add(1);
+        initial_sync_deferred_.store(false, std::memory_order_release);
         coral_.clear_cached_session();
         splatnet_.clear_cache();
         zeldanotes_.clear_cache();
@@ -433,6 +440,16 @@ void App::presence_loop() {
         cached_custom_image_uri.clear();
     };
 
+    const auto release_deferred_sync = [&](const std::string& session_token) {
+        const auto state = config_.snapshot();
+        if (state.session_token != session_token) return;
+        const bool was_deferred = initial_sync_deferred_.exchange(
+            false, std::memory_order_acq_rel);
+        if (was_deferred && state.auto_sync) {
+            queue_sync(true);
+        }
+    };
+
     while (!stopping_) {
         auto config = config_.snapshot();
         if (!config.discord_presence || config.session_token.empty()) {
@@ -463,6 +480,20 @@ void App::presence_loop() {
                 config.session_token == session_token &&
                 account_generation_.load() == generation) {
                 if (presence.is_playing()) {
+                    // Publish the fast Coral-only RPC immediately. Game-specific
+                    // enrichment is optional and must never delay Discord startup.
+                    const auto basic_state = config_.snapshot();
+                    if (!stopping_ && basic_state.discord_presence &&
+                        basic_state.session_token == session_token &&
+                        account_generation_.load() == generation) {
+                        discord_.update(presence);
+                    }
+
+                    // Once basic RPC is visible, release startup album sync. This
+                    // keeps ShowSelf ahead of the heavier startup work without
+                    // imposing any fixed sleep or artificial delay.
+                    release_deferred_sync(session_token);
+
                     const auto service = rpc_game_service_for(presence);
                     const auto game_key = !presence.title_id.empty()
                         ? presence.title_id
@@ -636,6 +667,7 @@ void App::presence_loop() {
                 } else {
                     reset_enrichment();
                     discord_.clear();
+                    release_deferred_sync(session_token);
                 }
             }
         } catch (const std::exception& error) {
@@ -644,6 +676,8 @@ void App::presence_loop() {
                     "Nintendo Account session expired. Sign in again to continue.");
                 continue;
             }
+            // Presence failure must not strand auto-sync behind RPC priority.
+            release_deferred_sync(session_token);
             if (!stopping_) {
                 std::cerr << "Presence: " << error.what() << '\n';
             }
@@ -728,6 +762,7 @@ void App::start_workers() {
 void App::request_stop() {
     if (stopping_.exchange(true)) return;
     auth_pending_ = false;
+    initial_sync_deferred_.store(false, std::memory_order_release);
     unregister_nintendo_auth_protocol();
     clear_nintendo_auth_callback();
     wake_workers();
@@ -768,17 +803,20 @@ int App::run() {
     callbacks.ready = [this] {
         const bool had_session = !config_.snapshot().session_token.empty();
         if (!had_session) sign_in_or_out();
-        start_workers();
         const auto config = config_.snapshot();
+        initial_sync_deferred_.store(
+            config.discord_presence && config.auto_sync && !config.session_token.empty(),
+            std::memory_order_release);
+        start_workers();
         if (config.discord_presence && !config.session_token.empty()) {
             request_presence_refresh();
-        }
-        if (config.auto_sync && !config.session_token.empty()) {
+        } else if (config.auto_sync && !config.session_token.empty()) {
             queue_sync(true);
         }
     };
 
     callbacks.sync_now = [this] {
+        initial_sync_deferred_.store(false, std::memory_order_release);
         queue_sync(false);
         const auto config = config_.snapshot();
         if (config.discord_presence && !config.session_token.empty()) {
@@ -791,6 +829,7 @@ int App::run() {
             value.auto_sync = !value.auto_sync;
             value.auto_sync_setting_version = 1;
         });
+        initial_sync_deferred_.store(false, std::memory_order_release);
         {
             std::lock_guard state_lock(state_mutex_);
             status_ = config.auto_sync ? "Auto-sync enabled" : "Auto-sync disabled";
@@ -824,6 +863,11 @@ int App::run() {
         if (config.discord_presence && !config.session_token.empty()) {
             request_presence_refresh();
         } else {
+            const bool was_deferred = initial_sync_deferred_.exchange(
+                false, std::memory_order_acq_rel);
+            if (was_deferred && config.auto_sync && !config.session_token.empty()) {
+                queue_sync(true);
+            }
             presence_refresh_requested_.store(false, std::memory_order_release);
             discord_.clear();
             presence_cv_.notify_all();

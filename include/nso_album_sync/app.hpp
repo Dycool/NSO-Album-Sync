@@ -47,6 +47,7 @@ private:
     std::atomic<bool> auth_pending_{false};
     std::atomic<bool> operational_workers_started_{false};
     std::atomic<bool> presence_refresh_requested_{false};
+    std::atomic<bool> initial_sync_deferred_{false};
     std::atomic<std::uint64_t> account_generation_{0};
 
     std::thread sync_thread_;
