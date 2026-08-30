@@ -30,16 +30,24 @@ constexpr char kCoralCredentialAccount[] = "CoralCredential";
 constexpr char kWorkerBaseUrl[] = "https://nso-worker-backend.diogoenes0.workers.dev";
 constexpr char kWorkerClientId[] = "nso-album-sync";
 
-// Keep the conservative authentication limiter even though the native Worker
-// path no longer depends on nxapi. It protects Nintendo's Coral login endpoint
-// and also applies when the compatibility fallback has to use nxapi.
-constexpr std::size_t kMaxCoralAuthAttemptsPerHour = 4;
-constexpr auto kDefaultCoralRateLimitBackoff = std::chrono::minutes(15);
+// These limits apply only when the desktop client actually falls back to
+// nxapi's f-generation endpoint. They deliberately live in process memory:
+// Coral/Nintendo requests are not locally rate-limited or persisted.
+constexpr std::size_t kNxapiMethod1MaxRequests = 10;
+constexpr auto kNxapiMethod1Window = std::chrono::minutes(60);
+constexpr std::size_t kNxapiMethod2MaxRequests = 20;
+constexpr auto kNxapiMethod2Window = std::chrono::minutes(30);
 constexpr auto kWorkerFCircuitBreakerDuration = std::chrono::hours(6);
 
 std::mutex g_worker_f_health_mutex;
 std::chrono::system_clock::time_point g_worker_f_method1_disabled_until{};
 std::chrono::system_clock::time_point g_worker_f_method2_disabled_until{};
+
+std::mutex g_nxapi_f_rate_limit_mutex;
+std::unordered_map<std::string,
+    std::deque<std::chrono::system_clock::time_point>> g_nxapi_f_method1_attempts;
+std::unordered_map<std::string,
+    std::deque<std::chrono::system_clock::time_point>> g_nxapi_f_method2_attempts;
 
 bool worker_f_enabled(int hash_method) {
     std::lock_guard lock(g_worker_f_health_mutex);
@@ -58,6 +66,49 @@ void disable_worker_f(int hash_method) {
     } else if (hash_method == 2) {
         g_worker_f_method2_disabled_until = until;
     }
+}
+
+FAttestation nxapi_generate_f_limited(
+    NxapiClient& nxapi,
+    int hash_method,
+    const std::string& token,
+    const std::string& na_id,
+    const std::string& coral_user_id) {
+    const auto now = std::chrono::system_clock::now();
+    const auto fallback_key = base64url(sha256(token));
+
+    {
+        std::lock_guard lock(g_nxapi_f_rate_limit_mutex);
+        if (hash_method == 1) {
+            const auto key = na_id.empty() ? fallback_key : na_id;
+            auto& attempts = g_nxapi_f_method1_attempts[key];
+            while (!attempts.empty() &&
+                   now - attempts.front() >= kNxapiMethod1Window) {
+                attempts.pop_front();
+            }
+            if (attempts.size() >= kNxapiMethod1MaxRequests) {
+                throw std::runtime_error(
+                    "nxapi method-1 f-token limit reached: 10 requests in 60 minutes");
+            }
+            attempts.push_back(now);
+        } else if (hash_method == 2) {
+            const auto key = coral_user_id.empty() ? fallback_key : coral_user_id;
+            auto& attempts = g_nxapi_f_method2_attempts[key];
+            while (!attempts.empty() &&
+                   now - attempts.front() >= kNxapiMethod2Window) {
+                attempts.pop_front();
+            }
+            if (attempts.size() >= kNxapiMethod2MaxRequests) {
+                throw std::runtime_error(
+                    "nxapi method-2 f-token limit reached: 20 requests in 30 minutes");
+            }
+            attempts.push_back(now);
+        } else {
+            throw std::invalid_argument("Unsupported nxapi f hash method");
+        }
+    }
+
+    return nxapi.generate_f(hash_method, token, na_id, coral_user_id);
 }
 
 std::string upper(std::string text) {
@@ -204,9 +255,6 @@ std::string exact_integer_field_in_object(
 }
 
 std::string auth_rate_limit_key(const std::string& session_token) {
-    // Nintendo Account session tokens are JWTs. Match the persistent auth
-    // limiter by Nintendo Account user (`sub`), not by the replaceable session
-    // token, so signing out/in cannot reset the hourly attempt window.
     try {
         const auto first_dot = session_token.find('.');
         const auto second_dot = first_dot == std::string::npos
@@ -221,7 +269,6 @@ std::string auth_rate_limit_key(const std::string& session_token) {
         }
     } catch (...) {
     }
-    // Safe compatibility fallback for malformed/legacy tokens.
     return session_hash(session_token);
 }
 
@@ -241,26 +288,7 @@ std::chrono::seconds retry_after_delay(const std::string& value) {
         return std::chrono::seconds(std::max<std::int64_t>(1, seconds));
     } catch (...) {
     }
-
-    std::tm parsed{};
-    std::istringstream input(value);
-    input.imbue(std::locale::classic());
-    input >> std::get_time(&parsed, "%a, %d %b %Y %H:%M:%S GMT");
-    if (input.fail()) {
-        return std::chrono::duration_cast<std::chrono::seconds>(
-            kDefaultCoralRateLimitBackoff);
-    }
-#ifdef _WIN32
-    const std::time_t retry_at = _mkgmtime(&parsed);
-#else
-    const std::time_t retry_at = timegm(&parsed);
-#endif
-    if (retry_at <= 0) {
-        return std::chrono::duration_cast<std::chrono::seconds>(
-            kDefaultCoralRateLimitBackoff);
-    }
-    return std::chrono::seconds(std::max<std::int64_t>(
-        1, static_cast<std::int64_t>(retry_at - std::time(nullptr))));
+    return std::chrono::minutes(15);
 }
 
 void replace_cache_file(
@@ -297,9 +325,6 @@ MediaItem parse_media_item(const Json& item) {
 
 NintendoPresence parse_presence(const Json& result) {
     NintendoPresence presence;
-    // /v4/User/ShowSelf already includes the signed-in user's Nintendo/Coral
-    // profile image and nickname/name. Use it as the generic Discord small image
-    // and small text tooltip without another account/profile request.
     presence.user_name = result.string("name", result.string("nickname"));
     presence.custom_image_uri = result.string("imageUri", result.string("image2Uri"));
     const auto* presence_json = result.find("presence");
@@ -319,11 +344,8 @@ NintendoPresence parse_presence(const Json& result) {
         presence.shop_uri = game->string("shopUri");
         presence.sys_description = game->string("sysDescription");
         presence.total_play_time = game->integer("totalPlayTime");
-
-        // 1. Direct titleId / applicationId fields
         presence.title_id = game->string("titleId", game->string("applicationId"));
 
-        // 2. Numeric or string ID field in Coral
         if (presence.title_id.empty()) {
             if (const auto* id_val = game->find("id")) {
                 if (id_val->is_string()) {
@@ -339,7 +361,6 @@ NintendoPresence parse_presence(const Json& result) {
             }
         }
 
-        // 3. Extract 16-hex Title ID from shopUri (e.g. /apps/0100f2c0115b6000/US)
         if (presence.title_id.empty() && !presence.shop_uri.empty()) {
             const auto pos = presence.shop_uri.find("/apps/");
             if (pos != std::string::npos && pos + 6 + 16 <= presence.shop_uri.size()) {
@@ -424,109 +445,22 @@ void CoralClient::persist_session(const std::string& session_token) {
 void CoralClient::load_auth_attempts(
     const std::string& session_token,
     Clock::time_point now) {
-    std::lock_guard rate_lock(rate_limit_mutex_);
-    const auto hash = auth_rate_limit_key(session_token);
-    if (rate_limit_session_hash_ == hash) {
-        while (!auth_attempts_.empty() &&
-               now - auth_attempts_.front() > std::chrono::hours(1)) {
-            auth_attempts_.pop_front();
-        }
-        return;
-    }
-
-    rate_limit_session_hash_ = hash;
-    auth_attempts_.clear();
-    coral_rate_limit_until_ = {};
-    const auto file = cache_directory_ / ("coral-rate-limit-" + hash + ".json");
-    try {
-        std::ifstream input(file, std::ios::binary);
-        if (input) {
-            const std::string contents{
-                std::istreambuf_iterator<char>(input),
-                std::istreambuf_iterator<char>()};
-            const auto json = Json::parse(contents);
-            coral_rate_limit_until_ = time_from_epoch(
-                json.integer("backoffUntil"));
-            if (const auto* attempts = json.find("attempts");
-                attempts != nullptr && attempts->is_array()) {
-                for (const auto& item : attempts->as_array()) {
-                    if (item.is_number()) {
-                        const auto when = time_from_epoch(item.as_i64());
-                        if (when <= now && now - when <= std::chrono::hours(1)) {
-                            auth_attempts_.push_back(when);
-                        }
-                    }
-                }
-            }
-        }
-    } catch (...) {
-        auth_attempts_.clear();
-    }
+    (void)session_token;
+    (void)now;
 }
 
 void CoralClient::save_auth_attempts() const {
-    std::lock_guard rate_lock(rate_limit_mutex_);
-    if (rate_limit_session_hash_.empty()) return;
-    try {
-        std::filesystem::create_directories(cache_directory_);
-        Json::array attempts;
-        for (const auto& item : auth_attempts_) {
-            attempts.emplace_back(epoch_seconds(item));
-        }
-        const Json json(Json::object{
-            {"attempts", std::move(attempts)},
-            {"backoffUntil", epoch_seconds(coral_rate_limit_until_)},
-        });
-        const auto file = cache_directory_ /
-            ("coral-rate-limit-" + rate_limit_session_hash_ + ".json");
-        auto temporary = file;
-        temporary += ".tmp";
-        {
-            std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-            if (!output) return;
-            output << json.dump();
-            output.flush();
-            if (!output) return;
-        }
-#ifndef _WIN32
-        chmod(temporary.c_str(), 0600);
-#endif
-        replace_cache_file(temporary, file);
-#ifndef _WIN32
-        chmod(file.c_str(), 0600);
-#endif
-    } catch (...) {
-    }
 }
 
 void CoralClient::throw_if_coral_rate_limited(Clock::time_point now) const {
-    std::lock_guard rate_lock(rate_limit_mutex_);
-    if (now < coral_rate_limit_until_) {
-        throw std::runtime_error("Nintendo Coral Retry-After backoff is active");
-    }
+    (void)now;
 }
 
 void CoralClient::apply_coral_rate_limit_response(const HttpResponse& response) {
-    if (response.status != 429) return;
-
-    auto delay = std::chrono::duration_cast<std::chrono::seconds>(
-        kDefaultCoralRateLimitBackoff);
-    if (const auto header = response.headers.find("retry-after");
-        header != response.headers.end()) {
-        delay = retry_after_delay(header->second);
-    }
-
-    {
-        std::lock_guard rate_lock(rate_limit_mutex_);
-        coral_rate_limit_until_ = Clock::now() + delay;
-        save_auth_attempts();
-    }
+    (void)response;
 }
 
 void CoralClient::clear_cached_session() {
-    // Invalidate in-flight authentication before touching the cache. A slow
-    // Nintendo/Worker/nxapi request may still return, but it is forbidden from
-    // repopulating a credential after the user has signed out.
     session_generation_.fetch_add(1);
     {
         std::lock_guard lock(session_mutex_);
@@ -541,14 +475,9 @@ void CoralClient::clear_cached_session() {
 }
 
 std::string CoralClient::ensure_session(const std::string& session_token) {
-    // Only one Coral authentication may be in flight, but do not hold the
-    // cache mutex across network I/O: sign-out and Exit must remain responsive.
     std::lock_guard login_lock(login_mutex_);
     const auto generation = session_generation_.load();
     const auto now = Clock::now();
-
-    load_auth_attempts(session_token, now);
-    throw_if_coral_rate_limited(now);
 
     {
         std::lock_guard cache_lock(session_mutex_);
@@ -563,24 +492,9 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
         }
     }
 
-    {
-        std::lock_guard rate_lock(rate_limit_mutex_);
-        if (auth_attempts_.size() >= kMaxCoralAuthAttemptsPerHour) {
-            throw std::runtime_error(
-                "Coral authentication paused locally: four attempts were already made in the last hour");
-        }
-        auth_attempts_.push_back(now);
-        save_auth_attempts();
-    }
-
     const auto nintendo_tokens = auth_.exchange_session_token(session_token);
     const auto profile = auth_.fetch_profile(nintendo_tokens.access_token);
 
-    // Cloudflare is deliberately used for f generation only. All SDS
-    // request encryption/decryption remains on nxapi, and Nintendo is
-    // contacted directly by the desktop client. If the native f endpoint
-    // is unavailable, fall back to nxapi /f for compatibility. If Nintendo
-    // rejects a structurally valid Worker f token, retry once with nxapi f.
     bool used_worker_f = false;
     FAttestation attestation;
     if (worker_f_enabled(1)) {
@@ -589,12 +503,12 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
                 http_, 1, nintendo_tokens.id_token, profile.id, "");
             used_worker_f = true;
         } catch (...) {
-            attestation = nxapi_.generate_f(
-                1, nintendo_tokens.id_token, profile.id, "");
+            attestation = nxapi_generate_f_limited(
+                nxapi_, 1, nintendo_tokens.id_token, profile.id, "");
         }
     } else {
-        attestation = nxapi_.generate_f(
-            1, nintendo_tokens.id_token, profile.id, "");
+        attestation = nxapi_generate_f_limited(
+            nxapi_, 1, nintendo_tokens.id_token, profile.id, "");
     }
 
     const auto nso_version = nxapi_.nso_version();
@@ -622,7 +536,6 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
                 "X-ProductVersion: " + nso_version,
                 "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
             });
-        apply_coral_rate_limit_response(response);
 
         std::string decoded;
         if (!response.body.empty()) {
@@ -645,8 +558,8 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
     auto login_attempt = perform_login_request(attestation);
     bool recovered_from_worker_f = false;
     if (used_worker_f && is_f_rejection_payload(login_attempt.second)) {
-        const auto nxapi_attestation = nxapi_.generate_f(
-            1, nintendo_tokens.id_token, profile.id, "");
+        const auto nxapi_attestation = nxapi_generate_f_limited(
+            nxapi_, 1, nintendo_tokens.id_token, profile.id, "");
         login_attempt = perform_login_request(nxapi_attestation);
         recovered_from_worker_f = true;
     }
@@ -675,8 +588,6 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
         throw std::runtime_error("Coral login missing access token");
     }
     if (recovered_from_worker_f) {
-        // The same Nintendo request failed with the Worker f but succeeded
-        // with nxapi f. Bypass Worker method 1 for six hours in this process.
         disable_worker_f(1);
     }
     std::string user_id = exact_integer_field_in_object(decrypted_login, "user", "id");
@@ -713,8 +624,6 @@ Json CoralClient::coral_call(
     const std::string& request_body) {
     std::lock_guard request_lock(request_mutex_);
 
-    // Cloudflare is not on the normal Coral call path. nxapi performs SDS
-    // encryption/decryption and the desktop client talks to Nintendo directly.
     const auto nso_version = nxapi_.nso_version();
     const auto encrypted_request =
         nxapi_.encrypt_request(url, access_token, request_body);
@@ -726,7 +635,6 @@ Json CoralClient::coral_call(
             "Authorization: Bearer " + access_token,
             "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
         });
-    apply_coral_rate_limit_response(response);
 
     if (response.status / 100 != 2) {
         if (response.status == 401 || response.status == 403) {
@@ -830,12 +738,12 @@ std::string CoralClient::get_web_service_token(
                     http_, 2, access_token, na_id, coral_user_id);
                 used_worker_f = true;
             } catch (...) {
-                attestation = nxapi_.generate_f(
-                    2, access_token, na_id, coral_user_id);
+                attestation = nxapi_generate_f_limited(
+                    nxapi_, 2, access_token, na_id, coral_user_id);
             }
         } else {
-            attestation = nxapi_.generate_f(
-                2, access_token, na_id, coral_user_id);
+            attestation = nxapi_generate_f_limited(
+                nxapi_, 2, access_token, na_id, coral_user_id);
         }
 
         const auto nso_version = nxapi_.nso_version();
@@ -867,7 +775,6 @@ std::string CoralClient::get_web_service_token(
                     "X-ProductVersion: " + nso_version,
                     "User-Agent: com.nintendo.znca/" + nso_version + "(Android/12)",
                 });
-            apply_coral_rate_limit_response(response);
 
             std::string decoded;
             if (!response.body.empty()) {
@@ -890,8 +797,8 @@ std::string CoralClient::get_web_service_token(
         auto token_attempt = perform_web_service_token_request(attestation);
         bool recovered_from_worker_f = false;
         if (used_worker_f && is_f_rejection_payload(token_attempt.second)) {
-            const auto nxapi_attestation = nxapi_.generate_f(
-                2, access_token, na_id, coral_user_id);
+            const auto nxapi_attestation = nxapi_generate_f_limited(
+                nxapi_, 2, access_token, na_id, coral_user_id);
             token_attempt = perform_web_service_token_request(nxapi_attestation);
             recovered_from_worker_f = true;
         }
@@ -917,8 +824,6 @@ std::string CoralClient::get_web_service_token(
         if (token.empty()) return {};
 
         if (recovered_from_worker_f) {
-            // The Worker f was rejected and nxapi f succeeded for the same
-            // Coral credential. Bypass Worker method 2 for six hours.
             disable_worker_f(2);
         }
 
