@@ -25,7 +25,6 @@ required-features = ["desktop"]
 default = ["desktop"]
 desktop = [
     "dep:atomic-write-file",
-    "dep:auto-launcher",
     "dep:discord-rich-presence",
     "dep:ico",
     "dep:keyring",
@@ -53,15 +52,14 @@ url = "=2.5.7"
 walkdir = "=2.5.0"
 
 # Desktop-only integrations are optional so Miri can exercise the pure Rust core
-# without invoking OS UI, network or credential-store backends.
+# without invoking OS UI, credential-store, IPC, or networking backends.
 atomic-write-file = { version = "=0.3.1", optional = true }
-auto-launcher = { version = "=1.1.0", optional = true }
 discord-rich-presence = { version = "=1.1.0", optional = true }
 ico = { version = "=0.5.0", optional = true }
 keyring = { version = "=4.2.0", optional = true, default-features = false, features = ["v1"] }
 open = { version = "=5.4.1", optional = true }
 reqwest = { version = "=0.13.4", optional = true, default-features = false, features = ["blocking", "json", "rustls", "gzip", "brotli", "socks"] }
-rfd = { version = "=0.17.2", optional = true, default-features = false, features = ["xdg-portal"] }
+rfd = { version = "=0.17.2", optional = true, default-features = false, features = ["gtk3"] }
 tao = { version = "=0.37.0", optional = true }
 tray-icon = { version = "=0.24.2", optional = true }
 ureq = { version = "=3.4.0", optional = true, default-features = false, features = ["rustls", "socks-proxy"] }
