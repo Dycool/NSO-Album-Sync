@@ -497,17 +497,19 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         );
                     }
                 }
+                let status = current_status_for_refresh(&menu);
                 menu.refresh(
                     &config.snapshot(),
                     platform::start_on_boot_enabled(),
-                    current_status_for_refresh(&menu),
+                    &status,
                 );
             } else if menu.matches_check(&menu_event, &menu.notifications) {
                 let _ = config.update(AppConfig::toggle_notifications);
+                let status = current_status_for_refresh(&menu);
                 menu.refresh(
                     &config.snapshot(),
                     platform::start_on_boot_enabled(),
-                    current_status_for_refresh(&menu),
+                    &status,
                 );
             } else if menu.matches_check(&menu_event, &menu.discord) {
                 let updated = config.update(AppConfig::toggle_discord_presence).ok();
@@ -538,10 +540,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     discord.clear();
                     menu.set_status("Discord presence disabled");
                 }
+                let status = current_status_for_refresh(&menu);
                 menu.refresh(
                     &config.snapshot(),
                     platform::start_on_boot_enabled(),
-                    current_status_for_refresh(&menu),
+                    &status,
                 );
             } else if menu.matches_check(&menu_event, &menu.start_boot) {
                 let enabled = !platform::start_on_boot_enabled();
@@ -551,10 +554,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     }
                     Err(error) => platform::show_error("Start on boot", &error.to_string()),
                 }
+                let status = current_status_for_refresh(&menu);
                 menu.refresh(
                     &config.snapshot(),
                     platform::start_on_boot_enabled(),
-                    current_status_for_refresh(&menu),
+                    &status,
                 );
             } else if menu.matches_item(&menu_event, &menu.choose_folder) {
                 let current = std::path::PathBuf::from(snapshot.destination_folder());
@@ -602,15 +606,15 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     });
 }
 
-fn current_status_for_refresh(menu: &TrayMenu) -> &str {
+fn current_status_for_refresh(menu: &TrayMenu) -> String {
     #[cfg(target_os = "macos")]
     {
-        return menu.status_text.borrowed();
+        menu.status_text.get()
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = menu;
-        "Ready"
+        "Ready".to_owned()
     }
 }
 
@@ -1132,8 +1136,8 @@ impl StatusText {
         *self.0.borrow_mut() = value.to_owned();
     }
 
-    fn borrowed(&self) -> &str {
-        "Ready"
+    fn get(&self) -> String {
+        self.0.borrow().clone()
     }
 }
 
