@@ -80,9 +80,9 @@ const ABANDONED_MINE_RADIUS: f64 = 200.0;
 const ABANDONED_MINE_HALF_HEIGHT: f64 = 180.0;
 const BOTW_TOWER_RADIUS: f64 = 25.0;
 const BOTW_TOWER_HALF_HEIGHT: f64 = 34.537;
+const CPP_QUARTER_TURN: f64 = 785_398.0 / 1_000_000.0;
 
 const TOTK_LOCATIONS: &[Location] = &[
-    // Settlements & Villages
     Location { name: "Lookout Landing", image: "https://cdn.wikimg.net/en/zeldawiki/images/9/94/TotK_Lookout_Landing.png", category: "Village", layer: ZeldaLayer::Ground, center: (-254.12, 123.447, -101.602), bounding_radius: 83.45, shapes: &[Shape::Box { center: (-254.12, 123.447, -101.602), half: (55.012, 16.807, 62.732), rotation_y: 0.0 }] },
     Location { name: "Tarrey Town", image: "https://cdn.wikimg.net/en/zeldawiki/images/7/77/TotK_Tarrey_Town.png", category: "Village", layer: ZeldaLayer::Ground, center: (3964.299, 152.472, -1612.209), bounding_radius: 85.0, shapes: &[Shape::Sphere { center: (3964.299, 152.472, -1612.209), radius: 85.0 }] },
     Location { name: "Rito Village", image: "https://cdn.wikimg.net/en/zeldawiki/images/6/68/TotK_Rito_Village.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3501.0, 215.0, -1835.0), bounding_radius: 210.0, shapes: &[
@@ -93,10 +93,10 @@ const TOTK_LOCATIONS: &[Location] = &[
         Shape::Sphere { center: (-3408.0, 208.672, -1845.0), radius: 40.0 },
         Shape::Sphere { center: (-3522.5, 230.0, -1825.0), radius: 40.0 },
     ] },
-    Location { name: "Gerudo Town", image: "https://cdn.wikimg.net/en/zeldawiki/images/a/ad/TotK_Gerudo_Town.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3844.5, 149.169, 2926.197), bounding_radius: 134.537, shapes: &[Shape::Box { center: (-3844.5, 149.169, 2926.197), half: (100.0, 50.0, 90.0), rotation_y: 0.785398 }] },
+    Location { name: "Gerudo Town", image: "https://cdn.wikimg.net/en/zeldawiki/images/a/ad/TotK_Gerudo_Town.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3844.5, 149.169, 2926.197), bounding_radius: 134.537, shapes: &[Shape::Box { center: (-3844.5, 149.169, 2926.197), half: (100.0, 50.0, 90.0), rotation_y: CPP_QUARTER_TURN }] },
     Location { name: "Gerudo Shelter", image: "https://cdn.wikimg.net/en/zeldawiki/images/4/44/TotK_Gerudo_Shelter.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3866.0, 116.655, 2942.0), bounding_radius: 113.137, shapes: &[
-        Shape::Box { center: (-3866.0, 116.655, 2942.0), half: (80.0, 16.0, 80.0), rotation_y: 0.785398 },
-        Shape::Box { center: (-3858.96, 138.3, 2940.523), half: (17.5, 8.2, 5.0), rotation_y: 0.785398 },
+        Shape::Box { center: (-3866.0, 116.655, 2942.0), half: (80.0, 16.0, 80.0), rotation_y: CPP_QUARTER_TURN },
+        Shape::Box { center: (-3858.96, 138.3, 2940.523), half: (17.5, 8.2, 5.0), rotation_y: CPP_QUARTER_TURN },
     ] },
     Location { name: "Kara Kara Bazaar", image: "https://cdn.wikimg.net/en/zeldawiki/images/8/86/TotK_Kara_Kara_Bazaar.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3239.28, 72.855, 2569.85), bounding_radius: 67.501, shapes: &[Shape::Sphere { center: (-3239.28, 72.855, 2569.85), radius: 67.501 }] },
     Location { name: "Korok Forest", image: "https://cdn.wikimg.net/en/zeldawiki/images/0/00/TotK_Korok_Forest.png", category: "Village", layer: ZeldaLayer::Ground, center: (433.816, 118.455, -2208.076), bounding_radius: 150.0, shapes: &[Shape::Sphere { center: (433.816, 118.455, -2208.076), radius: 150.0 }] },
@@ -145,8 +145,6 @@ const TOTK_LOCATIONS: &[Location] = &[
         Shape::Sphere { center: (-3282.353, 184.466, -1794.933), radius: 40.0 },
         Shape::Cylinder { center: (-3269.0, 184.466, -1776.0), radius: 65.0, half_height: 50.0 },
     ] },
-
-    // Stables & Mini Stables
     Location { name: "Dueling Peaks Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/5/53/TotK_Dueling_Peaks_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (1772.954, 93.539, 1948.395), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (1772.954, 93.539, 1948.395), radius: 40.0 }] },
     Location { name: "Tabantha Bridge Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/a/a5/TotK_Tabantha_Bridge_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (-2948.018, 252.75, -566.453), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (-2948.018, 252.75, -566.453), radius: 40.0 }] },
     Location { name: "Woodland Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/9/99/TotK_Woodland_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (1089.235, 105.531, -1149.999), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (1089.235, 105.531, -1149.999), radius: 40.0 }] },
@@ -168,8 +166,6 @@ const TOTK_LOCATIONS: &[Location] = &[
     Location { name: "Gerudo Canyon Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/5/56/TotK_Gerudo_Canyon_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (-2800.712, 112.917, 2200.935), bounding_radius: 35.0, shapes: &[Shape::Sphere { center: (-2800.712, 112.917, 2200.935), radius: 35.0 }] },
     Location { name: "Highland Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/7/77/TotK_Highland_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (520.13, 130.89, 3473.016), bounding_radius: 64.0, shapes: &[Shape::Sphere { center: (520.13, 130.89, 3473.016), radius: 64.0 }] },
     Location { name: "Lakeside Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/e/e1/TotK_Lakeside_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (1522.445, 135.146, 3538.08), bounding_radius: 60.0, shapes: &[Shape::Sphere { center: (1522.445, 135.146, 3538.08), radius: 60.0 }] },
-
-    // Skyview Towers
     Location { name: "Lookout Landing Skyview Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/0/00/TotK_Lookout_Landing_Skyview_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (-298.85, 123.941, -142.85), bounding_radius: 35.0, shapes: &[Shape::Cylinder { center: (-298.85, 123.941, -142.85), radius: 35.0, half_height: 50.0 }] },
     Location { name: "Lindor's Brow Skyview Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/7/7c/TotK_Lindor%27s_Brow_Skyview_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (-1909.588, 395.706, -1245.305), bounding_radius: 35.0, shapes: &[Shape::Cylinder { center: (-1909.588, 395.706, -1245.305), radius: 35.0, half_height: 50.0 }] },
     Location { name: "Pikida Stonegrove Skyview Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/4/4f/TotK_Pikida_Stonegrove_Skyview_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (-2311.495, 542.0, -3062.495), bounding_radius: 35.0, shapes: &[Shape::Cylinder { center: (-2311.495, 542.0, -3062.495), radius: 35.0, half_height: 50.0 }] },
@@ -185,10 +181,8 @@ const TOTK_LOCATIONS: &[Location] = &[
     Location { name: "Popla Foothills Skyview Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/b/b2/TotK_Popla_Foothills_Skyview_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (604.839, 197.333, 2126.876), bounding_radius: 35.0, shapes: &[Shape::Cylinder { center: (604.839, 197.333, 2126.876), radius: 35.0, half_height: 50.0 }] },
     Location { name: "Mount Lanayru Skyview Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/7/76/TotK_Mount_Lanayru_Skyview_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (3847.638, 637.808, 1314.911), bounding_radius: 35.0, shapes: &[Shape::Cylinder { center: (3847.638, 637.808, 1314.911), radius: 35.0, half_height: 50.0 }] },
     Location { name: "Rospro Pass Skyview Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/4/45/TotK_Rospro_Pass_Skyview_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (-3679.585, 331.739, -2346.404), bounding_radius: 35.0, shapes: &[Shape::Cylinder { center: (-3679.585, 331.739, -2346.404), radius: 35.0, half_height: 50.0 }] },
-
-    // Depths Abandoned Mines
     Location { name: "Great Abandoned Central Mine", image: "https://cdn.wikimg.net/en/zeldawiki/images/6/68/TotK_Great_Abandoned_Central_Mine.png", category: "AbandonedMine", layer: ZeldaLayer::Underground, center: (-770.0, -510.0, 1890.0), bounding_radius: 240.0, shapes: &[
-        Shape::Box { center: (-811.155, -583.063, 1922.583), half: (60.765, 124.82, 90.129), rotation_y: -0.785398 },
+        Shape::Box { center: (-811.155, -583.063, 1922.583), half: (60.765, 124.82, 90.129), rotation_y: -CPP_QUARTER_TURN },
         Shape::Cylinder { center: (-729.122, -444.216, 1859.212), radius: 80.0, half_height: 30.0 },
         Shape::Cylinder { center: (-770.0, -510.0, 1890.0), radius: 240.0, half_height: ABANDONED_MINE_HALF_HEIGHT },
     ] },
@@ -228,8 +222,6 @@ const TOTK_LOCATIONS: &[Location] = &[
         Shape::Sphere { center: (3567.668, -601.87, 2238.528), radius: 89.029 },
         Shape::Cylinder { center: (3567.668, -601.87, 2238.528), radius: ABANDONED_MINE_RADIUS, half_height: ABANDONED_MINE_HALF_HEIGHT },
     ] },
-
-    // Sky Archipelagos
     Location { name: "Tabantha Sky Archipelago", image: "https://cdn.wikimg.net/en/zeldawiki/images/8/80/TotK_Tabantha_Sky_Archipelago.png", category: "SkyArchipelago", layer: ZeldaLayer::Sky, center: (-3676.139, 1339.59, -664.48), bounding_radius: 707.0, shapes: &[Shape::Box { center: (-3676.139, 1339.59, -664.48), half: (500.0, 400.0, 500.0), rotation_y: 0.0 }] },
     Location { name: "North Gerudo Sky Archipelago", image: "https://cdn.wikimg.net/en/zeldawiki/images/4/47/TotK_North_Gerudo_Sky_Archipelago.png", category: "SkyArchipelago", layer: ZeldaLayer::Sky, center: (-3580.118, 1567.0, 526.512), bounding_radius: 700.0, shapes: &[Shape::Cylinder { center: (-3580.118, 1567.0, 526.512), radius: 700.0, half_height: 700.0 }] },
     Location { name: "West Hyrule Sky Archipelago", image: "https://cdn.wikimg.net/en/zeldawiki/images/c/c8/TotK_West_Hyrule_Sky_Archipelago.png", category: "SkyArchipelago", layer: ZeldaLayer::Sky, center: (-2290.425, 850.0, 411.736), bounding_radius: 212.0, shapes: &[Shape::Box { center: (-2290.425, 850.0, 411.736), half: (150.0, 150.0, 150.0), rotation_y: 0.0 }] },
@@ -241,9 +233,8 @@ const TOTK_LOCATIONS: &[Location] = &[
 ];
 
 const BOTW_LOCATIONS: &[Location] = &[
-    // Settlements & Villages
     Location { name: "Rito Village", image: "https://cdn.wikimg.net/en/zeldawiki/images/2/26/BotW_Rito_Village.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3620.765, 288.672, -1799.816), bounding_radius: 80.0, shapes: &[Shape::Sphere { center: (-3620.765, 288.672, -1799.816), radius: 80.0 }] },
-    Location { name: "Gerudo Town", image: "https://cdn.wikimg.net/en/zeldawiki/images/0/03/BotW_Gerudo_Town.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3844.5, 194.5, 2925.0), bounding_radius: 134.537, shapes: &[Shape::Box { center: (-3844.5, 194.5, 2925.0), half: (100.0, 50.0, 90.0), rotation_y: 0.785398 }] },
+    Location { name: "Gerudo Town", image: "https://cdn.wikimg.net/en/zeldawiki/images/0/03/BotW_Gerudo_Town.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3844.5, 194.5, 2925.0), bounding_radius: 134.537, shapes: &[Shape::Box { center: (-3844.5, 194.5, 2925.0), half: (100.0, 50.0, 90.0), rotation_y: CPP_QUARTER_TURN }] },
     Location { name: "Kara Kara Bazaar", image: "https://cdn.wikimg.net/en/zeldawiki/images/c/cb/BotW_Kara_Kara_Bazaar.png", category: "Village", layer: ZeldaLayer::Ground, center: (-3239.28, 140.356, 2569.85), bounding_radius: 67.501, shapes: &[Shape::Sphere { center: (-3239.28, 140.356, 2569.85), radius: 67.501 }] },
     Location { name: "Korok Forest", image: "https://cdn.wikimg.net/en/zeldawiki/images/a/a2/BotW_Korok_Forest.png", category: "Village", layer: ZeldaLayer::Ground, center: (433.816, 268.455, -2208.076), bounding_radius: 150.0, shapes: &[Shape::Sphere { center: (433.816, 268.455, -2208.076), radius: 150.0 }] },
     Location { name: "Goron City", image: "https://cdn.wikimg.net/en/zeldawiki/images/5/5c/BotW_Goron_City.png", category: "Village", layer: ZeldaLayer::Ground, center: (1680.0, 495.0, -2445.0), bounding_radius: 100.0, shapes: &[Shape::Cylinder { center: (1680.0, 495.0, -2445.0), radius: 100.0, half_height: 45.0 }] },
@@ -258,8 +249,6 @@ const BOTW_LOCATIONS: &[Location] = &[
         Shape::Sphere { center: (3598.36, 252.516, 2137.678), radius: 80.0 },
         Shape::Sphere { center: (3478.329, 199.508, 2143.116), radius: 100.0 },
     ] },
-
-    // Stables
     Location { name: "Foothill Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/5/58/BotW_Foothill_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (2613.332, 253.358, -1143.513), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (2613.332, 253.358, -1143.513), radius: 40.0 }] },
     Location { name: "Dueling Peaks Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/a/a5/BotW_Dueling_Peaks_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (1761.314, 115.573, 1926.244), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (1761.314, 115.573, 1926.244), radius: 40.0 }] },
     Location { name: "Lakeside Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/a/a3/BotW_Lakeside_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (1552.023, 166.02, 3537.839), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (1552.023, 166.02, 3537.839), radius: 40.0 }] },
@@ -275,8 +264,6 @@ const BOTW_LOCATIONS: &[Location] = &[
     Location { name: "Snowfield Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/5/5a/BotW_Snowfield_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (-1654.883, 339.288, -2572.156), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (-1654.883, 339.288, -2572.156), radius: 40.0 }] },
     Location { name: "East Akkala Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/f/fd/BotW_East_Akkala_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (4227.582, 231.441, -2749.128), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (4227.582, 231.441, -2749.128), radius: 40.0 }] },
     Location { name: "South Akkala Stable", image: "https://cdn.wikimg.net/en/zeldawiki/images/9/95/BotW_South_Akkala_Stable.png", category: "Stable", layer: ZeldaLayer::Ground, center: (3149.832, 306.78, -1692.647), bounding_radius: 40.0, shapes: &[Shape::Sphere { center: (3149.832, 306.78, -1692.647), radius: 40.0 }] },
-
-    // Sheikah Towers
     Location { name: "Hebra Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/a/ac/BotW_Hebra_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (-2173.0, 489.537, -2034.0), bounding_radius: BOTW_TOWER_RADIUS, shapes: &[Shape::Capsule { center: (-2173.0, 489.537, -2034.0), radius: BOTW_TOWER_RADIUS, half_height: BOTW_TOWER_HALF_HEIGHT }] },
     Location { name: "Tabantha Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/8/8e/BotW_Tabantha_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (-3613.748, 405.392, -990.165), bounding_radius: BOTW_TOWER_RADIUS, shapes: &[Shape::Capsule { center: (-3613.748, 405.392, -990.165), radius: BOTW_TOWER_RADIUS, half_height: BOTW_TOWER_HALF_HEIGHT }] },
     Location { name: "Gerudo Tower", image: "https://cdn.wikimg.net/en/zeldawiki/images/7/71/BotW_Gerudo_Tower.png", category: "Tower", layer: ZeldaLayer::Ground, center: (-3666.0, 430.656, 1828.6), bounding_radius: BOTW_TOWER_RADIUS, shapes: &[Shape::Capsule { center: (-3666.0, 430.656, 1828.6), radius: BOTW_TOWER_RADIUS, half_height: BOTW_TOWER_HALF_HEIGHT }] },
