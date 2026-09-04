@@ -5,6 +5,7 @@ use atomic_write_file::AtomicWriteFile;
 use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::process::Command;
 
 pub const NINTENDO_CALLBACK_SCHEME: &str = "npf71b963c1b7b6d119";

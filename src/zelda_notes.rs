@@ -4,7 +4,7 @@ use crate::http::HttpClient;
 use crate::sse::SseClient;
 use crate::util::random_alphanumeric;
 use crate::zelda_regions::{LocationResult, Vector3, ZeldaGame, ZeldaLayer, resolve_botw_location_3d, resolve_poi_artwork, resolve_region_artwork, resolve_totk_location_3d};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};

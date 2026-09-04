@@ -57,7 +57,7 @@ auto-launcher = { version = "=1.1.0", optional = true }
 discord-rich-presence = { version = "=1.1.0", optional = true }
 keyring = { version = "=4.2.0", optional = true, default-features = false, features = ["v1"] }
 open = { version = "=5.4.1", optional = true }
-reqwest = { version = "=0.12.23", optional = true, default-features = false, features = ["blocking", "json", "rustls-tls", "gzip", "brotli", "socks"] }
+reqwest = { version = "=0.12.28", optional = true, default-features = false, features = ["blocking", "json", "rustls-tls", "gzip", "brotli", "socks"] }
 rfd = { version = "=0.17.2", optional = true, default-features = false, features = ["xdg-portal"] }
 tao = { version = "=0.37.0", optional = true }
 tray-icon = { version = "=0.24.2", optional = true }
