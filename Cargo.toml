@@ -27,6 +27,7 @@ desktop = [
     "dep:atomic-write-file",
     "dep:auto-launcher",
     "dep:discord-rich-presence",
+    "dep:ico",
     "dep:keyring",
     "dep:open",
     "dep:reqwest",
@@ -56,6 +57,7 @@ walkdir = "=2.5.0"
 atomic-write-file = { version = "=0.3.1", optional = true }
 auto-launcher = { version = "=1.1.0", optional = true }
 discord-rich-presence = { version = "=1.1.0", optional = true }
+ico = { version = "=0.5.0", optional = true }
 keyring = { version = "=4.2.0", optional = true, default-features = false, features = ["v1"] }
 open = { version = "=5.4.1", optional = true }
 reqwest = { version = "=0.13.4", optional = true, default-features = false, features = ["blocking", "json", "rustls", "gzip", "brotli", "socks"] }
