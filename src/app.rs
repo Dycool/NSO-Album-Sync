@@ -100,7 +100,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
 
         while let Ok(event) = receiver.try_recv() {
             match event {
-                AppEvent::SyncFinished(result) => {
+                AppEvent::Sync(result) => {
                     sync_running = false;
                     match result {
                         Ok(result) => {
@@ -123,7 +123,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         }
                     }
                 }
-                AppEvent::AuthFinished(result) => {
+                AppEvent::Auth(result) => {
                     auth_running = false;
                     match result {
                         Ok((token, nickname)) => {
@@ -142,13 +142,13 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         }
                     }
                 }
-                AppEvent::PresenceFinished(result) => {
+                AppEvent::Presence(result) => {
                     presence_running = false;
                     match result {
                         Ok(presence) => {
                             let current = config.snapshot();
                             if current.discord_presence() {
-                                discord.update(&presence, &zelda.live_presence());
+                                discord.update(presence.as_ref(), &zelda.live_presence());
                             } else {
                                 discord.clear();
                             }
@@ -172,12 +172,12 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             }
         }
 
-        if !auth_running {
-            if let Ok(Some(callback)) = take_callback() {
-                auth_running = true;
-                menu.set_status("Completing Nintendo sign in…");
-                spawn_auth_completion(Arc::clone(&auth), sender.clone(), callback);
-            }
+        if !auth_running
+            && let Ok(Some(callback)) = take_callback()
+        {
+            auth_running = true;
+            menu.set_status("Completing Nintendo sign in…");
+            spawn_auth_completion(Arc::clone(&auth), sender.clone(), callback);
         }
 
         let snapshot = config.snapshot();
@@ -304,9 +304,9 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
 }
 
 enum AppEvent {
-    SyncFinished(anyhow::Result<SyncResult>),
-    AuthFinished(anyhow::Result<(String, String)>),
-    PresenceFinished(anyhow::Result<NintendoPresence>),
+    Sync(anyhow::Result<SyncResult>),
+    Auth(anyhow::Result<(String, String)>),
+    Presence(anyhow::Result<Box<NintendoPresence>>),
 }
 
 fn spawn_auth_completion(
@@ -315,22 +315,20 @@ fn spawn_auth_completion(
     callback: String,
 ) {
     std::thread::spawn(move || {
-        let result = auth
-            .complete_login(&callback)
-            .map(|auth_result| {
-                (
-                    auth_result.session_token().to_owned(),
-                    auth_result.user_nickname().to_owned(),
-                )
-            });
-        let _ = sender.send(AppEvent::AuthFinished(result));
+        let result = auth.complete_login(&callback).map(|auth_result| {
+            (
+                auth_result.session_token().to_owned(),
+                auth_result.user_nickname().to_owned(),
+            )
+        });
+        let _ = sender.send(AppEvent::Auth(result));
     });
 }
 
 fn spawn_sync(engine: Arc<SyncEngine>, stop: Arc<AtomicBool>, sender: mpsc::Sender<AppEvent>) {
     std::thread::spawn(move || {
         let result = engine.sync(|| stop.load(Ordering::Acquire));
-        let _ = sender.send(AppEvent::SyncFinished(result));
+        let _ = sender.send(AppEvent::Sync(result));
     });
 }
 
@@ -348,8 +346,8 @@ fn spawn_presence(
     session_token: String,
 ) {
     std::thread::spawn(move || {
-        let result = fetch_enriched_presence(&deps, &session_token);
-        let _ = sender.send(AppEvent::PresenceFinished(result));
+        let result = fetch_enriched_presence(&deps, &session_token).map(Box::new);
+        let _ = sender.send(AppEvent::Presence(result));
     });
 }
 
@@ -374,61 +372,54 @@ fn fetch_enriched_presence(
             session_token,
             SPLATNET3_GAME_SERVICE_ID,
             SPLATNET3_GAME_SERVICE_ID_ALT,
-        ) {
-            if let Ok(extra) = deps.splatnet.fetch_presence(&token) {
-                if extra.active() {
-                    presence.set_custom_details(extra.format_details());
-                    presence.set_custom_state(extra.format_state());
-                    if !extra.stage_image_uri().is_empty() {
-                        presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
-                    }
-                }
+        ) && let Ok(extra) = deps.splatnet.fetch_presence(&token)
+            && extra.active()
+        {
+            presence.set_custom_details(extra.format_details());
+            presence.set_custom_state(extra.format_state());
+            if !extra.stage_image_uri().is_empty() {
+                presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
             }
         }
     } else if is_animal_crossing(&presence) {
         if let Ok(token) = deps
             .coral
             .get_web_service_token(session_token, ANIMAL_CROSSING_GAME_SERVICE_ID)
+            && let Ok(extra) = deps.game_services.fetch_animal_crossing_presence(&token)
+            && extra.active()
         {
-            if let Ok(extra) = deps.game_services.fetch_animal_crossing_presence(&token) {
-                if extra.active() {
-                    presence.set_custom_details(extra.format_details());
-                    presence.set_custom_state(extra.format_state());
-                    if !extra.image_uri().is_empty() {
-                        presence.set_custom_image_uri(extra.image_uri().to_owned());
-                    }
-                }
+            presence.set_custom_details(extra.format_details());
+            presence.set_custom_state(extra.format_state());
+            if !extra.image_uri().is_empty() {
+                presence.set_custom_image_uri(extra.image_uri().to_owned());
             }
         }
-    } else if is_splatoon2(&presence) {
-        if let Ok(token) = deps
+    } else if is_splatoon2(&presence)
+        && let Ok(token) = deps
             .coral
             .get_web_service_token(session_token, SPLATOON2_GAME_SERVICE_ID)
-        {
-            if let Ok(extra) = deps.game_services.fetch_splatoon2_presence(&token) {
-                if extra.active() {
-                    presence.set_custom_details(extra.format_details());
-                    presence.set_custom_state(extra.format_state());
-                    if !extra.stage_image_uri().is_empty() {
-                        presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
-                    }
-                }
-            }
+        && let Ok(extra) = deps.game_services.fetch_splatoon2_presence(&token)
+        && extra.active()
+    {
+        presence.set_custom_details(extra.format_details());
+        presence.set_custom_state(extra.format_state());
+        if !extra.stage_image_uri().is_empty() {
+            presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
         }
     }
 
     let zelda_game = game_for_presence(presence.title_id(), presence.game_name());
-    if zelda_game != ZeldaGame::Unknown {
-        if let Ok(token) = service_token_with_fallback(
+    if zelda_game != ZeldaGame::Unknown
+        && let Ok(token) = service_token_with_fallback(
             &deps.coral,
             session_token,
             ZELDA_NOTES_GAME_SERVICE_ID,
             ZELDA_NOTES_GAME_SERVICE_ID_ALT,
-        ) {
-            let _ = deps.zelda.fetch_presence(&token);
-            deps.zelda.set_active_game(zelda_game);
-        }
-    } else {
+        )
+    {
+        let _ = deps.zelda.fetch_presence(&token);
+        deps.zelda.set_active_game(zelda_game);
+    } else if zelda_game == ZeldaGame::Unknown {
         deps.zelda.set_active_game(ZeldaGame::Unknown);
     }
     Ok(presence)
@@ -578,7 +569,7 @@ impl TrayMenu {
     }
 
     fn matches(&self, event: &MenuEvent, item: &MenuItem) -> bool {
-        &event.id == item.id()
+        event.id == item.id()
     }
 
     fn interval_for(&self, event: &MenuEvent) -> Option<u32> {
