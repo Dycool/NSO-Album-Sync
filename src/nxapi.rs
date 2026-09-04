@@ -496,14 +496,16 @@ impl NxapiClient {
         let Ok(mut file) = AtomicWriteFile::open(&self.cache_file) else {
             return;
         };
-        if file.write_all(&bytes).is_err() || file.flush().is_err() || file.commit().is_err() {
-            return;
-        }
+        let commit_ok = file.write_all(&bytes).is_ok()
+            && file.flush().is_ok()
+            && file.commit().is_ok();
         #[cfg(unix)]
-        {
+        if commit_ok {
             use std::os::unix::fs::PermissionsExt as _;
             let _ = fs::set_permissions(&self.cache_file, fs::Permissions::from_mode(0o600));
         }
+        #[cfg(not(unix))]
+        let _ = commit_ok;
     }
 }
 
