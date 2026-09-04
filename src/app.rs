@@ -139,16 +139,16 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         }
                         Err(error) => {
                             if is_invalid_grant(&error) {
-                                clear_account_state(
-                                    &config,
-                                    auth.as_ref(),
-                                    coral.as_ref(),
-                                    splatnet.as_ref(),
-                                    game_services.as_ref(),
-                                    zelda.as_ref(),
-                                    discord.as_ref(),
-                                    enrichment_state.as_ref(),
-                                );
+                                clear_account_state(AccountStateRefs {
+                                    config: &config,
+                                    auth: auth.as_ref(),
+                                    coral: coral.as_ref(),
+                                    splatnet: splatnet.as_ref(),
+                                    game_services: game_services.as_ref(),
+                                    zelda: zelda.as_ref(),
+                                    discord: discord.as_ref(),
+                                    enrichment_state: enrichment_state.as_ref(),
+                                });
                                 initial_sync_deferred = false;
                                 menu.refresh(
                                     &config.snapshot(),
@@ -220,16 +220,16 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                             }
                             Err(error) => {
                                 if is_invalid_grant(&error) {
-                                    clear_account_state(
-                                        &config,
-                                        auth.as_ref(),
-                                        coral.as_ref(),
-                                        splatnet.as_ref(),
-                                        game_services.as_ref(),
-                                        zelda.as_ref(),
-                                        discord.as_ref(),
-                                        enrichment_state.as_ref(),
-                                    );
+                                    clear_account_state(AccountStateRefs {
+                                        config: &config,
+                                        auth: auth.as_ref(),
+                                        coral: coral.as_ref(),
+                                        splatnet: splatnet.as_ref(),
+                                        game_services: game_services.as_ref(),
+                                        zelda: zelda.as_ref(),
+                                        discord: discord.as_ref(),
+                                        enrichment_state: enrichment_state.as_ref(),
+                                    });
                                     initial_sync_deferred = false;
                                     menu.refresh(
                                         &config.snapshot(),
@@ -359,16 +359,16 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                 } else {
                     auth_pending = false;
                     initial_sync_deferred = false;
-                    clear_account_state(
-                        &config,
-                        auth.as_ref(),
-                        coral.as_ref(),
-                        splatnet.as_ref(),
-                        game_services.as_ref(),
-                        zelda.as_ref(),
-                        discord.as_ref(),
-                        enrichment_state.as_ref(),
-                    );
+                    clear_account_state(AccountStateRefs {
+                        config: &config,
+                        auth: auth.as_ref(),
+                        coral: coral.as_ref(),
+                        splatnet: splatnet.as_ref(),
+                        game_services: game_services.as_ref(),
+                        zelda: zelda.as_ref(),
+                        discord: discord.as_ref(),
+                        enrichment_state: enrichment_state.as_ref(),
+                    });
                     menu.refresh(
                         &config.snapshot(),
                         platform::start_on_boot_enabled(),
@@ -872,25 +872,27 @@ fn release_initial_sync(
     }
 }
 
-fn clear_account_state(
-    config: &ConfigManager,
-    auth: &NintendoAuthManager,
-    coral: &CoralClient,
-    splatnet: &SplatNetClient,
-    game_services: &GameServicesClient,
-    zelda: &ZeldaNotesClient,
-    discord: &DiscordPresence,
-    enrichment_state: &Mutex<PresenceEnrichmentState>,
-) {
-    let _ = config.clear_session();
-    auth.clear_cached_tokens();
-    coral.clear_cached_session();
-    splatnet.clear_cache();
-    game_services.clear_cache();
-    zelda.clear_cache();
-    zelda.stop_live_session();
-    discord.clear();
-    reset_presence_state(enrichment_state);
+struct AccountStateRefs<'a> {
+    config: &'a ConfigManager,
+    auth: &'a NintendoAuthManager,
+    coral: &'a CoralClient,
+    splatnet: &'a SplatNetClient,
+    game_services: &'a GameServicesClient,
+    zelda: &'a ZeldaNotesClient,
+    discord: &'a DiscordPresence,
+    enrichment_state: &'a Mutex<PresenceEnrichmentState>,
+}
+
+fn clear_account_state(deps: AccountStateRefs<'_>) {
+    let _ = deps.config.clear_session();
+    deps.auth.clear_cached_tokens();
+    deps.coral.clear_cached_session();
+    deps.splatnet.clear_cache();
+    deps.game_services.clear_cache();
+    deps.zelda.clear_cache();
+    deps.zelda.stop_live_session();
+    deps.discord.clear();
+    reset_presence_state(deps.enrichment_state);
 }
 
 fn is_invalid_grant(error: &anyhow::Error) -> bool {
