@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NSO Album Sync
+Comment=Sync Nintendo Switch Online album captures
+Exec=nso-album-sync
+Icon=nso-album-sync
+Categories=Utility;Photography;
+Terminal=false

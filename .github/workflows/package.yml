@@ -1,0 +1,136 @@
+name: Rust packages
+
+on:
+  push:
+    branches: [rust-port, main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Packaging is intentionally read-only with respect to repository contents.
+# It builds and uploads workflow artifacts but never commits, opens PRs, or publishes releases.
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Enforce Rust safety boundary
+        run: python scripts/check_rust_safety.py
+
+      - name: Build release binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build --release --bin nso-album-sync
+          target/release/nso-album-sync.exe --self-test
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/nso-album-sync.exe dist/nso-album-sync.exe
+          Copy-Item app.ico dist/app.ico
+          Copy-Item resources/windows/app.manifest dist/nso-album-sync.exe.manifest
+          Copy-Item THIRD-PARTY-NOTICES.txt dist/THIRD-PARTY-NOTICES.txt
+          Compress-Archive -Path dist/* -DestinationPath nso-album-sync-windows.zip -Force
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-windows
+          path: nso-album-sync-windows.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS package
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Enforce Rust safety boundary
+        run: python scripts/check_rust_safety.py
+
+      - name: Build app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --bin nso-album-sync
+          target/release/nso-album-sync --self-test
+
+          app="dist/NSO Album Sync.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/nso-album-sync "$app/Contents/MacOS/nso-album-sync"
+          cp app.icns "$app/Contents/Resources/app.icns"
+          cp THIRD-PARTY-NOTICES.txt "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+          cp resources/macos/Info.plist "$app/Contents/Info.plist"
+
+          codesign --force --deep --sign - --timestamp=none "$app"
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/nso-album-sync" --self-test
+          ditto -c -k --sequesterRsrc --keepParent "$app" dist/nso-album-sync-macos.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-macos
+          path: dist/nso-album-sync-macos.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux package
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Native dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev pkg-config \
+            curl file libfuse2
+
+      - name: Enforce Rust safety boundary
+        run: python scripts/check_rust_safety.py
+
+      - name: Build AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --bin nso-album-sync
+          target/release/nso-album-sync --self-test
+          strip --strip-unneeded target/release/nso-album-sync
+
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications \
+            AppDir/usr/share/icons/hicolor/scalable/apps AppDir/usr/share/doc/nso-album-sync \
+            dist tools
+          cp target/release/nso-album-sync AppDir/usr/bin/nso-album-sync
+          cp resources/linux/nso-album-sync.desktop AppDir/usr/share/applications/nso-album-sync.desktop
+          cp icon.svg AppDir/usr/share/icons/hicolor/scalable/apps/nso-album-sync.svg
+          cp THIRD-PARTY-NOTICES.txt AppDir/usr/share/doc/nso-album-sync/THIRD-PARTY-NOTICES.txt
+
+          deploy="tools/linuxdeploy-x86_64.AppImage"
+          plugin="tools/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          curl -fL --retry 3 -o "$deploy" \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+          curl -fL --retry 3 -o "$plugin" \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          chmod +x "$deploy" "$plugin"
+
+          export PATH="$PWD/tools:$PATH"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export LDAI_COMP=zstd
+          export OUTPUT="$PWD/dist/nso-album-sync.AppImage"
+          "$deploy" --appimage-extract-and-run \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/nso-album-sync \
+            --desktop-file resources/linux/nso-album-sync.desktop \
+            --icon-file icon.svg \
+            --output appimage
+
+          chmod +x dist/nso-album-sync.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/nso-album-sync.AppImage --self-test
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nso-album-sync-linux
+          path: dist/nso-album-sync.AppImage
+          if-no-files-found: error
