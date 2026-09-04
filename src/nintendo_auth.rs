@@ -1,7 +1,7 @@
 //! Nintendo Account OAuth/PKCE flow and short-lived token cache.
 
 use crate::auth_callback::{NINTENDO_REDIRECT_URI, is_nintendo_auth_callback};
-use crate::http::HttpClient;
+use crate::http::{DEFAULT_GET_RESPONSE_LIMIT, HttpClient};
 use crate::util::{base64url, json_i64, json_string, random_bytes, sha256};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -114,14 +114,6 @@ impl NintendoAuthManager {
     }
 
     pub fn complete_login(&self, callback_url: &str) -> anyhow::Result<AuthResult> {
-        anyhow::ensure!(
-            is_nintendo_auth_callback(callback_url),
-            "Nintendo sign-in did not return through the registered browser callback"
-        );
-        let callback = url::Url::parse(callback_url)?;
-        let returned_state = callback_parameter(&callback, "state");
-        let error = callback_parameter(&callback, "error");
-        let code = callback_parameter(&callback, "session_token_code");
         let (expected_state, verifier) = {
             let cache = self.cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             anyhow::ensure!(
@@ -131,8 +123,16 @@ impl NintendoAuthManager {
             (cache.oauth_state.clone(), cache.pkce_verifier.clone())
         };
         anyhow::ensure!(
+            is_nintendo_auth_callback(callback_url),
+            "Nintendo sign-in did not return through the registered browser callback."
+        );
+        let callback = url::Url::parse(callback_url)?;
+        let returned_state = callback_parameter(&callback, "state");
+        let error = callback_parameter(&callback, "error");
+        let code = callback_parameter(&callback, "session_token_code");
+        anyhow::ensure!(
             !returned_state.is_empty() && returned_state == expected_state,
-            "Nintendo sign-in callback had an invalid OAuth state"
+            "Nintendo sign-in callback had an invalid OAuth state."
         );
         if !error.is_empty() {
             anyhow::bail!(if error == "access_denied" {
@@ -143,7 +143,7 @@ impl NintendoAuthManager {
         }
         anyhow::ensure!(
             !code.is_empty(),
-            "Nintendo sign-in callback did not include a session token code"
+            "Nintendo sign-in callback did not include a session token code."
         );
 
         let session_token = self.exchange_code(&code, &verifier)?;
@@ -258,7 +258,7 @@ impl NintendoAuthManager {
                 "User-Agent: NASDKAPI; Android".to_owned(),
             ],
             30,
-            4 * 1024 * 1024,
+            DEFAULT_GET_RESPONSE_LIMIT,
         )?;
         anyhow::ensure!(
             response.status() / 100 == 2,
