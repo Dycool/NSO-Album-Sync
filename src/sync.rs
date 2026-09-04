@@ -85,8 +85,6 @@ impl SyncEngine {
                 fs::create_dir_all(parent)?;
             }
 
-            // Redirects are disabled for media. Validation therefore applies to
-            // the actual host that receives the request, not just the first URL.
             let response = self.http.get_no_redirect(
                 item.content_uri(),
                 &[],
@@ -299,13 +297,13 @@ fn resolve_game_folder(album_directory: &Path, app_name: &str) -> String {
         }
     }
 
-    if normalized_app.len() >= 6 {
-        if let Some((name, _)) = directories.iter().find(|(_, candidate)| {
+    if normalized_app.len() >= 6
+        && let Some((name, _)) = directories.iter().find(|(_, candidate)| {
             candidate.len() >= 6
                 && (candidate.contains(&normalized_app) || normalized_app.contains(candidate))
-        }) {
-            return name.clone();
-        }
+        })
+    {
+        return name.clone();
     }
 
     default_clean

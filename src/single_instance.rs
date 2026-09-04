@@ -13,6 +13,7 @@ impl SingleInstance {
         let path = runtime_directory()?.join("instance.lock");
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path)?;

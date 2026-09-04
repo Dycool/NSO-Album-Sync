@@ -25,6 +25,23 @@ impl HttpResponse {
     pub fn header(&self, key: &str) -> Option<&str> { self.headers.get(&key.to_ascii_lowercase()).map(String::as_str) }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RequestOptions {
+    timeout_seconds: u64,
+    max_bytes: usize,
+    follow_redirects: bool,
+}
+
+impl RequestOptions {
+    fn bounded(timeout_seconds: u64, max_bytes: usize) -> Self {
+        Self { timeout_seconds, max_bytes, follow_redirects: true }
+    }
+
+    fn no_redirect(timeout_seconds: u64, max_bytes: usize) -> Self {
+        Self { timeout_seconds, max_bytes, follow_redirects: false }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct HttpClient {
     proxy_url: Arc<RwLock<String>>,
@@ -44,17 +61,17 @@ impl HttpClient {
     }
 
     pub fn get(&self, url: &str, headers: &[String], timeout_seconds: u64, max_bytes: usize) -> anyhow::Result<HttpResponse> {
-        self.request(Method::GET, url, headers, None, timeout_seconds, max_bytes, true)
+        self.request(Method::GET, url, headers, None, RequestOptions::bounded(timeout_seconds, max_bytes))
     }
 
     pub fn get_no_redirect(&self, url: &str, headers: &[String], timeout_seconds: u64, max_bytes: usize) -> anyhow::Result<HttpResponse> {
-        self.request(Method::GET, url, headers, None, timeout_seconds, max_bytes, false)
+        self.request(Method::GET, url, headers, None, RequestOptions::no_redirect(timeout_seconds, max_bytes))
     }
 
     pub fn post_json(&self, url: &str, body: &serde_json::Value, headers: &[String], timeout_seconds: u64) -> anyhow::Result<HttpResponse> {
         let mut all = headers.to_vec();
         all.push("Content-Type: application/json".to_owned());
-        self.request(Method::POST, url, &all, Some(serde_json::to_vec(body)?), timeout_seconds, DEFAULT_GET_RESPONSE_LIMIT, true)
+        self.request(Method::POST, url, &all, Some(serde_json::to_vec(body)?), RequestOptions::bounded(timeout_seconds, DEFAULT_GET_RESPONSE_LIMIT))
     }
 
     pub fn post_form(&self, url: &str, fields: &[(&str, &str)], headers: &[String], timeout_seconds: u64) -> anyhow::Result<HttpResponse> {
@@ -63,28 +80,28 @@ impl HttpClient {
         }).collect::<Vec<_>>().join("&");
         let mut all = headers.to_vec();
         all.push("Content-Type: application/x-www-form-urlencoded".to_owned());
-        self.request(Method::POST, url, &all, Some(body.into_bytes()), timeout_seconds, DEFAULT_GET_RESPONSE_LIMIT, true)
+        self.request(Method::POST, url, &all, Some(body.into_bytes()), RequestOptions::bounded(timeout_seconds, DEFAULT_GET_RESPONSE_LIMIT))
     }
 
     pub fn post_text(&self, url: &str, body: &str, headers: &[String], content_type: &str, timeout_seconds: u64, max_bytes: usize) -> anyhow::Result<HttpResponse> {
         let mut all = headers.to_vec();
         if !content_type.is_empty() { all.push(format!("Content-Type: {content_type}")); }
-        self.request(Method::POST, url, &all, Some(body.as_bytes().to_vec()), timeout_seconds, max_bytes, true)
+        self.request(Method::POST, url, &all, Some(body.as_bytes().to_vec()), RequestOptions::bounded(timeout_seconds, max_bytes))
     }
 
     pub fn post_bytes(&self, url: &str, body: &[u8], headers: &[String], timeout_seconds: u64, max_bytes: usize) -> anyhow::Result<HttpResponse> {
-        self.request(Method::POST, url, headers, Some(body.to_vec()), timeout_seconds, max_bytes, true)
+        self.request(Method::POST, url, headers, Some(body.to_vec()), RequestOptions::bounded(timeout_seconds, max_bytes))
     }
 
-    fn request(&self, method: Method, url: &str, headers: &[String], body: Option<Vec<u8>>, timeout_seconds: u64, max_bytes: usize, follow_redirects: bool) -> anyhow::Result<HttpResponse> {
+    fn request(&self, method: Method, url: &str, headers: &[String], body: Option<Vec<u8>>, options: RequestOptions) -> anyhow::Result<HttpResponse> {
         let parsed = url::Url::parse(url).context("invalid URL")?;
         anyhow::ensure!(matches!(parsed.scheme(), "http" | "https"), "unsupported URL scheme");
-        let client = self.build_client(follow_redirects)?;
+        let client = self.build_client(options.follow_redirects)?;
         let header_map = parse_headers(headers)?;
-        let mut request = client.request(method, parsed).headers(header_map).timeout(Duration::from_secs(timeout_seconds.max(1)));
+        let mut request = client.request(method, parsed).headers(header_map).timeout(Duration::from_secs(options.timeout_seconds.max(1)));
         if let Some(bytes) = body { request = request.body(bytes); }
         let response = request.send().context("HTTP request failed")?;
-        collect_response(response, max_bytes)
+        collect_response(response, options.max_bytes)
     }
 
     fn build_client(&self, follow_redirects: bool) -> anyhow::Result<Client> {

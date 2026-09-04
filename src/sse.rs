@@ -52,8 +52,6 @@ impl SseClient {
             .timeout_recv_body(Some(timeout));
 
         if !self.proxy_url.trim().is_empty() {
-            // ureq SOCKS5 delegates DNS to the proxy by default, which is the
-            // behavior denoted by the common `socks5h` spelling.
             let normalized_proxy = if let Some(rest) = self.proxy_url.strip_prefix("socks5h://") {
                 format!("socks5://{rest}")
             } else {
@@ -71,10 +69,7 @@ impl SseClient {
             let name = name.trim();
             let value = value.trim();
             anyhow::ensure!(!name.is_empty(), "invalid SSE header name");
-            anyhow::ensure!(
-                !value.contains(['\r', '\n']),
-                "invalid SSE header value"
-            );
+            anyhow::ensure!(!value.contains(['\r', '\n']), "invalid SSE header value");
             request = request.header(name, value);
         }
 
@@ -112,7 +107,7 @@ impl SseClient {
                 Err(error) => return Err(error.into()),
             }
 
-            let normalized = line.trim_end_matches(|character| character == '\r' || character == '\n');
+            let normalized = line.trim_end_matches(['\r', '\n']);
             if normalized.is_empty() {
                 if !data.is_empty() {
                     if data.ends_with('\n') {

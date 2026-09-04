@@ -160,9 +160,11 @@ pub struct NintendoPresence {
 
 impl NintendoPresence {
     pub fn from_coral_result(result: &serde_json::Value) -> Self {
-        let mut output = Self::default();
-        output.user_name = string_at(result, "name").or_else(|| string_at(result, "nickname")).unwrap_or_default();
-        output.custom_image_uri = string_at(result, "imageUri").or_else(|| string_at(result, "image2Uri")).unwrap_or_default();
+        let mut output = Self {
+            user_name: string_at(result, "name").or_else(|| string_at(result, "nickname")).unwrap_or_default(),
+            custom_image_uri: string_at(result, "imageUri").or_else(|| string_at(result, "image2Uri")).unwrap_or_default(),
+            ..Self::default()
+        };
         let Some(presence) = result.get("presence") else { return output; };
         output.state = string_at(presence, "state").unwrap_or_else(|| "OFFLINE".to_owned());
         output.updated_at = integer_at(presence, "updatedAt").unwrap_or_default();
@@ -176,25 +178,24 @@ impl NintendoPresence {
             output.sys_description = string_at(game, "sysDescription").unwrap_or_default();
             output.total_play_time = integer_at(game, "totalPlayTime").unwrap_or_default();
             output.title_id = string_at(game, "titleId").or_else(|| string_at(game, "applicationId")).unwrap_or_default();
-            if output.title_id.is_empty() {
-                if let Some(id) = game.get("id") {
-                    if let Some(text) = value_as_string(id) {
-                        if let Ok(number) = text.parse::<u64>() {
-                            if number > 0 { output.title_id = format!("{number:016x}"); }
-                        } else {
-                            output.title_id = text;
-                        }
-                    }
+            if output.title_id.is_empty()
+                && let Some(id) = game.get("id")
+                && let Some(text) = value_as_string(id)
+            {
+                if let Ok(number) = text.parse::<u64>() {
+                    if number > 0 { output.title_id = format!("{number:016x}"); }
+                } else {
+                    output.title_id = text;
                 }
             }
-            if output.title_id.is_empty() {
-                if let Some(index) = output.shop_uri.find("/apps/") {
-                    let start = index + 6;
-                    if output.shop_uri.len() >= start + 16 {
-                        let candidate = &output.shop_uri[start..start + 16];
-                        if candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                            output.title_id = candidate.to_ascii_lowercase();
-                        }
+            if output.title_id.is_empty()
+                && let Some(index) = output.shop_uri.find("/apps/")
+            {
+                let start = index + 6;
+                if output.shop_uri.len() >= start + 16 {
+                    let candidate = &output.shop_uri[start..start + 16];
+                    if candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                        output.title_id = candidate.to_ascii_lowercase();
                     }
                 }
             }
