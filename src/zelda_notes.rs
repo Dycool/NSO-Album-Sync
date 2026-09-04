@@ -6,8 +6,8 @@ use crate::util::random_alphanumeric;
 use crate::zelda_regions::{LocationResult, Vector3, ZeldaGame, ZeldaLayer, resolve_botw_location_3d, resolve_poi_artwork, resolve_region_artwork, resolve_totk_location_3d};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -90,9 +90,43 @@ impl Default for WebMetadata {
     }
 }
 
+struct ServerActionContext<'a> {
+    http: &'a HttpClient,
+    metadata: &'a WebMetadata,
+    game: ZeldaGame,
+    session: &'a str,
+    language: &'a str,
+    country: &'a str,
+}
+
+impl ServerActionContext<'_> {
+    fn send(&self, action: &str, arguments: Vec<Value>) -> anyhow::Result<bool> {
+        if action.is_empty() { return Ok(false); }
+        let page_url = route_url(self.game);
+        let mut headers = authenticated_headers(self.session, self.language, self.country, "text/x-component");
+        headers.extend([
+            format!("Next-Action: {action}"),
+            format!("Next-Router-State-Tree: {}", router_state_tree(self.game)),
+            format!("Origin: {BASE_URL}"),
+            format!("Referer: {page_url}"),
+            format!("X-Deployment-Id: {}", self.metadata.deployment_id),
+        ]);
+        let response = self.http.post_text(
+            &page_url,
+            &Value::Array(arguments).to_string(),
+            &headers,
+            "text/plain;charset=UTF-8",
+            5,
+            4 * 1024 * 1024,
+        )?;
+        let text = response.text();
+        Ok(response.status() / 100 == 2
+            && (text.is_empty() || text.contains("\"isSuccess\":true") || !text.contains("isSuccess")))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct ResolvedLocation {
-    layer: ZeldaLayer,
     region: String,
     poi: String,
     stage_image_uri: String,
@@ -217,7 +251,16 @@ impl ZeldaNotesClient {
                     let session = self.session.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     (session.language.clone(), session.country.clone())
                 };
-                metadata = discover_web_metadata(&self.http, game, &session_cookie, &language, &country).unwrap_or_else(|_| WebMetadata::default());
+                metadata = discover_web_metadata(&self.http, game, &session_cookie, &language, &country)
+                    .unwrap_or_else(|_| WebMetadata::default());
+                let action_context = ServerActionContext {
+                    http: &self.http,
+                    metadata: &metadata,
+                    game,
+                    session: &session_cookie,
+                    language: &language,
+                    country: &country,
+                };
                 let url = format!("{BASE_URL}/continuous-connection/sse?gameId={}&porterSessionId={porter_id}", game_id(game));
                 let mut headers = authenticated_headers(&session_cookie, &language, &country, "text/event-stream");
                 headers.extend(["Cache-Control: no-cache".to_owned(), "Pragma: no-cache".to_owned(), format!("Referer: {}", route_url(game))]);
@@ -233,14 +276,28 @@ impl ZeldaNotesClient {
                     last_message.set(Instant::now());
                     if !message.game_session_id.is_empty() { game_session_id = message.game_session_id.clone(); }
                     if message.needs_ack && !message.request_id.is_empty() {
-                        let _ = send_server_action(&self.http, &metadata, game, &session_cookie, &language, &country, &metadata.ack_action, vec![Value::String(message.request_id)]);
+                        let _ = action_context.send(&metadata.ack_action, vec![Value::String(message.request_id)]);
                     }
                     if message.message_type == LiveMessageType::Open {
                         if !game_session_id.is_empty() {
-                            let _ = send_server_action(&self.http, &metadata, game, &session_cookie, &language, &country, &metadata.end_action, vec![Value::String(game_id(game).to_owned()), Value::String(porter_id.clone()), Value::String(game_session_id.clone())]);
+                            let _ = action_context.send(
+                                &metadata.end_action,
+                                vec![
+                                    Value::String(game_id(game).to_owned()),
+                                    Value::String(porter_id.clone()),
+                                    Value::String(game_session_id.clone()),
+                                ],
+                            );
                             game_session_id.clear();
                         }
-                        let started = send_server_action(&self.http, &metadata, game, &session_cookie, &language, &country, &metadata.start_action, vec![Value::String(game_id(game).to_owned()), Value::String(porter_id.clone()), Value::String("complete-guide".to_owned())]).unwrap_or(false);
+                        let started = action_context.send(
+                            &metadata.start_action,
+                            vec![
+                                Value::String(game_id(game).to_owned()),
+                                Value::String(porter_id.clone()),
+                                Value::String("complete-guide".to_owned()),
+                            ],
+                        ).unwrap_or(false);
                         if !started { protocol_failure = true; return false; }
                     } else if let Some(state) = message.state {
                         if !state.synchronized || state.received_at.elapsed() >= LIVE_FRESHNESS {
@@ -257,7 +314,14 @@ impl ZeldaNotesClient {
                     self.live_stop.load(Ordering::Acquire)
                 }, 20, 1024 * 1024)?;
                 if !game_session_id.is_empty() {
-                    let _ = send_server_action(&self.http, &metadata, game, &session_cookie, &language, &country, &metadata.end_action, vec![Value::String(game_id(game).to_owned()), Value::String(porter_id), Value::String(game_session_id)]);
+                    let _ = action_context.send(
+                        &metadata.end_action,
+                        vec![
+                            Value::String(game_id(game).to_owned()),
+                            Value::String(porter_id),
+                            Value::String(game_session_id),
+                        ],
+                    );
                 }
                 self.publish(ZeldaNotesPresence::default());
                 if response.status() != 0 && response.status() / 100 != 2 { protocol_failure = true; }
@@ -280,8 +344,10 @@ impl ZeldaNotesClient {
             let mut current = self.live_presence.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if *current == presence { false } else { *current = presence; true }
         };
-        if changed {
-            if let Some(callback) = self.refresh_callback.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone() { callback(); }
+        if changed
+            && let Some(callback) = self.refresh_callback.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        {
+            callback();
         }
     }
 }
@@ -340,8 +406,10 @@ fn discover_web_metadata(http: &HttpClient, game: ZeldaGame, session: &str, lang
     if let Some(value) = page.header("x-deployment-id").filter(|value| !value.is_empty()) { metadata.deployment_id = value.to_owned(); }
     let scripts = extract_script_urls(&html);
     for script_url in scripts.into_iter().take(64) {
-        if metadata.deployment_id == FALLBACK_DEPLOYMENT_ID {
-            if let Some(value) = deployment_id_from_url(&script_url) { metadata.deployment_id = value; }
+        if metadata.deployment_id == FALLBACK_DEPLOYMENT_ID
+            && let Some(value) = deployment_id_from_url(&script_url)
+        {
+            metadata.deployment_id = value;
         }
         let Ok(response) = http.get(&script_url, &authenticated_headers(session, language, country, "application/javascript,text/javascript,*/*;q=0.8"), 12, 2 * 1024 * 1024) else { continue; };
         if response.status() / 100 != 2 { continue; }
@@ -409,8 +477,10 @@ fn extract_map_dataset(script: &str, game: ZeldaGame) -> Option<Vec<MapPlace>> {
         }
         if end >= bytes.len() { break; }
         let decoded = decode_js_single_quoted(&script[start..end]);
-        if decoded.starts_with("[{\"uid\":") {
-            if let Some(places) = parse_map_array(&decoded, game) { return Some(places); }
+        if decoded.starts_with("[{\"uid\":")
+            && let Some(places) = parse_map_array(&decoded, game)
+        {
+            return Some(places);
         }
         cursor = end + 1;
     }
@@ -475,23 +545,13 @@ fn find_google_avatar(source: &str) -> String {
     source[start..].split(['"', '\'', ' ']).next().unwrap_or_default().replace("&amp;", "&")
 }
 
-fn send_server_action(http: &HttpClient, metadata: &WebMetadata, game: ZeldaGame, session: &str, language: &str, country: &str, action: &str, arguments: Vec<Value>) -> anyhow::Result<bool> {
-    if action.is_empty() { return Ok(false); }
-    let page_url = route_url(game);
-    let mut headers = authenticated_headers(session, language, country, "text/x-component");
-    headers.extend([format!("Next-Action: {action}"), format!("Next-Router-State-Tree: {}", router_state_tree(game)), format!("Origin: {BASE_URL}"), format!("Referer: {page_url}"), format!("X-Deployment-Id: {}", metadata.deployment_id)]);
-    let response = http.post_text(&page_url, &Value::Array(arguments).to_string(), &headers, "text/plain;charset=UTF-8", 5, 4 * 1024 * 1024)?;
-    let text = response.text();
-    Ok(response.status() / 100 == 2 && (text.is_empty() || text.contains("\"isSuccess\":true") || !text.contains("isSuccess")))
-}
-
 fn router_state_tree(game: ZeldaGame) -> String {
     let raw = format!("[\"\",{{\"children\":[\"{}\",{{\"children\":[\"complete-guide\",{{\"children\":[\"__PAGE__\",{{}},null,null]}},null,null]}},null,null,true]}},null,null,true]", short_name(game));
     percent_encoding::utf8_percent_encode(&raw, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
 fn resolve_location(metadata: &WebMetadata, state: &LiveState, previous: &ResolvedLocation) -> ResolvedLocation {
-    let mut result = ResolvedLocation { layer: state.layer, region: resolve_region(metadata, state.game, state.position), ..ResolvedLocation::default() };
+    let mut result = ResolvedLocation { region: resolve_region(metadata, state.game, state.position), ..ResolvedLocation::default() };
     let exact: LocationResult = match state.game { ZeldaGame::TearsOfTheKingdom => resolve_totk_location_3d(state.position, state.layer), ZeldaGame::BreathOfTheWild => resolve_botw_location_3d(state.position), ZeldaGame::Unknown => LocationResult::default() };
     if exact.matched() {
         result.poi = exact.name().to_owned(); result.stage_image_uri = exact.image_url().to_owned(); result.subcategory = exact.category().to_ascii_lowercase(); result.at_poi = true; result.valid = true; return result;
@@ -501,12 +561,11 @@ fn resolve_location(metadata: &WebMetadata, state: &LiveState, previous: &Resolv
         if state.game == ZeldaGame::TearsOfTheKingdom && place.layer != state.layer { continue; }
         let name = localized_label(metadata, &place.message_label);
         if name.is_empty() || name == "???" { continue; }
-        let (at, nearby) = thresholds(&place.subcategory);
+        let (_, nearby) = thresholds(&place.subcategory);
         let distance = horizontal_distance(state.position, place.position);
         if distance > nearby { continue; }
         let score = distance / nearby + f64::from(100 - category_priority(&place.subcategory)) * 0.004;
         if best.is_none_or(|(_, _, best_score)| score < best_score) { best = Some((place, distance, score)); }
-        let _ = at;
     }
     if let Some((place, distance, _)) = best {
         let chosen = if previous.poi_uid != 0 && previous.poi_uid != place.uid {
@@ -634,7 +693,11 @@ mod tests {
 
     #[test]
     fn decodes_totk_player_state() {
-        let message = decode_live_message(r#"{"messageType":"map_sync_player_info","playerPos":[1,2,3],"playerFront":[0,0,1],"playerLayer":"Ground"}"#, ZeldaGame::TearsOfTheKingdom, Instant::now());
+        let message = decode_live_message(
+            r#"{"messageType":"map_sync_player_info","playerPos":[1,2,3],"playerFront":[0,0,1],"playerLayer":"Ground"}"#,
+            ZeldaGame::TearsOfTheKingdom,
+            Instant::now(),
+        );
         assert_eq!(message.message_type, LiveMessageType::MapSyncPlayerInfo);
         assert_eq!(message.state.expect("state").layer, ZeldaLayer::Ground);
     }

@@ -96,8 +96,11 @@ impl DiscordPresence {
 
 impl Drop for DiscordPresence {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.client.lock() {
-            if let Some(client) = guard.as_mut() { let _ = client.clear_activity(); let _ = client.close(); }
+        if let Ok(mut guard) = self.client.lock()
+            && let Some(client) = guard.as_mut()
+        {
+            let _ = client.clear_activity();
+            let _ = client.close();
         }
     }
 }

@@ -136,8 +136,10 @@ impl GameServicesClient {
             session.user_auth_attempted = true;
             let response = self.http.post_json(&format!("{NOOKLINK_BASE}/api/sd/v1/auth_token"), &serde_json::json!({"userId": session.user_id}), &nooklink_headers(&session.cookie, &language, &country), 10)?;
             session.cookie = merge_cookie_header(&session.cookie, &response);
-            if response.status() / 100 == 2 {
-                if let Ok(json) = serde_json::from_slice::<Value>(response.body()) { session.auth_token = string(&json, "token"); }
+            if response.status() / 100 == 2
+                && let Ok(json) = serde_json::from_slice::<Value>(response.body())
+            {
+                session.auth_token = string(&json, "token");
             }
         }
 
@@ -147,24 +149,27 @@ impl GameServicesClient {
             let profile = self.http.get(&format!("{NOOKLINK_BASE}/api/sd/v1/users/{}/profile?language=en-GB", session.user_id), &headers, 10, 4 * 1024 * 1024)?;
             session.cookie = merge_cookie_header(&session.cookie, &profile);
             let mut auth_valid = true;
-            if matches!(profile.status(), 401 | 403) { session.auth_token.clear(); auth_valid = false; }
-            else if profile.status() == 200 {
-                if let Ok(json) = serde_json::from_slice::<Value>(profile.body()) {
-                    let resident = string(&json, "mPNm"); if !resident.is_empty() { presence.resident_name = resident; }
-                    let island = string(&json, "landName"); if !island.is_empty() { presence.island_name = island; }
-                    let image = first_string(&json, &["image", "image_url"]); if !image.is_empty() { presence.image_uri = image; }
-                }
+            if matches!(profile.status(), 401 | 403) {
+                session.auth_token.clear();
+                auth_valid = false;
+            } else if profile.status() == 200
+                && let Ok(json) = serde_json::from_slice::<Value>(profile.body())
+            {
+                let resident = string(&json, "mPNm"); if !resident.is_empty() { presence.resident_name = resident; }
+                let island = string(&json, "landName"); if !island.is_empty() { presence.island_name = island; }
+                let image = first_string(&json, &["image", "image_url"]); if !image.is_empty() { presence.image_uri = image; }
             }
             if auth_valid && !land_id.is_empty() {
                 let mut headers = nooklink_headers(&session.cookie, &language, &country);
                 headers.push(format!("Authorization: Bearer {}", session.auth_token));
                 let island = self.http.get(&format!("{NOOKLINK_BASE}/api/sd/v1/lands/{land_id}/profile?language=en-GB"), &headers, 10, 4 * 1024 * 1024)?;
                 session.cookie = merge_cookie_header(&session.cookie, &island);
-                if matches!(island.status(), 401 | 403) { session.auth_token.clear(); }
-                else if island.status() == 200 {
-                    if let Ok(json) = serde_json::from_slice::<Value>(island.body()) {
-                        let name = string(&json, "mVNm"); if !name.is_empty() { presence.island_name = name; }
-                    }
+                if matches!(island.status(), 401 | 403) {
+                    session.auth_token.clear();
+                } else if island.status() == 200
+                    && let Ok(json) = serde_json::from_slice::<Value>(island.body())
+                {
+                    let name = string(&json, "mVNm"); if !name.is_empty() { presence.island_name = name; }
                 }
             }
         }
@@ -221,13 +226,13 @@ impl GameServicesClient {
             if let Some(cached) = state.shortened_urls.get(source) { return cached.clone(); }
         }
         let encoded: String = url::form_urlencoded::byte_serialize(source.as_bytes()).collect();
-        if let Ok(response) = self.http.get(&format!("https://tinyurl.com/api-create.php?url={encoded}"), &[], 5, 4096) {
-            if response.status() == 200 {
-                let short = response.text().trim().to_owned();
-                if short.starts_with("https://") && short.len() <= 300 {
-                    self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).shortened_urls.insert(source.to_owned(), short.clone());
-                    return short;
-                }
+        if let Ok(response) = self.http.get(&format!("https://tinyurl.com/api-create.php?url={encoded}"), &[], 5, 4096)
+            && response.status() == 200
+        {
+            let short = response.text().trim().to_owned();
+            if short.starts_with("https://") && short.len() <= 300 {
+                self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).shortened_urls.insert(source.to_owned(), short.clone());
+                return short;
             }
         }
         source.to_owned()
@@ -302,8 +307,10 @@ fn rank_value(player: &Value, key: &str, short_name: &str) -> Option<String> {
     let rank = player.get(key)?.as_object()?;
     if rank.get("is_x").and_then(Value::as_bool).unwrap_or(false) { return Some(format!("{short_name} X")); }
     let mut name = rank.get("name").and_then(Value::as_str)?.to_owned();
-    if name == "S+" {
-        if let Some(number) = rank.get("s_plus_number").and_then(Value::as_i64).filter(|number| *number >= 0) { name.push_str(&number.to_string()); }
+    if name == "S+"
+        && let Some(number) = rank.get("s_plus_number").and_then(Value::as_i64).filter(|number| *number >= 0)
+    {
+        name.push_str(&number.to_string());
     }
     Some(format!("{short_name} {name}"))
 }

@@ -135,10 +135,12 @@ impl CoralClient {
         self.restore_web_service_tokens(&session_hash);
         {
             let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.session_hash == session_hash {
-                if let Some(cached) = state.web_tokens.get(&target_id) {
-                    if !cached.token.is_empty() && now < cached.expires_at { return Ok(cached.token.clone()); }
-                }
+            if state.session_hash == session_hash
+                && let Some(cached) = state.web_tokens.get(&target_id)
+                && !cached.token.is_empty()
+                && now < cached.expires_at
+            {
+                return Ok(cached.token.clone());
             }
         }
 
@@ -301,10 +303,10 @@ impl CoralClient {
     }
 
     fn preferred_attestation(&self, method: i32, token: &str, na_id: &str, coral_user_id: &str) -> anyhow::Result<(FAttestation, bool)> {
-        if self.worker_enabled(method) {
-            if let Ok(attestation) = self.worker_attestation(method, token, na_id, coral_user_id) {
-                return Ok((attestation, true));
-            }
+        if self.worker_enabled(method)
+            && let Ok(attestation) = self.worker_attestation(method, token, na_id, coral_user_id)
+        {
+            return Ok((attestation, true));
         }
         Ok((self.limited_nxapi_attestation(method, token, na_id, coral_user_id)?, false))
     }
@@ -392,20 +394,22 @@ impl CoralClient {
         let stored = SecureStore::get(WEB_SERVICE_CREDENTIALS_ACCOUNT).ok().flatten();
         let now = now_seconds();
         let mut restored = HashMap::new();
-        if let Some(stored) = stored {
-            if let Ok(json) = serde_json::from_str::<Value>(&stored) {
-                if json_string(&json, "sessionHash") == session_hash {
-                    if let Some(tokens) = json.get("tokens").and_then(Value::as_object) {
-                        for (id, record) in tokens {
-                            let Ok(service_id) = id.parse::<u64>() else { continue; };
-                            let token = json_string(record, "accessToken");
-                            let expires_at = record.get("expiresAt").and_then(Value::as_u64).unwrap_or(0);
-                            if !token.is_empty() && now < expires_at { restored.insert(service_id, CachedWebServiceToken { token, expires_at }); }
+        if let Some(stored) = stored
+            && let Ok(json) = serde_json::from_str::<Value>(&stored)
+        {
+            if json_string(&json, "sessionHash") == session_hash {
+                if let Some(tokens) = json.get("tokens").and_then(Value::as_object) {
+                    for (id, record) in tokens {
+                        let Ok(service_id) = id.parse::<u64>() else { continue; };
+                        let token = json_string(record, "accessToken");
+                        let expires_at = record.get("expiresAt").and_then(Value::as_u64).unwrap_or(0);
+                        if !token.is_empty() && now < expires_at {
+                            restored.insert(service_id, CachedWebServiceToken { token, expires_at });
                         }
                     }
-                } else {
-                    let _ = SecureStore::erase(WEB_SERVICE_CREDENTIALS_ACCOUNT);
                 }
+            } else {
+                let _ = SecureStore::erase(WEB_SERVICE_CREDENTIALS_ACCOUNT);
             }
         }
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
