@@ -1,8 +1,8 @@
-//! Blocking HTTPS client with bounded response bodies and explicit redirect policy.
+//! Blocking HTTP(S) client with C++-compatible transport defaults.
 
 use anyhow::Context as _;
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, SET_COOKIE};
+use reqwest::header::{ACCEPT_ENCODING, CONNECTION, HeaderMap, HeaderName, HeaderValue, SET_COOKIE};
 use reqwest::{Method, Proxy, redirect::Policy};
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -34,7 +34,7 @@ struct RequestOptions {
 
 impl RequestOptions {
     fn bounded(timeout_seconds: u64, max_bytes: usize) -> Self {
-        Self { timeout_seconds, max_bytes, follow_redirects: true }
+        Self { timeout_seconds, max_bytes, follow_redirects: cfg!(target_os = "windows") }
     }
 
     fn no_redirect(timeout_seconds: u64, max_bytes: usize) -> Self {
@@ -90,7 +90,9 @@ impl HttpClient {
     }
 
     pub fn post_bytes(&self, url: &str, body: &[u8], headers: &[String], timeout_seconds: u64, max_bytes: usize) -> anyhow::Result<HttpResponse> {
-        self.request(Method::POST, url, headers, Some(body.to_vec()), RequestOptions::bounded(timeout_seconds, max_bytes))
+        let mut all = headers.to_vec();
+        all.push("Content-Type: application/octet-stream".to_owned());
+        self.request(Method::POST, url, &all, Some(body.to_vec()), RequestOptions::bounded(timeout_seconds, max_bytes))
     }
 
     fn request(&self, method: Method, url: &str, headers: &[String], body: Option<Vec<u8>>, options: RequestOptions) -> anyhow::Result<HttpResponse> {
@@ -105,17 +107,56 @@ impl HttpClient {
     }
 
     fn build_client(&self, follow_redirects: bool) -> anyhow::Result<Client> {
-        let mut builder = Client::builder()
-            .user_agent("nso-album-sync/2.0.0 (+https://github.com/Dycool/NSO-Album-Sync)")
-            .redirect(if follow_redirects { Policy::limited(8) } else { Policy::none() });
+        let mut builder = Client::builder().redirect(redirect_policy(follow_redirects));
+        #[cfg(not(target_os = "windows"))]
+        {
+            builder = builder.http1_only();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            builder = builder.user_agent("NSO Album Sync/2.0");
+        }
         let proxy = self.proxy_url();
-        if !proxy.trim().is_empty() { builder = builder.proxy(Proxy::all(&proxy)?); }
+        if !proxy.trim().is_empty() {
+            let parsed = url::Url::parse(&proxy).context("invalid proxy URL")?;
+            anyhow::ensure!(parsed.scheme() == "http", "Only http:// proxies are supported");
+            builder = builder.proxy(Proxy::all(parsed.as_str())?);
+        }
         Ok(builder.build()?)
+    }
+}
+
+fn redirect_policy(follow_redirects: bool) -> Policy {
+    if !follow_redirects {
+        return Policy::none();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            if attempt
+                .previous()
+                .last()
+                .is_some_and(|previous| previous.scheme() == "https")
+                && attempt.url().scheme() == "http"
+            {
+                return attempt.stop();
+            }
+            attempt.follow()
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Policy::none()
     }
 }
 
 fn parse_headers(headers: &[String]) -> anyhow::Result<HeaderMap> {
     let mut map = HeaderMap::new();
+    map.insert(CONNECTION, HeaderValue::from_static("close"));
+    map.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
     for line in headers {
         let Some((name, value)) = line.split_once(':') else { anyhow::bail!("invalid HTTP header"); };
         let name = HeaderName::from_bytes(name.trim().as_bytes())?;
@@ -126,7 +167,9 @@ fn parse_headers(headers: &[String]) -> anyhow::Result<HeaderMap> {
 }
 
 fn collect_response(mut response: Response, max_bytes: usize) -> anyhow::Result<HttpResponse> {
-    if let Some(length) = response.content_length() {
+    if max_bytes != 0
+        && let Some(length) = response.content_length()
+    {
         anyhow::ensure!(length <= max_bytes as u64, "HTTP response exceeds safety limit");
     }
     let status = response.status().as_u16();
@@ -145,7 +188,9 @@ fn collect_response(mut response: Response, max_bytes: usize) -> anyhow::Result<
     loop {
         let read = response.read(&mut chunk)?;
         if read == 0 { break; }
-        anyhow::ensure!(body.len().saturating_add(read) <= max_bytes, "HTTP response exceeds safety limit");
+        if max_bytes != 0 {
+            anyhow::ensure!(body.len().saturating_add(read) <= max_bytes, "HTTP response exceeds safety limit");
+        }
         body.extend_from_slice(&chunk[..read]);
     }
     Ok(HttpResponse { status, body, headers })
