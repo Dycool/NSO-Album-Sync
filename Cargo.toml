@@ -33,6 +33,7 @@ desktop = [
     "dep:rfd",
     "dep:tao",
     "dep:tray-icon",
+    "dep:ureq",
 ]
 
 [dependencies]
@@ -61,6 +62,7 @@ reqwest = { version = "=0.13.4", optional = true, default-features = false, feat
 rfd = { version = "=0.17.2", optional = true, default-features = false, features = ["xdg-portal"] }
 tao = { version = "=0.37.0", optional = true }
 tray-icon = { version = "=0.24.2", optional = true }
+ureq = { version = "=3.4.0", optional = true, default-features = false, features = ["rustls", "socks-proxy"] }
 
 [dev-dependencies]
 tempfile = "=3.23.0"
