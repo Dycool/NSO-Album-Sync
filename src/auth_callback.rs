@@ -49,8 +49,6 @@ pub fn register_protocol() -> anyhow::Result<()> {
     }
     #[cfg(target_os = "macos")]
     {
-        // macOS registers the scheme from the bundled Info.plist. Cargo bundle
-        // metadata in Cargo.toml is the source of truth; no LaunchServices FFI is needed.
         let _ = executable;
     }
     Ok(())
@@ -85,11 +83,11 @@ pub fn take_callback() -> anyhow::Result<Option<String>> {
 
 fn callback_path() -> anyhow::Result<PathBuf> { Ok(runtime_directory()?.join("auth-callback.txt")) }
 
-fn make_private(path: &std::path::Path) -> anyhow::Result<()> {
+fn make_private(_path: &std::path::Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }
