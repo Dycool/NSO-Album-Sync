@@ -15,6 +15,10 @@ use unicode_normalization::{UnicodeNormalization as _, char::is_combining_mark};
 use walkdir::WalkDir;
 
 const MAX_MEDIA_DOWNLOAD_BYTES: usize = 256 * 1024 * 1024;
+const UNSAFE_MEDIA_URL: &str =
+    "Nintendo media download URL was rejected because it is not a safe public HTTPS URL";
+const INVALID_MEDIA_SIZE: &str =
+    "Nintendo media download size is missing or exceeds the 256 MiB safety limit";
 
 pub struct SyncEngine {
     config: ConfigManager,
@@ -85,12 +89,9 @@ impl SyncEngine {
                 fs::create_dir_all(parent)?;
             }
 
-            let response = self.http.get_no_redirect(
-                item.content_uri(),
-                &[],
-                60,
-                MAX_MEDIA_DOWNLOAD_BYTES,
-            )?;
+            let response = self
+                .http
+                .get(item.content_uri(), &[], 60, MAX_MEDIA_DOWNLOAD_BYTES)?;
             anyhow::ensure!(
                 response.status() / 100 == 2,
                 "Media download failed (HTTP {})",
@@ -110,11 +111,16 @@ impl SyncEngine {
             let part = with_appended_suffix(&destination, ".part");
             let _ = fs::remove_file(&part);
             let write_result = (|| -> anyhow::Result<()> {
-                let mut file = File::create(&part)?;
-                file.write_all(response.body())?;
-                file.sync_all()?;
+                let mut file = File::create(&part)
+                    .map_err(|_| anyhow::anyhow!("Could not create media file"))?;
+                file.write_all(response.body())
+                    .map_err(|_| anyhow::anyhow!("Could not write media file"))?;
+                file.flush()
+                    .map_err(|_| anyhow::anyhow!("Could not write media file"))?;
                 check_cancelled(&cancelled)?;
-                fs::rename(&part, &destination)?;
+                fs::rename(&part, &destination).map_err(|error| {
+                    anyhow::anyhow!("Could not finalize downloaded media: {error}")
+                })?;
                 Ok(())
             })();
             if let Err(error) = write_result {
@@ -134,53 +140,47 @@ impl SyncEngine {
 
 fn validate_media_item(item: &MediaItem) -> anyhow::Result<()> {
     anyhow::ensure!(
-        item.content_length() > 0,
-        "Nintendo media item has no valid content length"
+        item.content_length() > 0 && item.content_length() <= MAX_MEDIA_DOWNLOAD_BYTES as i64,
+        INVALID_MEDIA_SIZE
     );
-    anyhow::ensure!(
-        item.content_length() <= MAX_MEDIA_DOWNLOAD_BYTES as i64,
-        "Nintendo media item exceeds the 256 MiB safety limit"
-    );
-    let url = url::Url::parse(item.content_uri())?;
-    anyhow::ensure!(url.scheme() == "https", "Nintendo media URL must use HTTPS");
-    anyhow::ensure!(
-        url.username().is_empty() && url.password().is_none(),
-        "Nintendo media URL cannot contain credentials"
-    );
-    anyhow::ensure!(
-        url.port_or_known_default() == Some(443),
-        "Nintendo media URL must use the standard HTTPS port"
-    );
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("Nintendo media URL is missing a hostname"))?;
-    anyhow::ensure!(host.contains('.'), "Nintendo media hostname is not public-looking");
-    anyhow::ensure!(
-        host.parse::<std::net::IpAddr>().is_err(),
-        "Nintendo media URL cannot use a numeric IP address"
-    );
-    anyhow::ensure!(
-        host.bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')),
-        "Nintendo media hostname contains invalid characters"
-    );
-    let lower = host.to_ascii_lowercase();
-    let denied_suffixes = [
-        "localhost",
-        ".localhost",
-        ".local",
-        ".localdomain",
-        ".internal",
-        ".lan",
-        ".home",
-    ];
-    anyhow::ensure!(
-        !denied_suffixes
-            .iter()
-            .any(|suffix| lower == suffix.trim_start_matches('.') || lower.ends_with(suffix)),
-        "Nintendo media URL resolves to a local hostname namespace"
-    );
+    anyhow::ensure!(safe_media_url(item.content_uri()), UNSAFE_MEDIA_URL);
     Ok(())
+}
+
+fn safe_media_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    if url.port_or_known_default() != Some(443) {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty()
+        || !host.contains('.')
+        || host.parse::<std::net::IpAddr>().is_ok()
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        return false;
+    }
+    !matches_local_hostname(&host)
+}
+
+fn matches_local_hostname(host: &str) -> bool {
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".localdomain")
+        || host.ends_with(".internal")
+        || host.ends_with(".lan")
+        || host.ends_with(".home")
 }
 
 #[derive(Default)]
@@ -442,7 +442,7 @@ fn check_cancelled<F>(cancelled: &F) -> anyhow::Result<()>
 where
     F: Fn() -> bool,
 {
-    anyhow::ensure!(!cancelled(), "sync cancelled");
+    anyhow::ensure!(!cancelled(), "Sync cancelled");
     Ok(())
 }
 
