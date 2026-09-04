@@ -80,6 +80,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Python for safety gate
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
       - name: Native dependencies
         shell: bash
         run: |
