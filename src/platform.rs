@@ -95,8 +95,7 @@ fn native_prompt(title: &str, message: &str, initial: &str) -> Option<String> {
             initial,
         ])
         .output()
-        .ok()?
-        ;
+        .ok()?;
     output.status.success().then(|| trim_command_output(&output.stdout))
 }
 
@@ -163,6 +162,7 @@ fn native_prompt(_title: &str, _message: &str, _initial: &str) -> Option<String>
     None
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn trim_command_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .trim_end_matches(['\r', '\n'])
