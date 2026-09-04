@@ -19,7 +19,7 @@ use crate::zelda_notes::{
 };
 use crate::zelda_regions::ZeldaGame;
 use rand::Rng as _;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
@@ -28,6 +28,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
 const PRESENCE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const EXIT_WATCHDOG_DELAY: Duration = Duration::from_secs(5);
 const NXAPI_DISCLOSURE_TITLE: &str = "Third-Party Service Disclosure";
 const NXAPI_DISCLOSURE: &str = "NSO Album Sync uses the third-party nxapi-znca-api service at fancy.org.uk for Nintendo Switch Online request attestation and request/response encryption.\n\nWhen Nintendo Switch Online features are used, your Nintendo Account id_token and the profile fields required by Coral (Nintendo Account ID, birthday, country, and language), your Coral access token, and the Coral API requests and responses used by this app are sent to and processed by that third-party service. These tokens can authenticate Nintendo services while they remain valid.\n\nContinue with Nintendo Account sign-in?";
 
@@ -47,6 +48,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     apply_cli_settings(&config, &args)?;
     let initial = config.snapshot();
     let http = HttpClient::new(initial.proxy_url().to_owned());
+    let shared_http = http.clone();
     let auth = Arc::new(NintendoAuthManager::new(http.clone()));
     let nxapi_cache = config_directory()?.join("nxapi-cache.json");
     let nxapi = Arc::new(NxapiClient::new(
@@ -61,6 +63,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let sync_engine = Arc::new(SyncEngine::new(config.clone(), Arc::clone(&coral), http));
     let discord = Arc::new(DiscordPresence::new(initial.discord_application_id()));
     let enrichment_state = Arc::new(Mutex::new(PresenceEnrichmentState::default()));
+    let account_generation = Arc::new(AtomicU64::new(0));
 
     let (sender, receiver) = mpsc::channel::<AppEvent>();
     let stop = Arc::new(AtomicBool::new(false));
@@ -68,6 +71,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let mut auth_running = false;
     let mut auth_pending = false;
     let mut presence_running = false;
+    let mut presence_refresh_requested = false;
     let session_ready = !initial.session_token().is_empty();
     let mut initial_sync_deferred =
         initial.auto_sync() && initial.discord_presence() && session_ready;
@@ -110,11 +114,17 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     return;
                 }
             }
+            if config.snapshot().session_token().is_empty() {
+                begin_sign_in(auth.as_ref(), &menu, &mut auth_pending);
+            }
         }
 
         while let Ok(event) = receiver.try_recv() {
             match event {
                 AppEvent::Sync(event) => {
+                    if event.generation != account_generation.load(Ordering::Acquire) {
+                        continue;
+                    }
                     sync_running = false;
                     match event.result {
                         Ok(result) => {
@@ -124,7 +134,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                             menu.refresh(&current, platform::start_on_boot_enabled(), "Ready");
                             if current.notifications() {
                                 if result.new_downloads() > 0 {
-                                    let noun = if result.new_downloads() == 1 { "capture" } else { "captures" };
+                                    let noun = if result.new_downloads() == 1 {
+                                        "capture"
+                                    } else {
+                                        "captures"
+                                    };
                                     platform::notify(
                                         "NSO Album Sync",
                                         &format!("Synced {} new {noun} to your album folder!", result.new_downloads()),
@@ -139,15 +153,19 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         }
                         Err(error) => {
                             if is_invalid_grant(&error) {
+                                presence_running = false;
+                                presence_refresh_requested = false;
                                 clear_account_state(AccountStateRefs {
                                     config: &config,
                                     auth: auth.as_ref(),
+                                    nxapi: nxapi.as_ref(),
                                     coral: coral.as_ref(),
                                     splatnet: splatnet.as_ref(),
                                     game_services: game_services.as_ref(),
                                     zelda: zelda.as_ref(),
                                     discord: discord.as_ref(),
                                     enrichment_state: enrichment_state.as_ref(),
+                                    generation: account_generation.as_ref(),
                                 });
                                 initial_sync_deferred = false;
                                 menu.refresh(
@@ -169,6 +187,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     match result {
                         Ok((token, nickname)) => {
                             auth_pending = false;
+                            sync_running = false;
+                            presence_running = false;
+                            presence_refresh_requested = false;
+                            let _ = account_generation.fetch_add(1, Ordering::AcqRel);
+                            nxapi.clear_user_auth();
                             let _ = config.update(|value| value.set_session(token, nickname));
                             coral.clear_cached_session();
                             splatnet.clear_cache();
@@ -202,66 +225,72 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                 AppEvent::PresenceBasic(event) => {
                     let current = config.snapshot();
                     let same_account = current.session_token() == event.session_token;
-                    if same_account {
-                        match event.result {
-                            Ok(presence) => {
-                                if current.discord_presence() && presence.is_playing() {
-                                    discord.update(presence.as_ref(), &zelda.live_presence());
-                                    menu.set_status(presence.game_name());
-                                } else {
-                                    discord.clear();
-                                    menu.set_status("Ready");
-                                }
+                    if !same_account {
+                        continue;
+                    }
+                    match event.result {
+                        Ok(presence) => {
+                            if current.discord_presence() && presence.is_playing() {
+                                discord.update(presence.as_ref(), &zelda.live_presence());
+                                menu.set_status(presence.game_name());
+                            } else {
+                                discord.clear();
+                                menu.set_status("Ready");
+                            }
+                            release_initial_sync(
+                                &mut initial_sync_deferred,
+                                &mut next_auto_sync,
+                                &config,
+                            );
+                        }
+                        Err(error) => {
+                            if is_invalid_grant(&error) {
+                                sync_running = false;
+                                presence_running = false;
+                                presence_refresh_requested = false;
+                                clear_account_state(AccountStateRefs {
+                                    config: &config,
+                                    auth: auth.as_ref(),
+                                    nxapi: nxapi.as_ref(),
+                                    coral: coral.as_ref(),
+                                    splatnet: splatnet.as_ref(),
+                                    game_services: game_services.as_ref(),
+                                    zelda: zelda.as_ref(),
+                                    discord: discord.as_ref(),
+                                    enrichment_state: enrichment_state.as_ref(),
+                                    generation: account_generation.as_ref(),
+                                });
+                                initial_sync_deferred = false;
+                                menu.refresh(
+                                    &config.snapshot(),
+                                    platform::start_on_boot_enabled(),
+                                    "Nintendo Account session expired. Sign in again to continue.",
+                                );
+                            } else {
                                 release_initial_sync(
                                     &mut initial_sync_deferred,
                                     &mut next_auto_sync,
                                     &config,
                                 );
-                            }
-                            Err(error) => {
-                                if is_invalid_grant(&error) {
-                                    clear_account_state(AccountStateRefs {
-                                        config: &config,
-                                        auth: auth.as_ref(),
-                                        coral: coral.as_ref(),
-                                        splatnet: splatnet.as_ref(),
-                                        game_services: game_services.as_ref(),
-                                        zelda: zelda.as_ref(),
-                                        discord: discord.as_ref(),
-                                        enrichment_state: enrichment_state.as_ref(),
-                                    });
-                                    initial_sync_deferred = false;
-                                    menu.refresh(
-                                        &config.snapshot(),
-                                        platform::start_on_boot_enabled(),
-                                        "Nintendo Account session expired. Sign in again to continue.",
-                                    );
-                                } else {
-                                    release_initial_sync(
-                                        &mut initial_sync_deferred,
-                                        &mut next_auto_sync,
-                                        &config,
-                                    );
-                                    menu.set_status(&format!("Presence error: {error}"));
-                                }
+                                menu.set_status(&format!("Presence error: {error}"));
                             }
                         }
                     }
                     if !event.final_expected {
                         presence_running = false;
-                        next_presence = jittered_deadline(PRESENCE_POLL_INTERVAL);
+                        next_presence = presence_deadline(&mut presence_refresh_requested);
                     }
                 }
                 AppEvent::PresenceFinal(event) => {
-                    presence_running = false;
                     let current = config.snapshot();
-                    if current.discord_presence()
-                        && current.session_token() == event.session_token
-                        && event.presence.is_playing()
-                    {
+                    if current.session_token() != event.session_token {
+                        continue;
+                    }
+                    presence_running = false;
+                    if current.discord_presence() && event.presence.is_playing() {
                         discord.update(event.presence.as_ref(), &zelda.live_presence());
                     }
-                    next_presence = jittered_deadline(PRESENCE_POLL_INTERVAL);
+                    next_presence = presence_deadline(&mut presence_refresh_requested);
                 }
             }
         }
@@ -292,11 +321,14 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
         {
             sync_running = true;
             menu.set_status("Syncing album…");
+            let generation = account_generation.load(Ordering::Acquire);
             spawn_sync(
                 Arc::clone(&sync_engine),
                 Arc::clone(&stop),
+                Arc::clone(&account_generation),
                 sender.clone(),
                 true,
+                generation,
             );
             next_auto_sync = jittered_deadline(sync_interval(&snapshot));
         }
@@ -322,6 +354,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
 
         while let Ok(menu_event) = MenuEvent::receiver().try_recv() {
             if menu.matches(&menu_event, &menu.exit) {
+                start_exit_watchdog();
                 stop.store(true, Ordering::Release);
                 zelda.stop_live_session();
                 discord.clear();
@@ -330,44 +363,24 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             }
             if menu.matches(&menu_event, &menu.sign_in) {
                 if snapshot.session_token().is_empty() {
-                    if auth_pending {
-                        platform::notify(
-                            "Nintendo Sign-In",
-                            "A Nintendo Account sign-in is already waiting in your browser.",
-                        );
-                    } else if !platform::confirm(NXAPI_DISCLOSURE_TITLE, NXAPI_DISCLOSURE) {
-                        menu.set_status("Sign-in cancelled");
-                    } else {
-                        match auth.authorize_url() {
-                            Ok(url) => {
-                                auth_pending = true;
-                                menu.set_status("Waiting for Nintendo Account sign-in in your browser…");
-                                if let Err(error) = open::that(url) {
-                                    auth_pending = false;
-                                    platform::show_error(
-                                        "Nintendo Account sign in",
-                                        &error.to_string(),
-                                    );
-                                }
-                            }
-                            Err(error) => platform::show_error(
-                                "Nintendo Account sign in",
-                                &error.to_string(),
-                            ),
-                        }
-                    }
+                    begin_sign_in(auth.as_ref(), &menu, &mut auth_pending);
                 } else {
                     auth_pending = false;
                     initial_sync_deferred = false;
+                    sync_running = false;
+                    presence_running = false;
+                    presence_refresh_requested = false;
                     clear_account_state(AccountStateRefs {
                         config: &config,
                         auth: auth.as_ref(),
+                        nxapi: nxapi.as_ref(),
                         coral: coral.as_ref(),
                         splatnet: splatnet.as_ref(),
                         game_services: game_services.as_ref(),
                         zelda: zelda.as_ref(),
                         discord: discord.as_ref(),
                         enrichment_state: enrichment_state.as_ref(),
+                        generation: account_generation.as_ref(),
                     });
                     menu.refresh(
                         &config.snapshot(),
@@ -391,14 +404,21 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     initial_sync_deferred = false;
                     sync_running = true;
                     menu.set_status("Syncing album…");
+                    let generation = account_generation.load(Ordering::Acquire);
                     spawn_sync(
                         Arc::clone(&sync_engine),
                         Arc::clone(&stop),
+                        Arc::clone(&account_generation),
                         sender.clone(),
                         false,
+                        generation,
                     );
                     if snapshot.discord_presence() {
-                        next_presence = Instant::now();
+                        if presence_running {
+                            presence_refresh_requested = true;
+                        } else {
+                            next_presence = Instant::now();
+                        }
                     }
                 }
             } else if menu.matches(&menu_event, &menu.auto_sync) {
@@ -411,11 +431,14 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     {
                         sync_running = true;
                         menu.set_status("Syncing album…");
+                        let generation = account_generation.load(Ordering::Acquire);
                         spawn_sync(
                             Arc::clone(&sync_engine),
                             Arc::clone(&stop),
+                            Arc::clone(&account_generation),
                             sender.clone(),
                             false,
+                            generation,
                         );
                         next_auto_sync = jittered_deadline(sync_interval(&updated));
                     }
@@ -437,7 +460,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             } else if menu.matches(&menu_event, &menu.discord) {
                 let updated = config.update(AppConfig::toggle_discord_presence).ok();
                 if updated.as_ref().is_some_and(AppConfig::discord_presence) {
-                    next_presence = Instant::now();
+                    if presence_running {
+                        presence_refresh_requested = true;
+                    } else {
+                        next_presence = Instant::now();
+                    }
                     if updated.as_ref().is_some_and(AppConfig::notifications) {
                         platform::notify(
                             "Discord Rich Presence",
@@ -450,6 +477,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         &mut next_auto_sync,
                         &config,
                     );
+                    presence_refresh_requested = false;
                     reset_presence_state(enrichment_state.as_ref());
                     zelda.stop_live_session();
                     discord.clear();
@@ -483,13 +511,28 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     platform::show_error("Open album folder", &error.to_string());
                 }
             } else if menu.matches(&menu_event, &menu.proxy_settings) {
-                if let Ok(directory) = config_directory() {
-                    let _ = platform::open_folder(&directory);
-                }
-                platform::show_info(
-                    "Proxy settings",
-                    "Edit proxyUrl in config.json, or run with --proxy URL / --clear-proxy, then restart NSO Album Sync.",
+                let current = config.snapshot();
+                let proxy = platform::prompt(
+                    "HTTP Proxy",
+                    "Enter a proxy URL.",
+                    current.proxy_url(),
                 );
+                let normalized = proxy.trim().to_owned();
+                match config.update(|value| value.set_proxy_url(normalized.clone())) {
+                    Ok(_) => {
+                        shared_http.set_proxy(normalized.clone());
+                        menu.refresh(
+                            &config.snapshot(),
+                            platform::start_on_boot_enabled(),
+                            if normalized.is_empty() {
+                                "HTTP proxy disabled"
+                            } else {
+                                "HTTP proxy updated"
+                            },
+                        );
+                    }
+                    Err(error) => platform::show_error("HTTP Proxy", &error.to_string()),
+                }
             } else if menu.matches(&menu_event, &menu.about) {
                 platform::show_info(
                     "About NSO Album Sync",
@@ -511,6 +554,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
 struct SyncEvent {
     result: anyhow::Result<SyncResult>,
     background: bool,
+    generation: u64,
 }
 
 struct PresenceBasicEvent {
@@ -529,6 +573,35 @@ enum AppEvent {
     Auth(anyhow::Result<(String, String)>),
     PresenceBasic(PresenceBasicEvent),
     PresenceFinal(PresenceFinalEvent),
+}
+
+fn begin_sign_in(
+    auth: &NintendoAuthManager,
+    menu: &TrayMenu,
+    auth_pending: &mut bool,
+) {
+    if *auth_pending {
+        platform::notify(
+            "Nintendo Sign-In",
+            "A Nintendo Account sign-in is already waiting in your browser.",
+        );
+        return;
+    }
+    if !platform::confirm(NXAPI_DISCLOSURE_TITLE, NXAPI_DISCLOSURE) {
+        menu.set_status("Sign-in cancelled");
+        return;
+    }
+    match auth.authorize_url() {
+        Ok(url) => {
+            *auth_pending = true;
+            menu.set_status("Waiting for Nintendo Account sign-in in your browser…");
+            if let Err(error) = open::that(url) {
+                *auth_pending = false;
+                platform::show_error("Nintendo Account sign in", &error.to_string());
+            }
+        }
+        Err(error) => platform::show_error("Nintendo Account sign in", &error.to_string()),
+    }
 }
 
 fn spawn_auth_completion(
@@ -550,12 +623,21 @@ fn spawn_auth_completion(
 fn spawn_sync(
     engine: Arc<SyncEngine>,
     stop: Arc<AtomicBool>,
+    generation_counter: Arc<AtomicU64>,
     sender: mpsc::Sender<AppEvent>,
     background: bool,
+    generation: u64,
 ) {
     std::thread::spawn(move || {
-        let result = engine.sync(|| stop.load(Ordering::Acquire));
-        let _ = sender.send(AppEvent::Sync(SyncEvent { result, background }));
+        let result = engine.sync(|| {
+            stop.load(Ordering::Acquire)
+                || generation_counter.load(Ordering::Acquire) != generation
+        });
+        let _ = sender.send(AppEvent::Sync(SyncEvent {
+            result,
+            background,
+            generation,
+        }));
     });
 }
 
@@ -872,20 +954,32 @@ fn release_initial_sync(
     }
 }
 
+fn presence_deadline(refresh_requested: &mut bool) -> Instant {
+    if std::mem::take(refresh_requested) {
+        Instant::now()
+    } else {
+        jittered_deadline(PRESENCE_POLL_INTERVAL)
+    }
+}
+
 struct AccountStateRefs<'a> {
     config: &'a ConfigManager,
     auth: &'a NintendoAuthManager,
+    nxapi: &'a NxapiClient,
     coral: &'a CoralClient,
     splatnet: &'a SplatNetClient,
     game_services: &'a GameServicesClient,
     zelda: &'a ZeldaNotesClient,
     discord: &'a DiscordPresence,
     enrichment_state: &'a Mutex<PresenceEnrichmentState>,
+    generation: &'a AtomicU64,
 }
 
 fn clear_account_state(deps: AccountStateRefs<'_>) {
+    let _ = deps.generation.fetch_add(1, Ordering::AcqRel);
     let _ = deps.config.clear_session();
     deps.auth.clear_cached_tokens();
+    deps.nxapi.clear_user_auth();
     deps.coral.clear_cached_session();
     deps.splatnet.clear_cache();
     deps.game_services.clear_cache();
@@ -897,6 +991,13 @@ fn clear_account_state(deps: AccountStateRefs<'_>) {
 
 fn is_invalid_grant(error: &anyhow::Error) -> bool {
     error.to_string().contains("invalid_grant")
+}
+
+fn start_exit_watchdog() {
+    std::thread::spawn(|| {
+        std::thread::sleep(EXIT_WATCHDOG_DELAY);
+        std::process::exit(0);
+    });
 }
 
 fn apply_cli_settings(config: &ConfigManager, args: &[String]) -> anyhow::Result<()> {
