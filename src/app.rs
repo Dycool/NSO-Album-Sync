@@ -1,17 +1,24 @@
 //! Desktop application orchestration and tray event loop.
 
-use crate::auth_callback::{callback_from_args, publish_callback, register_protocol, take_callback};
+use crate::auth_callback::{
+    callback_from_args, clear_callback, publish_callback, register_protocol, take_callback,
+    unregister_protocol,
+};
 use crate::config::{ConfigManager, config_directory};
 use crate::coral::CoralClient;
 use crate::discord::DiscordPresence;
-use crate::game_services::{ANIMAL_CROSSING_GAME_SERVICE_ID, GameServicesClient, SPLATOON2_GAME_SERVICE_ID};
+use crate::game_services::{
+    ANIMAL_CROSSING_GAME_SERVICE_ID, GameServicesClient, SPLATOON2_GAME_SERVICE_ID,
+};
 use crate::http::HttpClient;
 use crate::model::{AppConfig, NintendoPresence, SyncResult};
 use crate::nintendo_auth::NintendoAuthManager;
 use crate::nxapi::NxapiClient;
 use crate::platform;
 use crate::single_instance::SingleInstance;
-use crate::splatnet::{SPLATNET3_GAME_SERVICE_ID, SPLATNET3_GAME_SERVICE_ID_ALT, SplatNetClient};
+use crate::splatnet::{
+    SPLATNET3_GAME_SERVICE_ID, SPLATNET3_GAME_SERVICE_ID_ALT, SplatNetClient,
+};
 use crate::sync::SyncEngine;
 use crate::zelda_notes::{
     ZELDA_NOTES_GAME_SERVICE_ID, ZELDA_NOTES_GAME_SERVICE_ID_ALT, ZeldaNotesClient,
@@ -19,18 +26,24 @@ use crate::zelda_notes::{
 };
 use crate::zelda_regions::ZeldaGame;
 use rand::Rng as _;
+#[cfg(target_os = "macos")]
+use std::cell::Cell;
+use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoop};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+#[cfg(target_os = "windows")]
+use tray_icon::{MouseButton, TrayIconEvent};
 use tray_icon::{Icon, TrayIconBuilder};
 
 const PRESENCE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const EXIT_WATCHDOG_DELAY: Duration = Duration::from_secs(5);
 const NXAPI_DISCLOSURE_TITLE: &str = "Third-Party Service Disclosure";
 const NXAPI_DISCLOSURE: &str = "NSO Album Sync uses the third-party nxapi-znca-api service at fancy.org.uk for Nintendo Switch Online request attestation and request/response encryption.\n\nWhen Nintendo Switch Online features are used, your Nintendo Account id_token and the profile fields required by Coral (Nintendo Account ID, birthday, country, and language), your Coral access token, and the Coral API requests and responses used by this app are sent to and processed by that third-party service. These tokens can authenticate Nintendo services while they remain valid.\n\nContinue with Nintendo Account sign-in?";
+const CALLBACK_REGISTRATION_ERROR: &str = "Automatic Nintendo Account browser return could not be registered. Close any other app using the Nintendo Switch App sign-in link and try again.";
 
 pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let callback = callback_from_args(&args);
@@ -42,7 +55,6 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
         return Ok(());
     }
     let _instance = instance.expect("single-instance guard was just checked");
-    register_protocol()?;
 
     let config = ConfigManager::load()?;
     apply_cli_settings(&config, &args)?;
@@ -56,7 +68,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
         initial.nxapi_auth_client_id().to_owned(),
         nxapi_cache,
     ));
-    let coral = Arc::new(CoralClient::new(http.clone(), Arc::clone(&auth), Arc::clone(&nxapi)));
+    let coral = Arc::new(CoralClient::new(
+        http.clone(),
+        Arc::clone(&auth),
+        Arc::clone(&nxapi),
+    ));
     let splatnet = Arc::new(SplatNetClient::new(http.clone()));
     let game_services = Arc::new(GameServicesClient::new(http.clone()));
     let zelda = Arc::new(ZeldaNotesClient::new(http.clone()));
@@ -90,7 +106,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let mut tray_icon = None;
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(500));
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(150));
         let Event::NewEvents(cause) = event else {
             return;
         };
@@ -104,12 +120,18 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             match TrayIconBuilder::new()
                 .with_menu(Box::new(tray_menu.clone()))
                 .with_tooltip("NSO Album Sync")
+                .with_menu_on_left_click(!cfg!(target_os = "windows"))
+                .with_menu_on_right_click(true)
+                .with_icon_as_template(cfg!(target_os = "macos"))
                 .with_icon(icon)
                 .build()
             {
                 Ok(icon) => tray_icon = Some(icon),
                 Err(error) => {
-                    platform::show_error("NSO Album Sync", &format!("Could not create tray icon: {error}"));
+                    platform::show_error(
+                        "NSO Album Sync",
+                        &format!("Could not create tray icon: {error}"),
+                    );
                     *control_flow = ControlFlow::Exit;
                     return;
                 }
@@ -119,8 +141,8 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             }
         }
 
-        while let Ok(event) = receiver.try_recv() {
-            match event {
+        while let Ok(app_event) = receiver.try_recv() {
+            match app_event {
                 AppEvent::Sync(event) => {
                     if event.generation != account_generation.load(Ordering::Acquire) {
                         continue;
@@ -141,7 +163,10 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                                     };
                                     platform::notify(
                                         "NSO Album Sync",
-                                        &format!("Synced {} new {noun} to your album folder!", result.new_downloads()),
+                                        &format!(
+                                            "Synced {} new {noun} to your album folder!",
+                                            result.new_downloads()
+                                        ),
                                     );
                                 } else if !event.background {
                                     platform::notify(
@@ -174,7 +199,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                                     "Nintendo Account session expired. Sign in again to continue.",
                                 );
                             } else {
-                                menu.set_status(&format!("Sync failed: {error}"));
+                                menu.set_status(&error.to_string());
                                 if config.snapshot().notifications() {
                                     platform::notify("NSO Album Sync", &error.to_string());
                                 }
@@ -187,6 +212,8 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     match result {
                         Ok((token, nickname)) => {
                             auth_pending = false;
+                            unregister_protocol();
+                            let _ = clear_callback();
                             sync_running = false;
                             presence_running = false;
                             presence_refresh_requested = false;
@@ -214,28 +241,30 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                             }
                         }
                         Err(error) => {
-                            if !error.to_string().contains("invalid OAuth state") {
+                            let message = error.to_string();
+                            if !message.contains("invalid OAuth state") {
                                 auth_pending = false;
+                                unregister_protocol();
+                                let _ = clear_callback();
                             }
-                            menu.set_status("Sign in failed");
-                            platform::show_error("Nintendo Account sign in", &error.to_string());
+                            menu.set_status(&message);
+                            if config.snapshot().notifications() {
+                                platform::notify("Nintendo Sign-In", &message);
+                            }
                         }
                     }
                 }
                 AppEvent::PresenceBasic(event) => {
                     let current = config.snapshot();
-                    let same_account = current.session_token() == event.session_token;
-                    if !same_account {
+                    if current.session_token() != event.session_token {
                         continue;
                     }
                     match event.result {
                         Ok(presence) => {
                             if current.discord_presence() && presence.is_playing() {
                                 discord.update(presence.as_ref(), &zelda.live_presence());
-                                menu.set_status(presence.game_name());
                             } else {
                                 discord.clear();
-                                menu.set_status("Ready");
                             }
                             release_initial_sync(
                                 &mut initial_sync_deferred,
@@ -272,7 +301,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                                     &mut next_auto_sync,
                                     &config,
                                 );
-                                menu.set_status(&format!("Presence error: {error}"));
+                                eprintln!("Presence: {error}");
                             }
                         }
                     }
@@ -303,10 +332,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             }
         }
 
-        if !auth_running
-            && auth_pending
-            && let Ok(Some(callback)) = take_callback()
-        {
+        if !auth_running && auth_pending && let Ok(Some(callback)) = take_callback() {
             auth_running = true;
             menu.set_status("Completing Nintendo Account sign-in…");
             spawn_auth_completion(Arc::clone(&auth), sender.clone(), callback);
@@ -352,20 +378,39 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             );
         }
 
+        #[cfg(target_os = "windows")]
+        while let Ok(tray_event) = TrayIconEvent::receiver().try_recv() {
+            if matches!(
+                tray_event,
+                TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                let folder = config.snapshot().destination_folder().to_owned();
+                let _ = platform::open_folder(std::path::Path::new(&folder));
+            }
+        }
+
         while let Ok(menu_event) = MenuEvent::receiver().try_recv() {
-            if menu.matches(&menu_event, &menu.exit) {
+            let snapshot = config.snapshot();
+            if menu.matches_item(&menu_event, &menu.exit) {
                 start_exit_watchdog();
                 stop.store(true, Ordering::Release);
+                unregister_protocol();
+                let _ = clear_callback();
                 zelda.stop_live_session();
                 discord.clear();
                 *control_flow = ControlFlow::Exit;
                 return;
             }
-            if menu.matches(&menu_event, &menu.sign_in) {
+            if menu.matches_item(&menu_event, &menu.sign_in) {
                 if snapshot.session_token().is_empty() {
                     begin_sign_in(auth.as_ref(), &menu, &mut auth_pending);
                 } else {
                     auth_pending = false;
+                    unregister_protocol();
+                    let _ = clear_callback();
                     initial_sync_deferred = false;
                     sync_running = false;
                     presence_running = false;
@@ -394,13 +439,8 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         );
                     }
                 }
-            } else if menu.matches(&menu_event, &menu.sync_now) && !sync_running {
-                if snapshot.session_token().is_empty() {
-                    platform::show_info(
-                        "NSO Album Sync",
-                        "Sign in to your Nintendo Account first.",
-                    );
-                } else {
+            } else if menu.matches_item(&menu_event, &menu.sync_now) && !sync_running {
+                if !snapshot.session_token().is_empty() {
                     initial_sync_deferred = false;
                     sync_running = true;
                     menu.set_status("Syncing album…");
@@ -421,16 +461,20 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         }
                     }
                 }
-            } else if menu.matches(&menu_event, &menu.auto_sync) {
+            } else if menu.matches_check(&menu_event, &menu.auto_sync) {
                 let updated = config.update(AppConfig::toggle_auto_sync).ok();
                 initial_sync_deferred = false;
                 if let Some(updated) = updated {
+                    menu.set_status(if updated.auto_sync() {
+                        "Auto-sync enabled"
+                    } else {
+                        "Auto-sync disabled"
+                    });
                     if updated.auto_sync()
                         && !updated.session_token().is_empty()
                         && !sync_running
                     {
                         sync_running = true;
-                        menu.set_status("Syncing album…");
                         let generation = account_generation.load(Ordering::Acquire);
                         spawn_sync(
                             Arc::clone(&sync_engine),
@@ -446,18 +490,26 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         platform::notify(
                             "NSO Album Sync",
                             if updated.auto_sync() {
-                                "Auto-sync enabled."
+                                "Auto-sync enabled (refreshes every hour)."
                             } else {
                                 "Auto-sync disabled."
                             },
                         );
                     }
                 }
-                menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Ready");
-            } else if menu.matches(&menu_event, &menu.notifications) {
+                menu.refresh(
+                    &config.snapshot(),
+                    platform::start_on_boot_enabled(),
+                    current_status_for_refresh(&menu),
+                );
+            } else if menu.matches_check(&menu_event, &menu.notifications) {
                 let _ = config.update(AppConfig::toggle_notifications);
-                menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Ready");
-            } else if menu.matches(&menu_event, &menu.discord) {
+                menu.refresh(
+                    &config.snapshot(),
+                    platform::start_on_boot_enabled(),
+                    current_status_for_refresh(&menu),
+                );
+            } else if menu.matches_check(&menu_event, &menu.discord) {
                 let updated = config.update(AppConfig::toggle_discord_presence).ok();
                 if updated.as_ref().is_some_and(AppConfig::discord_presence) {
                     if presence_running {
@@ -465,10 +517,13 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     } else {
                         next_presence = Instant::now();
                     }
+                    menu.set_status(
+                        "Discord presence enabled — visibility is controlled by Discord Activity Sharing",
+                    );
                     if updated.as_ref().is_some_and(AppConfig::notifications) {
                         platform::notify(
                             "Discord Rich Presence",
-                            "Presence is enabled. Discord Activity Sharing must also be enabled for other people to see it.",
+                            "Presence is enabled. In Discord, Activity Sharing must also be enabled for friends or server members to see it.",
                         );
                     }
                 } else {
@@ -481,9 +536,14 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     reset_presence_state(enrichment_state.as_ref());
                     zelda.stop_live_session();
                     discord.clear();
+                    menu.set_status("Discord presence disabled");
                 }
-                menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Ready");
-            } else if menu.matches(&menu_event, &menu.start_boot) {
+                menu.refresh(
+                    &config.snapshot(),
+                    platform::start_on_boot_enabled(),
+                    current_status_for_refresh(&menu),
+                );
+            } else if menu.matches_check(&menu_event, &menu.start_boot) {
                 let enabled = !platform::start_on_boot_enabled();
                 match platform::set_start_on_boot(enabled) {
                     Ok(()) => {
@@ -491,8 +551,12 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     }
                     Err(error) => platform::show_error("Start on boot", &error.to_string()),
                 }
-                menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Ready");
-            } else if menu.matches(&menu_event, &menu.choose_folder) {
+                menu.refresh(
+                    &config.snapshot(),
+                    platform::start_on_boot_enabled(),
+                    current_status_for_refresh(&menu),
+                );
+            } else if menu.matches_item(&menu_event, &menu.choose_folder) {
                 let current = std::path::PathBuf::from(snapshot.destination_folder());
                 if let Some(folder) = platform::choose_folder(&current) {
                     let _ = config.update(|value| {
@@ -504,13 +568,13 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         "Album folder updated",
                     );
                 }
-            } else if menu.matches(&menu_event, &menu.open_folder) {
+            } else if menu.matches_item(&menu_event, &menu.open_folder) {
                 if let Err(error) =
                     platform::open_folder(std::path::Path::new(snapshot.destination_folder()))
                 {
                     platform::show_error("Open album folder", &error.to_string());
                 }
-            } else if menu.matches(&menu_event, &menu.proxy_settings) {
+            } else if menu.matches_item(&menu_event, &menu.proxy_settings) {
                 let current = config.snapshot();
                 let proxy = platform::prompt(
                     "HTTP Proxy",
@@ -533,22 +597,21 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     }
                     Err(error) => platform::show_error("HTTP Proxy", &error.to_string()),
                 }
-            } else if menu.matches(&menu_event, &menu.about) {
-                platform::show_info(
-                    "About NSO Album Sync",
-                    &format!(
-                        "NSO Album Sync {}\n\nSync Nintendo Switch Online album captures to your PC and publish optional Discord Rich Presence.\n\nSafe Rust port — unsafe code is forbidden at the crate and Cargo lint levels.",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                );
-            } else if let Some(minutes) = menu.interval_for(&menu_event) {
-                let _ = config.update(|value| value.set_sync_interval_minutes(minutes));
-                next_auto_sync =
-                    jittered_deadline(Duration::from_secs(u64::from(minutes) * 60));
-                menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Ready");
             }
         }
     });
+}
+
+fn current_status_for_refresh(menu: &TrayMenu) -> &str {
+    #[cfg(target_os = "macos")]
+    {
+        return menu.status_text.borrowed();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = menu;
+        "Ready"
+    }
 }
 
 struct SyncEvent {
@@ -575,11 +638,7 @@ enum AppEvent {
     PresenceFinal(PresenceFinalEvent),
 }
 
-fn begin_sign_in(
-    auth: &NintendoAuthManager,
-    menu: &TrayMenu,
-    auth_pending: &mut bool,
-) {
+fn begin_sign_in(auth: &NintendoAuthManager, menu: &TrayMenu, auth_pending: &mut bool) {
     if *auth_pending {
         platform::notify(
             "Nintendo Sign-In",
@@ -591,16 +650,32 @@ fn begin_sign_in(
         menu.set_status("Sign-in cancelled");
         return;
     }
+
+    let _ = clear_callback();
+    if register_protocol().is_err() {
+        menu.set_status(CALLBACK_REGISTRATION_ERROR);
+        platform::notify("Nintendo Sign-In", CALLBACK_REGISTRATION_ERROR);
+        return;
+    }
+
     match auth.authorize_url() {
         Ok(url) => {
             *auth_pending = true;
             menu.set_status("Waiting for Nintendo Account sign-in in your browser…");
             if let Err(error) = open::that(url) {
                 *auth_pending = false;
-                platform::show_error("Nintendo Account sign in", &error.to_string());
+                unregister_protocol();
+                let _ = clear_callback();
+                menu.set_status(&error.to_string());
+                platform::notify("Nintendo Sign-In", &error.to_string());
             }
         }
-        Err(error) => platform::show_error("Nintendo Account sign in", &error.to_string()),
+        Err(error) => {
+            unregister_protocol();
+            let _ = clear_callback();
+            menu.set_status(&error.to_string());
+            platform::notify("Nintendo Sign-In", &error.to_string());
+        }
     }
 }
 
@@ -856,7 +931,9 @@ fn enrich_presence(
             if let Ok(token) = deps
                 .coral
                 .get_web_service_token(session_token, ANIMAL_CROSSING_GAME_SERVICE_ID)
-                && let Ok(extra) = deps.game_services.fetch_animal_crossing_presence(&token)
+                && let Ok(extra) = deps
+                    .game_services
+                    .fetch_animal_crossing_presence(&token)
                 && extra.active()
             {
                 presence.set_custom_details(extra.format_details());
@@ -1019,127 +1096,200 @@ fn apply_cli_settings(config: &ConfigManager, args: &[String]) -> anyhow::Result
     Ok(())
 }
 
-#[derive(Clone)]
 struct TrayMenu {
     root: Menu,
     nickname: MenuItem,
     last_sync: MenuItem,
-    status: MenuItem,
-    sign_in: MenuItem,
     sync_now: MenuItem,
-    auto_sync: MenuItem,
-    notifications: MenuItem,
-    discord: MenuItem,
-    start_boot: MenuItem,
-    interval_15: MenuItem,
-    interval_30: MenuItem,
-    interval_60: MenuItem,
-    interval_120: MenuItem,
-    interval_240: MenuItem,
+    auto_sync: CheckMenuItem,
+    notifications: CheckMenuItem,
+    discord: CheckMenuItem,
     choose_folder: MenuItem,
     open_folder: MenuItem,
+    start_boot: CheckMenuItem,
     proxy_settings: MenuItem,
-    about: MenuItem,
+    sign_in: MenuItem,
     exit: MenuItem,
+    _separators: [PredefinedMenuItem; 4],
+    #[cfg(target_os = "macos")]
+    status: MenuItem,
+    #[cfg(target_os = "macos")]
+    status_attached: Cell<bool>,
+    #[cfg(target_os = "macos")]
+    status_text: StatusText,
+}
+
+#[cfg(target_os = "macos")]
+struct StatusText(std::cell::RefCell<String>);
+
+#[cfg(target_os = "macos")]
+impl StatusText {
+    fn new() -> Self {
+        Self(std::cell::RefCell::new("Ready".to_owned()))
+    }
+
+    fn set(&self, value: &str) {
+        *self.0.borrow_mut() = value.to_owned();
+    }
+
+    fn borrowed(&self) -> &str {
+        "Ready"
+    }
 }
 
 impl TrayMenu {
     fn new(config: &AppConfig, start_on_boot: bool) -> anyhow::Result<Self> {
         let root = Menu::new();
+        let nickname = MenuItem::with_id("nickname", "", false, None);
+        let last_sync = MenuItem::with_id("last_sync", "", false, None);
+        let sync_now = MenuItem::with_id("sync_now", "Sync Now", true, None);
+        let auto_sync = CheckMenuItem::with_id(
+            "auto_sync",
+            auto_sync_label(config.sync_interval_minutes()),
+            true,
+            config.auto_sync(),
+            None,
+        );
+        let notifications = CheckMenuItem::with_id(
+            "notifications",
+            "Notifications",
+            true,
+            config.notifications(),
+            None,
+        );
+        let discord = CheckMenuItem::with_id(
+            "discord",
+            "Discord Rich Presence",
+            true,
+            config.discord_presence(),
+            None,
+        );
+        let choose_folder =
+            MenuItem::with_id("choose_folder", "Choose Album Folder…", true, None);
+        let open_folder = MenuItem::with_id("open_folder", "Open Album Folder", true, None);
+        let start_boot =
+            CheckMenuItem::with_id("start_boot", "Start on Boot", true, start_on_boot, None);
+        let proxy_settings = MenuItem::with_id("proxy_settings", "HTTP Proxy…", true, None);
+        let sign_in = MenuItem::with_id("sign_in", "", true, None);
+        let exit = MenuItem::with_id("exit", "Exit", true, None);
+        let separators = [
+            PredefinedMenuItem::separator(),
+            PredefinedMenuItem::separator(),
+            PredefinedMenuItem::separator(),
+            PredefinedMenuItem::separator(),
+        ];
+        #[cfg(target_os = "macos")]
+        let status = MenuItem::with_id("status", "", false, None);
+
+        root.append(&nickname)?;
+        root.append(&last_sync)?;
+        root.append(&separators[0])?;
+        root.append(&sync_now)?;
+        root.append(&auto_sync)?;
+        root.append(&notifications)?;
+        root.append(&discord)?;
+        root.append(&separators[1])?;
+        root.append(&choose_folder)?;
+        root.append(&open_folder)?;
+        root.append(&separators[2])?;
+        root.append(&start_boot)?;
+        root.append(&proxy_settings)?;
+        root.append(&sign_in)?;
+        root.append(&separators[3])?;
+        root.append(&exit)?;
+
         let menu = Self {
-            root: root.clone(),
-            nickname: MenuItem::with_id("nickname", "", false, None),
-            last_sync: MenuItem::with_id("last_sync", "", false, None),
-            status: MenuItem::with_id("status", "", false, None),
-            sign_in: MenuItem::with_id("sign_in", "", true, None),
-            sync_now: MenuItem::with_id("sync_now", "Sync now", true, None),
-            auto_sync: MenuItem::with_id("auto_sync", "", true, None),
-            notifications: MenuItem::with_id("notifications", "", true, None),
-            discord: MenuItem::with_id("discord", "", true, None),
-            start_boot: MenuItem::with_id("start_boot", "", true, None),
-            interval_15: MenuItem::with_id("interval_15", "15 minutes", true, None),
-            interval_30: MenuItem::with_id("interval_30", "30 minutes", true, None),
-            interval_60: MenuItem::with_id("interval_60", "60 minutes", true, None),
-            interval_120: MenuItem::with_id("interval_120", "2 hours", true, None),
-            interval_240: MenuItem::with_id("interval_240", "4 hours", true, None),
-            choose_folder: MenuItem::with_id("choose_folder", "Choose album folder…", true, None),
-            open_folder: MenuItem::with_id("open_folder", "Open album folder", true, None),
-            proxy_settings: MenuItem::with_id("proxy_settings", "Proxy settings…", true, None),
-            about: MenuItem::with_id("about", "About NSO Album Sync…", true, None),
-            exit: MenuItem::with_id("exit", "Exit", true, None),
+            root,
+            nickname,
+            last_sync,
+            sync_now,
+            auto_sync,
+            notifications,
+            discord,
+            choose_folder,
+            open_folder,
+            start_boot,
+            proxy_settings,
+            sign_in,
+            exit,
+            _separators: separators,
+            #[cfg(target_os = "macos")]
+            status,
+            #[cfg(target_os = "macos")]
+            status_attached: Cell::new(false),
+            #[cfg(target_os = "macos")]
+            status_text: StatusText::new(),
         };
-        for item in [
-            &menu.nickname,
-            &menu.last_sync,
-            &menu.status,
-            &menu.sign_in,
-            &menu.sync_now,
-            &menu.auto_sync,
-            &menu.notifications,
-            &menu.discord,
-            &menu.start_boot,
-            &menu.interval_15,
-            &menu.interval_30,
-            &menu.interval_60,
-            &menu.interval_120,
-            &menu.interval_240,
-            &menu.choose_folder,
-            &menu.open_folder,
-            &menu.proxy_settings,
-            &menu.about,
-            &menu.exit,
-        ] {
-            root.append(item)?;
-        }
         menu.refresh(config, start_on_boot, "Ready");
         Ok(menu)
     }
 
     fn refresh(&self, config: &AppConfig, start_on_boot: bool, status: &str) {
-        self.nickname
-            .set_text(format!("User: {}", config.user_nickname()));
-        self.last_sync
-            .set_text(format!("Last sync: {}", config.last_sync()));
-        self.status.set_text(format!("Status: {status}"));
-        self.sign_in.set_text(if config.session_token().is_empty() {
-            "Sign in to Nintendo Account…"
+        self.nickname.set_text(if config.session_token().is_empty() {
+            "Not signed in".to_owned()
         } else {
-            "Sign out of Nintendo Account"
+            format!("Connected as {}", config.user_nickname())
         });
+        self.last_sync.set_text(format!(
+            "Last sync: {}",
+            if config.last_sync().is_empty() {
+                "Never"
+            } else {
+                config.last_sync()
+            }
+        ));
+        self.sync_now
+            .set_enabled(!config.session_token().is_empty());
         self.auto_sync
-            .set_text(toggle_text("Auto sync", config.auto_sync()));
-        self.notifications
-            .set_text(toggle_text("Notifications", config.notifications()));
-        self.discord
-            .set_text(toggle_text("Discord Rich Presence", config.discord_presence()));
-        self.start_boot
-            .set_text(toggle_text("Start on boot", start_on_boot));
-        self.sync_now.set_enabled(!config.session_token().is_empty());
+            .set_text(auto_sync_label(config.sync_interval_minutes()));
+        self.auto_sync.set_checked(config.auto_sync());
+        self.notifications.set_checked(config.notifications());
+        self.discord.set_checked(config.discord_presence());
+        self.start_boot.set_checked(start_on_boot);
+        self.sign_in.set_text(if config.session_token().is_empty() {
+            "Sign In to Nintendo Account…"
+        } else {
+            "Sign Out"
+        });
+        self.set_status(status);
     }
 
     fn set_status(&self, status: &str) {
-        self.status.set_text(format!("Status: {status}"));
+        #[cfg(target_os = "macos")]
+        {
+            self.status_text.set(status);
+            let visible = !status.is_empty() && status != "Ready";
+            if visible {
+                self.status.set_text(status);
+                if !self.status_attached.get() && self.root.insert(&self.status, 1).is_ok() {
+                    self.status_attached.set(true);
+                }
+            } else if self.status_attached.get() && self.root.remove(&self.status).is_ok() {
+                self.status_attached.set(false);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = status;
+        }
     }
 
-    fn matches(&self, event: &MenuEvent, item: &MenuItem) -> bool {
+    fn matches_item(&self, event: &MenuEvent, item: &MenuItem) -> bool {
         event.id == item.id()
     }
 
-    fn interval_for(&self, event: &MenuEvent) -> Option<u32> {
-        [
-            (15, &self.interval_15),
-            (30, &self.interval_30),
-            (60, &self.interval_60),
-            (120, &self.interval_120),
-            (240, &self.interval_240),
-        ]
-        .into_iter()
-        .find_map(|(minutes, item)| self.matches(event, item).then_some(minutes))
+    fn matches_check(&self, event: &MenuEvent, item: &CheckMenuItem) -> bool {
+        event.id == item.id()
     }
 }
 
-fn toggle_text(label: &str, enabled: bool) -> String {
-    format!("{} {label}", if enabled { "✓" } else { " " })
+fn auto_sync_label(minutes: u32) -> String {
+    let safe_minutes = minutes.max(1);
+    if safe_minutes == 60 {
+        "Auto-Sync (Hourly)".to_owned()
+    } else {
+        format!("Auto-Sync (Every {safe_minutes} min)")
+    }
 }
 
 fn sync_interval(config: &AppConfig) -> Duration {
@@ -1159,16 +1309,20 @@ fn jittered_deadline(interval: Duration) -> Instant {
 }
 
 fn app_icon() -> anyhow::Result<Icon> {
-    let mut rgba = Vec::with_capacity(32 * 32 * 4);
-    for y in 0..32 {
-        for x in 0..32 {
-            let inside = (5..27).contains(&x) && (5..27).contains(&y);
-            if inside {
-                rgba.extend_from_slice(&[230, 35, 80, 255]);
-            } else {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
-    Ok(Icon::from_rgba(rgba, 32, 32)?)
+    let directory = ico::IconDir::read(Cursor::new(include_bytes!("../app.ico").as_slice()))?;
+    let entry = directory
+        .entries()
+        .iter()
+        .min_by_key(|entry| {
+            let exact = u8::from(entry.width() != 32 || entry.height() != 32);
+            let distance = entry.width().abs_diff(32) + entry.height().abs_diff(32);
+            (exact, distance)
+        })
+        .ok_or_else(|| anyhow::anyhow!("app.ico contains no icon images"))?;
+    let image = entry.decode()?;
+    Ok(Icon::from_rgba(
+        image.rgba_data().to_vec(),
+        image.width(),
+        image.height(),
+    )?)
 }
