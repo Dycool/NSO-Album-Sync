@@ -48,6 +48,127 @@ pub fn confirm(title: &str, message: &str) -> bool {
     )
 }
 
+pub fn prompt(title: &str, message: &str, initial: &str) -> String {
+    native_prompt(title, message, initial).unwrap_or_else(|| initial.to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn native_prompt(title: &str, message: &str, initial: &str) -> Option<String> {
+    let output = Command::new("zenity")
+        .args([
+            "--entry",
+            "--title",
+            title,
+            "--text",
+            message,
+            "--entry-text",
+            initial,
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .or_else(|| {
+            Command::new("kdialog")
+                .args(["--title", title, "--inputbox", message, initial])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+        })?;
+    Some(trim_command_output(&output.stdout))
+}
+
+#[cfg(target_os = "macos")]
+fn native_prompt(title: &str, message: &str, initial: &str) -> Option<String> {
+    let output = Command::new("osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "set answer to display dialog (item 2 of argv) with title (item 1 of argv) default answer (item 3 of argv) buttons {\"Cancel\", \"Save\"} default button \"Save\" cancel button \"Cancel\"",
+            "-e",
+            "return text returned of answer",
+            "-e",
+            "end run",
+            "--",
+            title,
+            message,
+            initial,
+        ])
+        .output()
+        .ok()?
+        ;
+    output.status.success().then(|| trim_command_output(&output.stdout))
+}
+
+#[cfg(target_os = "windows")]
+fn native_prompt(title: &str, message: &str, initial: &str) -> Option<String> {
+    const SCRIPT: &str = r#"& {
+param($title, $message, $initial)
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$form = New-Object System.Windows.Forms.Form
+$form.Text = $title
+$form.StartPosition = 'CenterScreen'
+$form.ClientSize = New-Object System.Drawing.Size(540, 150)
+$form.FormBorderStyle = 'FixedDialog'
+$form.MaximizeBox = $false
+$form.MinimizeBox = $false
+$label = New-Object System.Windows.Forms.Label
+$label.Text = $message
+$label.Location = New-Object System.Drawing.Point(18, 17)
+$label.Size = New-Object System.Drawing.Size(504, 36)
+$text = New-Object System.Windows.Forms.TextBox
+$text.Text = $initial
+$text.Location = New-Object System.Drawing.Point(18, 63)
+$text.Size = New-Object System.Drawing.Size(504, 27)
+$save = New-Object System.Windows.Forms.Button
+$save.Text = 'Save'
+$save.Location = New-Object System.Drawing.Point(354, 105)
+$save.Size = New-Object System.Drawing.Size(80, 28)
+$save.DialogResult = [System.Windows.Forms.DialogResult]::OK
+$cancel = New-Object System.Windows.Forms.Button
+$cancel.Text = 'Cancel'
+$cancel.Location = New-Object System.Drawing.Point(442, 105)
+$cancel.Size = New-Object System.Drawing.Size(80, 28)
+$cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+$form.Controls.AddRange(@($label, $text, $save, $cancel))
+$form.AcceptButton = $save
+$form.CancelButton = $cancel
+$form.Add_Shown({ $text.Focus(); $text.SelectAll() })
+if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($text.Text)
+    exit 0
+}
+exit 2
+}"#;
+
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            SCRIPT,
+            title,
+            message,
+            initial,
+        ])
+        .output()
+        .ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn native_prompt(_title: &str, _message: &str, _initial: &str) -> Option<String> {
+    None
+}
+
+fn trim_command_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .trim_end_matches(['\r', '\n'])
+        .to_owned()
+}
+
 pub fn notify(title: &str, message: &str) {
     if !send_native_notification(title, message) {
         show_info(title, message);
