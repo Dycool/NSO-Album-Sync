@@ -13,11 +13,14 @@ use crate::platform;
 use crate::single_instance::SingleInstance;
 use crate::splatnet::{SPLATNET3_GAME_SERVICE_ID, SPLATNET3_GAME_SERVICE_ID_ALT, SplatNetClient};
 use crate::sync::SyncEngine;
-use crate::zelda_notes::{ZELDA_NOTES_GAME_SERVICE_ID, ZELDA_NOTES_GAME_SERVICE_ID_ALT, ZeldaNotesClient, game_for_presence};
+use crate::zelda_notes::{
+    ZELDA_NOTES_GAME_SERVICE_ID, ZELDA_NOTES_GAME_SERVICE_ID_ALT, ZeldaNotesClient,
+    game_for_presence,
+};
 use crate::zelda_regions::ZeldaGame;
 use rand::Rng as _;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoop};
@@ -25,6 +28,8 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
 const PRESENCE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const NXAPI_DISCLOSURE_TITLE: &str = "Third-Party Service Disclosure";
+const NXAPI_DISCLOSURE: &str = "NSO Album Sync uses the third-party nxapi-znca-api service at fancy.org.uk for Nintendo Switch Online request attestation and request/response encryption.\n\nWhen Nintendo Switch Online features are used, your Nintendo Account id_token and the profile fields required by Coral (Nintendo Account ID, birthday, country, and language), your Coral access token, and the Coral API requests and responses used by this app are sent to and processed by that third-party service. These tokens can authenticate Nintendo services while they remain valid.\n\nContinue with Nintendo Account sign-in?";
 
 pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let callback = callback_from_args(&args);
@@ -54,14 +59,23 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let game_services = Arc::new(GameServicesClient::new(http.clone()));
     let zelda = Arc::new(ZeldaNotesClient::new(http.clone()));
     let sync_engine = Arc::new(SyncEngine::new(config.clone(), Arc::clone(&coral), http));
-    let discord = DiscordPresence::new(initial.discord_application_id());
+    let discord = Arc::new(DiscordPresence::new(initial.discord_application_id()));
+    let enrichment_state = Arc::new(Mutex::new(PresenceEnrichmentState::default()));
 
     let (sender, receiver) = mpsc::channel::<AppEvent>();
     let stop = Arc::new(AtomicBool::new(false));
     let mut sync_running = false;
     let mut auth_running = false;
+    let mut auth_pending = false;
     let mut presence_running = false;
-    let mut next_auto_sync = Instant::now();
+    let session_ready = !initial.session_token().is_empty();
+    let mut initial_sync_deferred =
+        initial.auto_sync() && initial.discord_presence() && session_ready;
+    let mut next_auto_sync = if initial.auto_sync() && session_ready && !initial_sync_deferred {
+        Instant::now()
+    } else {
+        jittered_deadline(sync_interval(&initial))
+    };
     let mut next_presence = Instant::now();
     let mut last_zelda = zelda.live_presence();
 
@@ -100,25 +114,52 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
 
         while let Ok(event) = receiver.try_recv() {
             match event {
-                AppEvent::Sync(result) => {
+                AppEvent::Sync(event) => {
                     sync_running = false;
-                    match result {
+                    match event.result {
                         Ok(result) => {
-                            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                            let now = chrono::Local::now().format("%H:%M (%Y-%m-%d)").to_string();
                             let _ = config.update(|value| value.set_last_sync(now));
                             let current = config.snapshot();
                             menu.refresh(&current, platform::start_on_boot_enabled(), "Ready");
-                            if current.notifications() && result.new_downloads() > 0 {
-                                platform::notify(
-                                    "NSO Album Sync",
-                                    &format!("Downloaded {} new album item(s).", result.new_downloads()),
-                                );
+                            if current.notifications() {
+                                if result.new_downloads() > 0 {
+                                    let noun = if result.new_downloads() == 1 { "capture" } else { "captures" };
+                                    platform::notify(
+                                        "NSO Album Sync",
+                                        &format!("Synced {} new {noun} to your album folder!", result.new_downloads()),
+                                    );
+                                } else if !event.background {
+                                    platform::notify(
+                                        "NSO Album Sync",
+                                        "Album is up to date. No new captures found.",
+                                    );
+                                }
                             }
                         }
                         Err(error) => {
-                            menu.set_status(&format!("Sync failed: {error}"));
-                            if config.snapshot().notifications() {
-                                platform::show_error("NSO Album Sync", &error.to_string());
+                            if is_invalid_grant(&error) {
+                                clear_account_state(
+                                    &config,
+                                    auth.as_ref(),
+                                    coral.as_ref(),
+                                    splatnet.as_ref(),
+                                    game_services.as_ref(),
+                                    zelda.as_ref(),
+                                    discord.as_ref(),
+                                    enrichment_state.as_ref(),
+                                );
+                                initial_sync_deferred = false;
+                                menu.refresh(
+                                    &config.snapshot(),
+                                    platform::start_on_boot_enabled(),
+                                    "Nintendo Account session expired. Sign in again to continue.",
+                                );
+                            } else {
+                                menu.set_status(&format!("Sync failed: {error}"));
+                                if config.snapshot().notifications() {
+                                    platform::notify("NSO Album Sync", &error.to_string());
+                                }
                             }
                         }
                     }
@@ -127,37 +168,98 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     auth_running = false;
                     match result {
                         Ok((token, nickname)) => {
+                            auth_pending = false;
                             let _ = config.update(|value| value.set_session(token, nickname));
                             coral.clear_cached_session();
                             splatnet.clear_cache();
                             game_services.clear_cache();
                             zelda.clear_cache();
-                            menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Signed in");
-                            next_presence = Instant::now();
-                            next_auto_sync = Instant::now();
+                            reset_presence_state(enrichment_state.as_ref());
+                            let current = config.snapshot();
+                            menu.refresh(
+                                &current,
+                                platform::start_on_boot_enabled(),
+                                &format!("Connected as {}", current.user_nickname()),
+                            );
+                            initial_sync_deferred =
+                                current.auto_sync() && current.discord_presence();
+                            if current.discord_presence() {
+                                next_presence = Instant::now();
+                                next_auto_sync = jittered_deadline(sync_interval(&current));
+                            } else if current.auto_sync() {
+                                next_auto_sync = Instant::now();
+                            }
                         }
                         Err(error) => {
+                            if !error.to_string().contains("invalid OAuth state") {
+                                auth_pending = false;
+                            }
                             menu.set_status("Sign in failed");
                             platform::show_error("Nintendo Account sign in", &error.to_string());
                         }
                     }
                 }
-                AppEvent::Presence(result) => {
-                    presence_running = false;
-                    match result {
-                        Ok(presence) => {
-                            let current = config.snapshot();
-                            if current.discord_presence() {
-                                discord.update(presence.as_ref(), &zelda.live_presence());
-                            } else {
-                                discord.clear();
+                AppEvent::PresenceBasic(event) => {
+                    let current = config.snapshot();
+                    let same_account = current.session_token() == event.session_token;
+                    if same_account {
+                        match event.result {
+                            Ok(presence) => {
+                                if current.discord_presence() && presence.is_playing() {
+                                    discord.update(presence.as_ref(), &zelda.live_presence());
+                                    menu.set_status(presence.game_name());
+                                } else {
+                                    discord.clear();
+                                    menu.set_status("Ready");
+                                }
+                                release_initial_sync(
+                                    &mut initial_sync_deferred,
+                                    &mut next_auto_sync,
+                                    &config,
+                                );
                             }
-                            menu.set_status(if presence.is_playing() { presence.game_name() } else { "Ready" });
+                            Err(error) => {
+                                if is_invalid_grant(&error) {
+                                    clear_account_state(
+                                        &config,
+                                        auth.as_ref(),
+                                        coral.as_ref(),
+                                        splatnet.as_ref(),
+                                        game_services.as_ref(),
+                                        zelda.as_ref(),
+                                        discord.as_ref(),
+                                        enrichment_state.as_ref(),
+                                    );
+                                    initial_sync_deferred = false;
+                                    menu.refresh(
+                                        &config.snapshot(),
+                                        platform::start_on_boot_enabled(),
+                                        "Nintendo Account session expired. Sign in again to continue.",
+                                    );
+                                } else {
+                                    release_initial_sync(
+                                        &mut initial_sync_deferred,
+                                        &mut next_auto_sync,
+                                        &config,
+                                    );
+                                    menu.set_status(&format!("Presence error: {error}"));
+                                }
+                            }
                         }
-                        Err(error) => {
-                            discord.clear();
-                            menu.set_status(&format!("Presence error: {error}"));
-                        }
+                    }
+                    if !event.final_expected {
+                        presence_running = false;
+                        next_presence = jittered_deadline(PRESENCE_POLL_INTERVAL);
+                    }
+                }
+                AppEvent::PresenceFinal(event) => {
+                    presence_running = false;
+                    let current = config.snapshot();
+                    if current.discord_presence()
+                        && current.session_token() == event.session_token
+                        && event.presence.is_playing()
+                    {
+                        discord.update(event.presence.as_ref(), &zelda.live_presence());
                     }
                     next_presence = jittered_deadline(PRESENCE_POLL_INTERVAL);
                 }
@@ -173,10 +275,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
         }
 
         if !auth_running
+            && auth_pending
             && let Ok(Some(callback)) = take_callback()
         {
             auth_running = true;
-            menu.set_status("Completing Nintendo sign in…");
+            menu.set_status("Completing Nintendo Account sign-in…");
             spawn_auth_completion(Arc::clone(&auth), sender.clone(), callback);
         }
 
@@ -185,13 +288,17 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             && !snapshot.session_token().is_empty()
             && !sync_running
             && Instant::now() >= next_auto_sync
+            && !initial_sync_deferred
         {
             sync_running = true;
             menu.set_status("Syncing album…");
-            spawn_sync(Arc::clone(&sync_engine), Arc::clone(&stop), sender.clone());
-            next_auto_sync = jittered_deadline(Duration::from_secs(
-                u64::from(snapshot.sync_interval_minutes()) * 60,
-            ));
+            spawn_sync(
+                Arc::clone(&sync_engine),
+                Arc::clone(&stop),
+                sender.clone(),
+                true,
+            );
+            next_auto_sync = jittered_deadline(sync_interval(&snapshot));
         }
         if snapshot.discord_presence()
             && !snapshot.session_token().is_empty()
@@ -207,6 +314,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     game_services: Arc::clone(&game_services),
                     zelda: Arc::clone(&zelda),
                 },
+                Arc::clone(&enrichment_state),
                 sender.clone(),
                 snapshot.session_token().to_owned(),
             );
@@ -222,36 +330,106 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
             }
             if menu.matches(&menu_event, &menu.sign_in) {
                 if snapshot.session_token().is_empty() {
-                    match auth.authorize_url() {
-                        Ok(url) => {
-                            menu.set_status("Waiting for Nintendo sign in…");
-                            if let Err(error) = open::that(url) {
-                                platform::show_error("Nintendo Account sign in", &error.to_string());
+                    if auth_pending {
+                        platform::notify(
+                            "Nintendo Sign-In",
+                            "A Nintendo Account sign-in is already waiting in your browser.",
+                        );
+                    } else if !platform::confirm(NXAPI_DISCLOSURE_TITLE, NXAPI_DISCLOSURE) {
+                        menu.set_status("Sign-in cancelled");
+                    } else {
+                        match auth.authorize_url() {
+                            Ok(url) => {
+                                auth_pending = true;
+                                menu.set_status("Waiting for Nintendo Account sign-in in your browser…");
+                                if let Err(error) = open::that(url) {
+                                    auth_pending = false;
+                                    platform::show_error(
+                                        "Nintendo Account sign in",
+                                        &error.to_string(),
+                                    );
+                                }
                             }
+                            Err(error) => platform::show_error(
+                                "Nintendo Account sign in",
+                                &error.to_string(),
+                            ),
                         }
-                        Err(error) => platform::show_error("Nintendo Account sign in", &error.to_string()),
                     }
                 } else {
-                    let _ = config.clear_session();
-                    auth.clear_cached_tokens();
-                    coral.clear_cached_session();
-                    splatnet.clear_cache();
-                    game_services.clear_cache();
-                    zelda.clear_cache();
-                    discord.clear();
-                    menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Signed out");
+                    auth_pending = false;
+                    initial_sync_deferred = false;
+                    clear_account_state(
+                        &config,
+                        auth.as_ref(),
+                        coral.as_ref(),
+                        splatnet.as_ref(),
+                        game_services.as_ref(),
+                        zelda.as_ref(),
+                        discord.as_ref(),
+                        enrichment_state.as_ref(),
+                    );
+                    menu.refresh(
+                        &config.snapshot(),
+                        platform::start_on_boot_enabled(),
+                        "Signed out",
+                    );
+                    if snapshot.notifications() {
+                        platform::notify(
+                            "NSO Album Sync",
+                            "Signed out of your Nintendo Account.",
+                        );
+                    }
                 }
             } else if menu.matches(&menu_event, &menu.sync_now) && !sync_running {
                 if snapshot.session_token().is_empty() {
-                    platform::show_info("NSO Album Sync", "Sign in to your Nintendo Account first.");
+                    platform::show_info(
+                        "NSO Album Sync",
+                        "Sign in to your Nintendo Account first.",
+                    );
                 } else {
+                    initial_sync_deferred = false;
                     sync_running = true;
                     menu.set_status("Syncing album…");
-                    spawn_sync(Arc::clone(&sync_engine), Arc::clone(&stop), sender.clone());
+                    spawn_sync(
+                        Arc::clone(&sync_engine),
+                        Arc::clone(&stop),
+                        sender.clone(),
+                        false,
+                    );
+                    if snapshot.discord_presence() {
+                        next_presence = Instant::now();
+                    }
                 }
             } else if menu.matches(&menu_event, &menu.auto_sync) {
-                let _ = config.update(AppConfig::toggle_auto_sync);
-                next_auto_sync = Instant::now();
+                let updated = config.update(AppConfig::toggle_auto_sync).ok();
+                initial_sync_deferred = false;
+                if let Some(updated) = updated {
+                    if updated.auto_sync()
+                        && !updated.session_token().is_empty()
+                        && !sync_running
+                    {
+                        sync_running = true;
+                        menu.set_status("Syncing album…");
+                        spawn_sync(
+                            Arc::clone(&sync_engine),
+                            Arc::clone(&stop),
+                            sender.clone(),
+                            false,
+                        );
+                        next_auto_sync = jittered_deadline(sync_interval(&updated));
+                    }
+                    if updated.notifications() {
+                        platform::notify(
+                            "NSO Album Sync",
+                            if updated.auto_sync() {
+                                "Auto-sync enabled."
+                            } else {
+                                "Auto-sync disabled."
+                            },
+                        );
+                    }
+                }
                 menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Ready");
             } else if menu.matches(&menu_event, &menu.notifications) {
                 let _ = config.update(AppConfig::toggle_notifications);
@@ -260,7 +438,19 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                 let updated = config.update(AppConfig::toggle_discord_presence).ok();
                 if updated.as_ref().is_some_and(AppConfig::discord_presence) {
                     next_presence = Instant::now();
+                    if updated.as_ref().is_some_and(AppConfig::notifications) {
+                        platform::notify(
+                            "Discord Rich Presence",
+                            "Presence is enabled. Discord Activity Sharing must also be enabled for other people to see it.",
+                        );
+                    }
                 } else {
+                    release_initial_sync(
+                        &mut initial_sync_deferred,
+                        &mut next_auto_sync,
+                        &config,
+                    );
+                    reset_presence_state(enrichment_state.as_ref());
                     zelda.stop_live_session();
                     discord.clear();
                 }
@@ -280,10 +470,16 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     let _ = config.update(|value| {
                         value.set_destination_folder(folder.to_string_lossy().into_owned());
                     });
-                    menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Ready");
+                    menu.refresh(
+                        &config.snapshot(),
+                        platform::start_on_boot_enabled(),
+                        "Album folder updated",
+                    );
                 }
             } else if menu.matches(&menu_event, &menu.open_folder) {
-                if let Err(error) = platform::open_folder(std::path::Path::new(snapshot.destination_folder())) {
+                if let Err(error) =
+                    platform::open_folder(std::path::Path::new(snapshot.destination_folder()))
+                {
                     platform::show_error("Open album folder", &error.to_string());
                 }
             } else if menu.matches(&menu_event, &menu.proxy_settings) {
@@ -294,19 +490,45 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     "Proxy settings",
                     "Edit proxyUrl in config.json, or run with --proxy URL / --clear-proxy, then restart NSO Album Sync.",
                 );
+            } else if menu.matches(&menu_event, &menu.about) {
+                platform::show_info(
+                    "About NSO Album Sync",
+                    &format!(
+                        "NSO Album Sync {}\n\nSync Nintendo Switch Online album captures to your PC and publish optional Discord Rich Presence.\n\nSafe Rust port — unsafe code is forbidden at the crate and Cargo lint levels.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                );
             } else if let Some(minutes) = menu.interval_for(&menu_event) {
                 let _ = config.update(|value| value.set_sync_interval_minutes(minutes));
-                next_auto_sync = jittered_deadline(Duration::from_secs(u64::from(minutes) * 60));
+                next_auto_sync =
+                    jittered_deadline(Duration::from_secs(u64::from(minutes) * 60));
                 menu.refresh(&config.snapshot(), platform::start_on_boot_enabled(), "Ready");
             }
         }
     });
 }
 
+struct SyncEvent {
+    result: anyhow::Result<SyncResult>,
+    background: bool,
+}
+
+struct PresenceBasicEvent {
+    session_token: String,
+    result: anyhow::Result<Box<NintendoPresence>>,
+    final_expected: bool,
+}
+
+struct PresenceFinalEvent {
+    session_token: String,
+    presence: Box<NintendoPresence>,
+}
+
 enum AppEvent {
-    Sync(anyhow::Result<SyncResult>),
+    Sync(SyncEvent),
     Auth(anyhow::Result<(String, String)>),
-    Presence(anyhow::Result<Box<NintendoPresence>>),
+    PresenceBasic(PresenceBasicEvent),
+    PresenceFinal(PresenceFinalEvent),
 }
 
 fn spawn_auth_completion(
@@ -325,10 +547,15 @@ fn spawn_auth_completion(
     });
 }
 
-fn spawn_sync(engine: Arc<SyncEngine>, stop: Arc<AtomicBool>, sender: mpsc::Sender<AppEvent>) {
+fn spawn_sync(
+    engine: Arc<SyncEngine>,
+    stop: Arc<AtomicBool>,
+    sender: mpsc::Sender<AppEvent>,
+    background: bool,
+) {
     std::thread::spawn(move || {
         let result = engine.sync(|| stop.load(Ordering::Acquire));
-        let _ = sender.send(AppEvent::Sync(result));
+        let _ = sender.send(AppEvent::Sync(SyncEvent { result, background }));
     });
 }
 
@@ -340,89 +567,239 @@ struct PresenceDependencies {
     zelda: Arc<ZeldaNotesClient>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RpcGameService {
+    None,
+    Splatoon3,
+    ZeldaNotes,
+    AnimalCrossing,
+    Splatoon2,
+}
+
+#[derive(Debug, Clone, Default)]
+struct EnrichmentFields {
+    details: String,
+    state: String,
+    image_uri: String,
+}
+
+impl EnrichmentFields {
+    fn from_presence(presence: &NintendoPresence) -> Self {
+        Self {
+            details: presence.custom_details().to_owned(),
+            state: presence.custom_state().to_owned(),
+            image_uri: presence.custom_image_uri().to_owned(),
+        }
+    }
+
+    fn apply(&self, presence: &mut NintendoPresence) {
+        presence.set_custom_details(self.details.clone());
+        presence.set_custom_state(self.state.clone());
+        presence.set_custom_image_uri(self.image_uri.clone());
+    }
+}
+
+#[derive(Debug, Default)]
+struct PresenceEnrichmentState {
+    active_game_key: String,
+    attempted: bool,
+    cached: EnrichmentFields,
+}
+
+impl PresenceEnrichmentState {
+    fn reset(&mut self) {
+        self.active_game_key.clear();
+        self.attempted = false;
+        self.cached = EnrichmentFields::default();
+    }
+
+    fn plan(&mut self, game_key: &str, service: RpcGameService) -> EnrichmentPlan {
+        if self.active_game_key != game_key {
+            self.active_game_key = game_key.to_owned();
+            self.attempted = false;
+            self.cached = EnrichmentFields::default();
+        }
+        if service == RpcGameService::None {
+            return EnrichmentPlan::Skip;
+        }
+        if self.attempted {
+            EnrichmentPlan::Reuse(self.cached.clone())
+        } else {
+            self.attempted = true;
+            EnrichmentPlan::Fetch
+        }
+    }
+
+    fn store(&mut self, game_key: &str, presence: &NintendoPresence) {
+        if self.active_game_key == game_key {
+            self.cached = EnrichmentFields::from_presence(presence);
+        }
+    }
+}
+
+enum EnrichmentPlan {
+    Skip,
+    Reuse(EnrichmentFields),
+    Fetch,
+}
+
 fn spawn_presence(
     deps: PresenceDependencies,
+    state: Arc<Mutex<PresenceEnrichmentState>>,
     sender: mpsc::Sender<AppEvent>,
     session_token: String,
 ) {
     std::thread::spawn(move || {
-        let result = fetch_enriched_presence(&deps, &session_token).map(Box::new);
-        let _ = sender.send(AppEvent::Presence(result));
+        let mut presence = match deps.coral.self_presence(&session_token) {
+            Ok(presence) => presence,
+            Err(error) => {
+                let _ = sender.send(AppEvent::PresenceBasic(PresenceBasicEvent {
+                    session_token,
+                    result: Err(error),
+                    final_expected: false,
+                }));
+                return;
+            }
+        };
+
+        if !presence.is_playing() {
+            reset_presence_state(state.as_ref());
+            deps.zelda.set_active_game(ZeldaGame::Unknown);
+            let _ = sender.send(AppEvent::PresenceBasic(PresenceBasicEvent {
+                session_token,
+                result: Ok(Box::new(presence)),
+                final_expected: false,
+            }));
+            return;
+        }
+
+        let service = rpc_game_service_for(&presence);
+        let game_key = if presence.title_id().is_empty() {
+            presence.game_name().to_owned()
+        } else {
+            presence.title_id().to_owned()
+        };
+        if service != RpcGameService::ZeldaNotes {
+            deps.zelda.set_active_game(ZeldaGame::Unknown);
+        }
+        let plan = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .plan(&game_key, service);
+        let final_expected = !matches!(plan, EnrichmentPlan::Skip);
+        if sender
+            .send(AppEvent::PresenceBasic(PresenceBasicEvent {
+                session_token: session_token.clone(),
+                result: Ok(Box::new(presence.clone())),
+                final_expected,
+            }))
+            .is_err()
+        {
+            return;
+        }
+
+        match plan {
+            EnrichmentPlan::Skip => return,
+            EnrichmentPlan::Reuse(cached) => cached.apply(&mut presence),
+            EnrichmentPlan::Fetch => {
+                enrich_presence(&deps, &session_token, service, &mut presence);
+                state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .store(&game_key, &presence);
+            }
+        }
+        let _ = sender.send(AppEvent::PresenceFinal(PresenceFinalEvent {
+            session_token,
+            presence: Box::new(presence),
+        }));
     });
 }
 
-fn fetch_enriched_presence(
+fn enrich_presence(
     deps: &PresenceDependencies,
     session_token: &str,
-) -> anyhow::Result<NintendoPresence> {
-    let mut presence = deps.coral.self_presence(session_token)?;
-    let tokens = deps.auth.exchange_session_token(session_token)?;
-    let profile = deps.auth.fetch_profile(tokens.access_token())?;
-    deps.splatnet.set_locale(profile.language(), profile.country());
-    deps.game_services.set_locale(profile.language(), profile.country());
-    deps.zelda.set_locale(profile.language(), profile.country());
-
-    if !presence.is_playing() {
-        deps.zelda.set_active_game(ZeldaGame::Unknown);
-        return Ok(presence);
-    }
-    if is_splatoon3(&presence) {
-        if let Ok(token) = service_token_with_fallback(
-            &deps.coral,
-            session_token,
-            SPLATNET3_GAME_SERVICE_ID,
-            SPLATNET3_GAME_SERVICE_ID_ALT,
-        ) && let Ok(extra) = deps.splatnet.fetch_presence(&token)
-            && extra.active()
-        {
-            presence.set_custom_details(extra.format_details());
-            presence.set_custom_state(extra.format_state());
-            if !extra.stage_image_uri().is_empty() {
-                presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
-            }
-        }
-    } else if is_animal_crossing(&presence) {
-        if let Ok(token) = deps
-            .coral
-            .get_web_service_token(session_token, ANIMAL_CROSSING_GAME_SERVICE_ID)
-            && let Ok(extra) = deps.game_services.fetch_animal_crossing_presence(&token)
-            && extra.active()
-        {
-            presence.set_custom_details(extra.format_details());
-            presence.set_custom_state(extra.format_state());
-            if !extra.image_uri().is_empty() {
-                presence.set_custom_image_uri(extra.image_uri().to_owned());
-            }
-        }
-    } else if is_splatoon2(&presence)
-        && let Ok(token) = deps
-            .coral
-            .get_web_service_token(session_token, SPLATOON2_GAME_SERVICE_ID)
-        && let Ok(extra) = deps.game_services.fetch_splatoon2_presence(&token)
-        && extra.active()
+    service: RpcGameService,
+    presence: &mut NintendoPresence,
+) {
+    if let Ok(tokens) = deps.auth.exchange_session_token(session_token)
+        && let Ok(profile) = deps.auth.fetch_profile(tokens.access_token())
     {
-        presence.set_custom_details(extra.format_details());
-        presence.set_custom_state(extra.format_state());
-        if !extra.stage_image_uri().is_empty() {
-            presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
-        }
+        deps.splatnet.set_locale(profile.language(), profile.country());
+        deps.game_services.set_locale(profile.language(), profile.country());
+        deps.zelda.set_locale(profile.language(), profile.country());
     }
 
-    let zelda_game = game_for_presence(presence.title_id(), presence.game_name());
-    if zelda_game != ZeldaGame::Unknown
-        && let Ok(token) = service_token_with_fallback(
-            &deps.coral,
-            session_token,
-            ZELDA_NOTES_GAME_SERVICE_ID,
-            ZELDA_NOTES_GAME_SERVICE_ID_ALT,
-        )
-    {
-        let _ = deps.zelda.fetch_presence(&token);
-        deps.zelda.set_active_game(zelda_game);
-    } else if zelda_game == ZeldaGame::Unknown {
-        deps.zelda.set_active_game(ZeldaGame::Unknown);
+    match service {
+        RpcGameService::Splatoon3 => {
+            if let Ok(token) = service_token_with_fallback(
+                deps.coral.as_ref(),
+                session_token,
+                SPLATNET3_GAME_SERVICE_ID,
+                SPLATNET3_GAME_SERVICE_ID_ALT,
+            ) && let Ok(extra) = deps.splatnet.fetch_presence(&token)
+                && extra.active()
+            {
+                presence.set_custom_details(extra.format_details());
+                presence.set_custom_state(extra.format_state());
+                if !extra.stage_image_uri().is_empty() {
+                    presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
+                }
+            }
+        }
+        RpcGameService::ZeldaNotes => {
+            let game = game_for_presence(presence.title_id(), presence.game_name());
+            if let Ok(token) = service_token_with_fallback(
+                deps.coral.as_ref(),
+                session_token,
+                ZELDA_NOTES_GAME_SERVICE_ID,
+                ZELDA_NOTES_GAME_SERVICE_ID_ALT,
+            ) && let Ok(extra) = deps.zelda.fetch_presence(&token)
+            {
+                deps.zelda.set_active_game(game);
+                if extra.active() {
+                    if !extra.format_details().is_empty() {
+                        presence.set_custom_details(extra.format_details().to_owned());
+                    }
+                    if !extra.format_state().is_empty() {
+                        presence.set_custom_state(extra.format_state().to_owned());
+                    }
+                    if !extra.stage_image_uri().is_empty() {
+                        presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
+                    }
+                }
+            }
+        }
+        RpcGameService::AnimalCrossing => {
+            if let Ok(token) = deps
+                .coral
+                .get_web_service_token(session_token, ANIMAL_CROSSING_GAME_SERVICE_ID)
+                && let Ok(extra) = deps.game_services.fetch_animal_crossing_presence(&token)
+                && extra.active()
+            {
+                presence.set_custom_details(extra.format_details());
+                presence.set_custom_state(extra.format_state());
+                if !extra.image_uri().is_empty() && extra.image_uri().len() <= 300 {
+                    presence.set_custom_image_uri(extra.image_uri().to_owned());
+                }
+            }
+        }
+        RpcGameService::Splatoon2 => {
+            if let Ok(token) = deps
+                .coral
+                .get_web_service_token(session_token, SPLATOON2_GAME_SERVICE_ID)
+                && let Ok(extra) = deps.game_services.fetch_splatoon2_presence(&token)
+                && extra.active()
+            {
+                presence.set_custom_details(extra.format_details());
+                presence.set_custom_state(extra.format_state());
+                if !extra.stage_image_uri().is_empty() {
+                    presence.set_custom_image_uri(extra.stage_image_uri().to_owned());
+                }
+            }
+        }
+        RpcGameService::None => {}
     }
-    Ok(presence)
 }
 
 fn service_token_with_fallback(
@@ -436,22 +813,88 @@ fn service_token_with_fallback(
         .or_else(|_| coral.get_web_service_token(session, alternate))
 }
 
-fn is_splatoon3(presence: &NintendoPresence) -> bool {
-    presence.title_id() == "0100c2500fc20000"
-        || presence.game_name().contains("Splatoon 3")
-        || presence.game_name().contains("スプラトゥーン3")
+fn rpc_game_service_for(presence: &NintendoPresence) -> RpcGameService {
+    match presence.title_id() {
+        "0100c2500fc20000" => return RpcGameService::Splatoon3,
+        "01003bc0000a0000" => return RpcGameService::Splatoon2,
+        "01006f8002326000" => return RpcGameService::AnimalCrossing,
+        "01007ef00011e000" | "0100f2c0115b6000" => return RpcGameService::ZeldaNotes,
+        _ => {}
+    }
+    let name = presence.game_name();
+    if contains_any(name, &["Splatoon 3", "スプラトゥーン3"]) {
+        RpcGameService::Splatoon3
+    } else if contains_any(
+        name,
+        &[
+            "Breath of the Wild",
+            "ブレス オブ ザ ワイルド",
+            "Tears of the Kingdom",
+            "ティアーズ オブ ザ キングダム",
+        ],
+    ) {
+        RpcGameService::ZeldaNotes
+    } else if contains_any(
+        name,
+        &["Animal Crossing", "New Horizons", "どうぶつの森", "あつ森"],
+    ) {
+        RpcGameService::AnimalCrossing
+    } else if contains_any(name, &["Splatoon 2", "スプラトゥーン2"]) {
+        RpcGameService::Splatoon2
+    } else {
+        RpcGameService::None
+    }
 }
 
-fn is_splatoon2(presence: &NintendoPresence) -> bool {
-    presence.title_id() == "01003bc0000a0000"
-        || presence.game_name().contains("Splatoon 2")
-        || presence.game_name().contains("スプラトゥーン2")
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
 }
 
-fn is_animal_crossing(presence: &NintendoPresence) -> bool {
-    presence.title_id() == "01006f8002326000"
-        || presence.game_name().contains("Animal Crossing")
-        || presence.game_name().contains("あつまれ どうぶつの森")
+fn reset_presence_state(state: &Mutex<PresenceEnrichmentState>) {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .reset();
+}
+
+fn release_initial_sync(
+    deferred: &mut bool,
+    next_auto_sync: &mut Instant,
+    config: &ConfigManager,
+) {
+    if !*deferred {
+        return;
+    }
+    *deferred = false;
+    let current = config.snapshot();
+    if current.auto_sync() && !current.session_token().is_empty() {
+        *next_auto_sync = Instant::now();
+    }
+}
+
+fn clear_account_state(
+    config: &ConfigManager,
+    auth: &NintendoAuthManager,
+    coral: &CoralClient,
+    splatnet: &SplatNetClient,
+    game_services: &GameServicesClient,
+    zelda: &ZeldaNotesClient,
+    discord: &DiscordPresence,
+    enrichment_state: &Mutex<PresenceEnrichmentState>,
+) {
+    let _ = config.clear_session();
+    auth.clear_cached_tokens();
+    coral.clear_cached_session();
+    splatnet.clear_cache();
+    game_services.clear_cache();
+    zelda.clear_cache();
+    zelda.stop_live_session();
+    discord.clear();
+    reset_presence_state(enrichment_state);
+}
+
+fn is_invalid_grant(error: &anyhow::Error) -> bool {
+    error.to_string().contains("invalid_grant")
 }
 
 fn apply_cli_settings(config: &ConfigManager, args: &[String]) -> anyhow::Result<()> {
@@ -493,6 +936,7 @@ struct TrayMenu {
     choose_folder: MenuItem,
     open_folder: MenuItem,
     proxy_settings: MenuItem,
+    about: MenuItem,
     exit: MenuItem,
 }
 
@@ -518,6 +962,7 @@ impl TrayMenu {
             choose_folder: MenuItem::with_id("choose_folder", "Choose album folder…", true, None),
             open_folder: MenuItem::with_id("open_folder", "Open album folder", true, None),
             proxy_settings: MenuItem::with_id("proxy_settings", "Proxy settings…", true, None),
+            about: MenuItem::with_id("about", "About NSO Album Sync…", true, None),
             exit: MenuItem::with_id("exit", "Exit", true, None),
         };
         for item in [
@@ -538,6 +983,7 @@ impl TrayMenu {
             &menu.choose_folder,
             &menu.open_folder,
             &menu.proxy_settings,
+            &menu.about,
             &menu.exit,
         ] {
             root.append(item)?;
@@ -547,20 +993,24 @@ impl TrayMenu {
     }
 
     fn refresh(&self, config: &AppConfig, start_on_boot: bool, status: &str) {
-        self.nickname.set_text(format!("User: {}", config.user_nickname()));
-        self.last_sync.set_text(format!("Last sync: {}", config.last_sync()));
+        self.nickname
+            .set_text(format!("User: {}", config.user_nickname()));
+        self.last_sync
+            .set_text(format!("Last sync: {}", config.last_sync()));
         self.status.set_text(format!("Status: {status}"));
         self.sign_in.set_text(if config.session_token().is_empty() {
             "Sign in to Nintendo Account…"
         } else {
             "Sign out of Nintendo Account"
         });
-        self.auto_sync.set_text(toggle_text("Auto sync", config.auto_sync()));
+        self.auto_sync
+            .set_text(toggle_text("Auto sync", config.auto_sync()));
         self.notifications
             .set_text(toggle_text("Notifications", config.notifications()));
         self.discord
             .set_text(toggle_text("Discord Rich Presence", config.discord_presence()));
-        self.start_boot.set_text(toggle_text("Start on boot", start_on_boot));
+        self.start_boot
+            .set_text(toggle_text("Start on boot", start_on_boot));
         self.sync_now.set_enabled(!config.session_token().is_empty());
     }
 
@@ -587,6 +1037,10 @@ impl TrayMenu {
 
 fn toggle_text(label: &str, enabled: bool) -> String {
     format!("{} {label}", if enabled { "✓" } else { " " })
+}
+
+fn sync_interval(config: &AppConfig) -> Duration {
+    Duration::from_secs(u64::from(config.sync_interval_minutes().max(1)) * 60)
 }
 
 fn jittered_deadline(interval: Duration) -> Instant {
