@@ -1,0 +1,82 @@
+[package]
+name = "nso-album-sync"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT"
+description = "Cross-platform Nintendo Switch Online album sync and Discord Rich Presence client"
+repository = "https://github.com/Dycool/NSO-Album-Sync"
+default-run = "nso-album-sync"
+build = false
+autobins = false
+autoexamples = false
+autobenches = false
+
+[lib]
+name = "nso_album_sync"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nso-album-sync"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = [
+    "dep:atomic-write-file",
+    "dep:auto-launcher",
+    "dep:discord-rich-presence",
+    "dep:keyring",
+    "dep:open",
+    "dep:reqwest",
+    "dep:rfd",
+    "dep:tao",
+    "dep:tray-icon",
+]
+
+[dependencies]
+anyhow = "=1.0.100"
+base64 = "=0.22.1"
+chrono = { version = "=0.4.42", features = ["clock", "serde"] }
+filetime = "=0.2.26"
+fs2 = "=0.4.3"
+percent-encoding = "=2.3.2"
+rand = "=0.9.2"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+unicode-normalization = "=0.1.24"
+url = "=2.5.7"
+walkdir = "=2.5.0"
+
+# Desktop-only integrations are optional so Miri can exercise the pure Rust core
+# without invoking OS UI, network or credential-store backends.
+atomic-write-file = { version = "=0.3.1", optional = true }
+auto-launcher = { version = "=1.1.0", optional = true }
+discord-rich-presence = { version = "=1.1.0", optional = true }
+keyring = { version = "=4.2.0", optional = true, default-features = false, features = ["v1"] }
+open = { version = "=5.4.1", optional = true }
+reqwest = { version = "=0.12.23", optional = true, default-features = false, features = ["blocking", "json", "rustls-tls", "gzip", "brotli", "socks"] }
+rfd = { version = "=0.17.2", optional = true, default-features = false, features = ["xdg-portal"] }
+tao = { version = "=0.37.0", optional = true }
+tray-icon = { version = "=0.24.2", optional = true }
+
+[dev-dependencies]
+tempfile = "=3.23.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+transmute_ptr_to_ptr = "forbid"
+undocumented_unsafe_blocks = "forbid"
+
+[package.metadata.bundle]
+name = "NSO Album Sync"
+identifier = "com.nsoalbumsync.desktop"
+icon = ["app.icns"]
+resources = []
+category = "public.app-category.utilities"
+osx_minimum_system_version = "15.0"
+osx_url_schemes = ["npf71b963c1b7b6d119"]

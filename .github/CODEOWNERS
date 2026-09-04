@@ -1,0 +1,6 @@
+# Core safety/build boundaries require owner review when GitHub branch rules enable CODEOWNERS.
+/Cargo.toml @Dycool
+/rust-toolchain.toml @Dycool
+/src/lib.rs @Dycool
+/src/main.rs @Dycool
+/scripts/check_rust_safety.py @Dycool

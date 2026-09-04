@@ -1,10 +1,10 @@
-build/
-out/
-.vs/
-.idea/
+# Generated Rust package metadata and local artifacts
+/target/
+/dist/
+*.log
 .DS_Store
-CMakeUserPresets.json
+Thumbs.db
+.idea/
+.vscode/
 
-dist/
-third_party/discord_social_sdk/
-third_party/DiscordSocialSdk-*.zip
+# Cargo.lock is intentionally committed for the desktop application.

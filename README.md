@@ -6,59 +6,63 @@
 
 **Automatically sync your Nintendo Switch Online album to your computer.**
 
-🖼️ **Automatic album sync** — Downloads new screenshots and videos in the same `Album/<Game Name>/` layout used by Nintendo Switch USB transfers.
+This branch is the native **safe Rust** implementation of NSO Album Sync. The application keeps the original album synchronization, Nintendo Account sign-in, Coral/nxapi integration, optional Discord Rich Presence, SplatNet/NookLink enrichment, Zelda Notes live location enrichment, startup integration, and desktop tray workflow without using C++ or application-owned `unsafe` Rust.
 
-🎮 **Discord Rich Presence** — Optionally shows `Playing <Game Name>` with Nintendo Switch / Nintendo Switch 2 underneath and the game's artwork.
+## Features
 
-🌍 **Localized game folders** — Reuses existing game folders across different languages instead of creating duplicates.
+- Automatic screenshot/video synchronization into Nintendo-compatible `Album/<Game Name>/` folders.
+- Existing localized/synonym game folders are reused rather than duplicated.
+- Original capture timestamps are preserved.
+- Nintendo Account OAuth uses PKCE and validates the callback state.
+- Nintendo session and Coral service credentials are stored in the operating-system credential store when available; config files never fall back to plaintext secrets.
+- Media downloads are restricted to bounded public HTTPS URLs, do not follow redirects, and are capped at 256 MiB.
+- Optional Discord Rich Presence through Discord IPC, with Splatoon 3, Splatoon 2, Animal Crossing and Zelda Notes enrichment.
+- Native Windows, macOS and Linux tray integration.
 
-🕒 **Original timestamps** — Keeps the original capture time on downloaded screenshots and videos.
+## Build
 
-🔐 **Secure sign-in** — Nintendo and Coral credentials are stored using the operating system credential store when available.
-
-🖥️ **Cross-platform** — Native tray/menu-bar app for Windows, macOS and Linux.
-
-> **Pre-compiled Binaries Available!**
-> Download NSO Album Sync for Windows, macOS and Linux from the **[Releases](https://github.com/Dycool/NSO-Album-Sync/releases)** page.
-
----
-
-## 🚀 Quick Start
-
-1. Download the build for your operating system from **Releases**.
-2. Open NSO Album Sync and sign in with your Nintendo Account.
-3. Choose your album folder if you do not want the default Pictures folder.
-4. Leave the app running in the tray/menu bar. Auto-sync runs every 60 minutes by default.
-
-Discord Rich Presence is optional and disabled by default. It requires the Discord desktop client to be running.
-
-Release builds target **Windows 10+ x64**, **macOS 15+ Apple Silicon (arm64)**, and **Linux x64 with glibc 2.35+**.
-
----
-
-## 🔨 Building
-
-Requires **CMake 3.20+** and a **C++20** compiler. Download the official standalone C++ Discord Social SDK from the Discord Developer Portal and extract it to `third_party/discord_social_sdk`, or pass its location with `-DNSO_DISCORD_SOCIAL_SDK_ROOT=<path>`.
+The repository pins Rust **1.98.1** in `rust-toolchain.toml`.
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
+cargo build --release
 ```
 
-The app uses Discord's desktop Rich Presence path with the public NSO Album Sync application ID. It does not use a Discord client secret, bot token or Discord OAuth login. Official CI obtains the SDK from a private build-dependency cache rather than committing Discord SDK files to this public repository.
+On Debian/Ubuntu, the tray backend also needs:
 
-Windows builds are unsigned. macOS builds use local/ad-hoc codesigning and do not require an Apple Developer membership. Required third-party runtime notices are included in release packages and are also available in [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
+```sh
+sudo apt install libgtk-3-dev libxdo-dev libayatana-appindicator3-dev pkg-config
+```
 
----
+Run tests and the compiler safety gate with:
 
-## 🔐 Nintendo Account & nxapi
+```sh
+python scripts/check_rust_safety.py
+cargo check --all-targets
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+```
 
-NSO Album Sync uses the third-party [`nxapi-znca-api`](https://github.com/samuelthomas2774/nxapi-znca-api) service for Nintendo Switch Online request attestation and Coral request/response encryption.
+The pure safe core is deliberately separable from desktop/network integrations and is also tested with Miri:
 
-The app shows a disclosure before sign-in because the Nintendo Account `id_token`, Nintendo Account ID, birthday, country and language required by Coral, the Coral access token, and Coral API requests/responses used by the app are processed by that service. nxapi authentication tokens are kept in memory only, while reusable Nintendo/Coral credentials are stored in the operating system credential store when available.
+```sh
+cargo +nightly miri test --lib --no-default-features
+```
 
----
+## Safe-Rust boundary
 
-## 📄 License
+The safety boundary is enforced by the repository rather than depending on coding instructions:
 
-Licensed under the [MIT License](LICENSE). Third-party runtime notices are listed in [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
+- `src/lib.rs` and `src/main.rs` contain `#![forbid(unsafe_code)]`.
+- `Cargo.toml` also sets `unsafe_code = "forbid"` and forbids the requested Clippy unsafe/transmute lints.
+- `package.build = false` disables Cargo build-script auto-discovery, and `build.rs` is rejected by the safety gate.
+- The safety gate rejects crate-level `#![allow(...)]` / `#![warn(...)]` overrides, application FFI, raw pointer types and explicit unsafe constructs.
+- Application model/config fields are private and are changed through invariant-preserving methods.
+- CI runs `cargo clippy --all-targets -- -D warnings` and Miri.
+
+## Nintendo Account & nxapi
+
+NSO Album Sync uses the third-party [`nxapi-znca-api`](https://github.com/samuelthomas2774/nxapi-znca-api) service for Nintendo Switch Online request attestation and Coral request/response encryption. Nintendo and nxapi short-lived authentication material is kept in memory; reusable credentials are persisted only through the OS credential store.
+
+## License
+
+Licensed under the [MIT License](LICENSE). Third-party notices are available in [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
