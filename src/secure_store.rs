@@ -2,12 +2,17 @@
 
 use keyring::v1::Entry as V1Entry;
 use keyring_core::{Entry, Error};
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::collections::HashMap;
 
 const LEGACY_RUST_SERVICE: &str = "NSO Album Sync";
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const APPLE_SERVICE: &str = "org.nsoalbumsync.session-token";
+#[cfg(target_os = "linux")]
 const LINUX_APPLICATION: &str = "NsoAlbumSync";
+#[cfg(target_os = "linux")]
 const LINUX_LEGACY_SESSION_KEY: &str = "session_token";
+#[cfg(target_os = "linux")]
 const NINTENDO_ACCOUNT: &str = "NintendoAccount";
 
 pub struct SecureStore;
