@@ -25,12 +25,80 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          # C++ embedded its icon, manifest, version information and third-party
+          # notices in the executable. Recreate those PE resources at packaging
+          # time so the crate remains build.rs-free and the repository safety
+          # boundary stays deterministic.
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object { $_.name -eq "nso-album-sync" }).version
+          $parts = $version.Split('.')
+          if ($parts.Length -lt 3) { throw "Cargo package version is not semver" }
+
+          $iconPath = (Resolve-Path "app.ico").Path.Replace('\', '/')
+          $manifestPath = (Resolve-Path "resources/windows/app.manifest").Path.Replace('\', '/')
+          $noticesPath = (Resolve-Path "THIRD-PARTY-NOTICES.txt").Path.Replace('\', '/')
+          New-Item -ItemType Directory -Force target | Out-Null
+          $rcPath = (Join-Path $PWD "target/nso-album-sync.rc")
+          $resPath = (Join-Path $PWD "target/nso-album-sync.res")
+          $rcSource = @"
+          #include <windows.h>
+          #define NSO_APP_ICON_RESOURCE_ID 101
+          NSO_APP_ICON_RESOURCE_ID ICON "$iconPath"
+          1 24 "$manifestPath"
+          202 RCDATA "$noticesPath"
+
+          1 VERSIONINFO
+           FILEVERSION $($parts[0]),$($parts[1]),$($parts[2]),0
+           PRODUCTVERSION $($parts[0]),$($parts[1]),$($parts[2]),0
+           FILEFLAGSMASK 0x3fL
+           FILEFLAGS 0x0L
+           FILEOS VOS_NT_WINDOWS32
+           FILETYPE VFT_APP
+           FILESUBTYPE 0x0L
+          BEGIN
+              BLOCK "StringFileInfo"
+              BEGIN
+                  BLOCK "040904b0"
+                  BEGIN
+                      VALUE "CompanyName", "Dycool\0"
+                      VALUE "FileDescription", "NSO Album Sync\0"
+                      VALUE "FileVersion", "$version\0"
+                      VALUE "InternalName", "nso-album-sync\0"
+                      VALUE "LegalCopyright", "Copyright (c) Dycool contributors\0"
+                      VALUE "OriginalFilename", "nso-album-sync.exe\0"
+                      VALUE "ProductName", "NSO Album Sync\0"
+                      VALUE "ProductVersion", "$version\0"
+                  END
+              END
+              BLOCK "VarFileInfo"
+              BEGIN
+                  VALUE "Translation", 0x0409, 1200
+              END
+          END
+          "@
+          Set-Content -LiteralPath $rcPath -Value $rcSource -Encoding ascii
+
+          $rcExe = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe" |
+            Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+          if (-not $rcExe) { throw "Windows resource compiler was not found" }
+          & $rcExe /nologo /fo $resPath $rcPath
+          if ($LASTEXITCODE -ne 0) { throw "Windows resource compilation failed" }
+
+          $env:RUSTFLAGS = "-C link-arg=$resPath"
           cargo build --release --bin nso-album-sync
           target/release/nso-album-sync.exe --self-test
+
+          $versionInfo = (Get-Item target/release/nso-album-sync.exe).VersionInfo
+          if ($versionInfo.ProductName -ne "NSO Album Sync") {
+            throw "Windows ProductName resource was not linked"
+          }
+          if ($versionInfo.FileDescription -ne "NSO Album Sync") {
+            throw "Windows FileDescription resource was not linked"
+          }
+
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/nso-album-sync.exe dist/nso-album-sync.exe
-          Copy-Item app.ico dist/app.ico
-          Copy-Item resources/windows/app.manifest dist/nso-album-sync.exe.manifest
           Copy-Item THIRD-PARTY-NOTICES.txt dist/THIRD-PARTY-NOTICES.txt
           Compress-Archive -Path dist/* -DestinationPath nso-album-sync-windows.zip -Force
 
