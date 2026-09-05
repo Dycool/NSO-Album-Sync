@@ -25,7 +25,7 @@ required-features = ["desktop"]
 default = ["desktop"]
 desktop = [
     "dep:atomic-write-file",
-    "dep:discord-rich-presence",
+    "dep:nso-discord-social-sdk",
     "dep:ico",
     "dep:keyring",
     "dep:keyring-core",
@@ -53,9 +53,9 @@ url = "=2.5.7"
 walkdir = "=2.5.0"
 
 # Desktop-only integrations are optional so Miri can exercise the pure Rust core
-# without invoking OS UI, credential-store, IPC, or networking backends.
+# without invoking OS UI, credential-store, Social SDK, or networking backends.
 atomic-write-file = { version = "=0.3.1", optional = true }
-discord-rich-presence = { version = "=1.1.0", optional = true }
+nso-discord-social-sdk = { path = "discord-social-sdk", optional = true }
 ico = { version = "=0.5.0", optional = true }
 keyring = { version = "=4.2.0", optional = true, default-features = false, features = ["v1"] }
 keyring-core = { version = "=1.0.0", optional = true }
