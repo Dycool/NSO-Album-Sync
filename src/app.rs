@@ -605,18 +605,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                 );
             } else if menu.matches_check(&menu_event, &menu.start_boot) {
                 let enabled = !platform::start_on_boot_enabled();
-                match platform::set_start_on_boot(enabled) {
-                    Ok(()) => {
-                        let _ = config.update(|value| value.set_start_on_boot(enabled));
-                    }
-                    Err(error) => platform::show_error("Start on boot", &error.to_string()),
-                }
+                let _ = platform::set_start_on_boot(enabled);
+                let actual = platform::start_on_boot_enabled();
+                let _ = config.update(|value| value.set_start_on_boot(actual));
                 let status = current_status_for_refresh(&menu);
-                menu.refresh(
-                    &config.snapshot(),
-                    platform::start_on_boot_enabled(),
-                    &status,
-                );
+                menu.refresh(&config.snapshot(), actual, &status);
             } else if menu.matches_item(&menu_event, &menu.choose_folder) {
                 let current = std::path::PathBuf::from(snapshot.destination_folder());
                 if let Some(folder) = platform::choose_folder(&current) {
