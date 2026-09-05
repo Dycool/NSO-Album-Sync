@@ -49,12 +49,27 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let callback = callback_from_args(&args);
     let instance = SingleInstance::acquire()?;
     if instance.is_none() {
-        if let Some(callback) = callback {
-            publish_callback(&callback)?;
+        if let Some(callback) = callback.as_deref() {
+            for _ in 0..5 {
+                if publish_callback(callback).is_ok() {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
+        #[cfg(target_os = "windows")]
+        platform::show_info(
+            "NSO Album Sync",
+            "NSO Album Sync is already running in the notification area.",
+        );
+        #[cfg(not(target_os = "windows"))]
+        eprintln!("NSO Album Sync is already running.");
         return Ok(());
     }
     let _instance = instance.expect("single-instance guard was just checked");
+    if let Some(callback) = callback.as_deref() {
+        let _ = publish_callback(callback);
+    }
 
     let config = ConfigManager::load()?;
     apply_cli_settings(&config, &args)?;
