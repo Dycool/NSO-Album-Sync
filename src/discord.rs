@@ -108,7 +108,7 @@ impl DiscordPresence {
 
         let has_large = is_valid_image_url(&large);
         let has_small = is_valid_image_url(&small);
-        let large_image = has_large.then_some(large.as_str()).unwrap_or("");
+        let large_image = if has_large { large.as_str() } else { "" };
         let large_text = if has_large {
             if presence.custom_large_text().is_empty() {
                 presence.game_name()
@@ -123,7 +123,7 @@ impl DiscordPresence {
         } else {
             ""
         };
-        let small_image = has_small.then_some(small.as_str()).unwrap_or("");
+        let small_image = if has_small { small.as_str() } else { "" };
         let small_text = if has_small {
             if !presence.user_name().is_empty() {
                 presence.user_name()
