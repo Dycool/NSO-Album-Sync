@@ -1,0 +1,21 @@
+[package]
+name = "nso-discord-social-sdk"
+version = "1.1.1"
+edition = "2024"
+rust-version = "1.98.1"
+publish = false
+
+[lib]
+name = "nso_discord_social_sdk"
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "=1.4.5"
+
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+transmute_ptr_to_ptr = "forbid"
+undocumented_unsafe_blocks = "deny"
