@@ -182,12 +182,14 @@ impl NintendoPresence {
             output.title_id = string_at(game, "titleId").or_else(|| string_at(game, "applicationId")).unwrap_or_default();
             if output.title_id.is_empty()
                 && let Some(id) = game.get("id")
-                && let Some(text) = value_as_string(id)
             {
-                if let Ok(number) = text.parse::<u64>() {
-                    if number > 0 { output.title_id = format!("{number:016x}"); }
-                } else {
-                    output.title_id = text;
+                if let Some(text) = id.as_str() {
+                    output.title_id = text.to_owned();
+                } else if let Some(number) = id.as_i64() {
+                    let numeric_id = number as u64;
+                    if numeric_id > 0 {
+                        output.title_id = format!("{numeric_id:016x}");
+                    }
                 }
             }
             if output.title_id.is_empty()
@@ -225,7 +227,7 @@ impl NintendoPresence {
     pub fn set_custom_large_image(&mut self, uri: String, text: String) { self.custom_large_image_uri = uri; self.custom_large_text = text; }
 
     pub fn is_playing(&self) -> bool {
-        self.state.eq_ignore_ascii_case("ONLINE") || self.state.eq_ignore_ascii_case("PLAYING")
+        self.state == "ONLINE" || self.state == "PLAYING"
     }
 
     pub fn console_name(&self) -> &'static str {
@@ -321,6 +323,25 @@ mod tests {
         assert!(presence.is_playing());
         assert_eq!(presence.console_name(), "Nintendo Switch 2");
         assert_eq!(presence.discord_state(), "Played for 10 hours or more");
+    }
+
+    #[test]
+    fn playing_state_matches_reference_case_sensitivity() {
+        let lower = NintendoPresence::from_coral_result(&json!({"presence": {"state": "online"}}));
+        assert!(!lower.is_playing());
+    }
+
+    #[test]
+    fn string_game_id_is_preserved_but_numeric_id_is_hex_encoded() {
+        let string_id = NintendoPresence::from_coral_result(&json!({
+            "presence": {"game": {"id": "123456789"}}
+        }));
+        assert_eq!(string_id.title_id(), "123456789");
+
+        let numeric_id = NintendoPresence::from_coral_result(&json!({
+            "presence": {"game": {"id": 4660}}
+        }));
+        assert_eq!(numeric_id.title_id(), "0000000000001234");
     }
 
     #[test]
