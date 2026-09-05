@@ -109,10 +109,7 @@ impl ConfigManager {
 
     pub fn clear_session(&self) -> anyhow::Result<()> {
         erase_session_credentials();
-        self.update(|config| {
-            config.clear_session();
-            config.clear_user_nickname();
-        })?;
+        self.update(AppConfig::clear_session)?;
         Ok(())
     }
 
