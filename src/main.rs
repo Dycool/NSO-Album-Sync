@@ -20,7 +20,22 @@ fn main() {
         }
     }
 
-    if let Err(error) = nso_album_sync::app::run(args) {
+    // The C++ executable only consumes --self-test and Nintendo protocol
+    // callbacks. Every other command-line argument is ignored. Preserve that
+    // surface exactly instead of exposing Rust-only configuration switches.
+    let mut app_args = Vec::with_capacity(2);
+    if let Some(executable) = args.first() {
+        app_args.push(executable.clone());
+    }
+    if let Some(callback) = args
+        .iter()
+        .skip(1)
+        .find(|argument| nso_album_sync::auth_callback::is_nintendo_auth_callback(argument))
+    {
+        app_args.push(callback.clone());
+    }
+
+    if let Err(error) = nso_album_sync::app::run(app_args) {
         eprintln!("NSO Album Sync: {error:#}");
         nso_album_sync::platform::show_error("NSO Album Sync", &error.to_string());
         std::process::exit(1);
