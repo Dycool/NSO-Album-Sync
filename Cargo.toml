@@ -78,7 +78,7 @@ undocumented_unsafe_blocks = "forbid"
 
 [package.metadata.bundle]
 name = "NSO Album Sync"
-identifier = "com.nsoalbumsync.desktop"
+identifier = "org.dycool.nso-album-sync"
 icon = ["app.icns"]
 resources = []
 category = "public.app-category.utilities"
