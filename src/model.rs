@@ -25,8 +25,11 @@ pub struct AppConfig {
     last_sync: String,
     proxy_url: String,
     nxapi_auth_client_id: String,
+    #[serde(skip, default = "default_discord_application_id")]
     discord_application_id: u64,
 }
+
+fn default_discord_application_id() -> u64 { DISCORD_APPLICATION_ID }
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -72,10 +75,9 @@ impl AppConfig {
         };
     }
 
-    pub fn clear_session(&mut self) {
-        self.session_token.clear();
-        self.user_nickname = "Nintendo Switch Player".to_owned();
-    }
+    pub fn set_session_token(&mut self, token: String) { self.session_token = token; }
+    pub fn clear_session(&mut self) { self.session_token.clear(); }
+    pub fn clear_user_nickname(&mut self) { self.user_nickname.clear(); }
 
     pub fn set_destination_folder(&mut self, path: String) { self.destination_folder = path; }
     pub fn toggle_auto_sync(&mut self) { self.auto_sync = !self.auto_sync; self.auto_sync_setting_version = 1; }
