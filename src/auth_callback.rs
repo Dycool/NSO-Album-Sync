@@ -25,14 +25,13 @@ const LINUX_DESKTOP_ID: &str = "nso-album-sync-auth.desktop";
 const LINUX_MIME_TYPE: &str = "x-scheme-handler/npf71b963c1b7b6d119";
 
 pub fn is_nintendo_auth_callback(input: &str) -> bool {
-    let value = input.trim();
-    if value.len() < NINTENDO_REDIRECT_URI.len()
-        || !value[..NINTENDO_REDIRECT_URI.len()].eq_ignore_ascii_case(NINTENDO_REDIRECT_URI)
+    if input.len() < NINTENDO_REDIRECT_URI.len()
+        || !input[..NINTENDO_REDIRECT_URI.len()].eq_ignore_ascii_case(NINTENDO_REDIRECT_URI)
     {
         return false;
     }
 
-    let mut suffix = &value[NINTENDO_REDIRECT_URI.len()..];
+    let mut suffix = &input[NINTENDO_REDIRECT_URI.len()..];
     if suffix.is_empty() {
         return true;
     }
@@ -193,7 +192,7 @@ fn register_protocol_linux() -> anyhow::Result<()> {
         .args(["query", "default", LINUX_MIME_TYPE])
         .output()?;
     anyhow::ensure!(current.status.success(), "could not query Nintendo callback protocol");
-    let current = String::from_utf8_lossy(&current.stdout).trim().to_owned();
+    let current = trim_ascii_space_tab_crlf(String::from_utf8_lossy(&current.stdout).into_owned());
     anyhow::ensure!(
         current.is_empty() || current == LINUX_DESKTOP_ID,
         "Nintendo callback protocol is already owned by another application"
@@ -248,8 +247,9 @@ fn desktop_quote(value: &str) -> String {
 #[cfg(target_os = "macos")]
 fn register_protocol_macos() {
     // Info.plist declares the scheme. Force-register the containing app bundle
-    // with Launch Services so moved/ad-hoc builds are rediscovered, mirroring
-    // the C++ LSRegisterURL call without FFI in this crate.
+    // with Launch Services so moved/ad-hoc builds are rediscovered. The C++
+    // build additionally calls LSSetDefaultHandlerForURLScheme; macOS exposes
+    // no equivalent safe command-line API for that call.
     let Ok(executable) = std::env::current_exe() else {
         return;
     };
@@ -264,7 +264,6 @@ fn register_protocol_macos() {
 }
 
 pub fn publish_callback(callback: &str) -> anyhow::Result<()> {
-    let callback = callback.trim();
     anyhow::ensure!(
         is_nintendo_auth_callback(callback),
         "refusing invalid callback URL"
@@ -293,7 +292,7 @@ pub fn take_callback() -> anyhow::Result<Option<String>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
-        if metadata.uid() != unsafe_free_current_uid()
+        if metadata.uid() != current_uid()
             || metadata.mode() & 0o077 != 0
         {
             let _ = fs::remove_file(&path);
@@ -303,7 +302,7 @@ pub fn take_callback() -> anyhow::Result<Option<String>> {
 
     let value = fs::read_to_string(&path)?;
     let _ = fs::remove_file(&path);
-    let value = value.trim().to_owned();
+    let value = trim_ascii_space_tab_crlf(value);
     if is_nintendo_auth_callback(&value) {
         Ok(Some(value))
     } else {
@@ -311,22 +310,8 @@ pub fn take_callback() -> anyhow::Result<Option<String>> {
     }
 }
 
-#[cfg(unix)]
-fn unsafe_free_current_uid() -> u32 {
-    // `id -u` preserves the ownership check from the C++ implementation while
-    // keeping this crate free of libc FFI and unsafe code.
-    Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .unwrap_or(u32::MAX)
-}
-
 pub fn clear_callback() -> anyhow::Result<()> {
-    let directory = runtime_directory()?;
+    let directory = private_runtime_directory()?;
     let path = directory.join("auth-callback.txt");
     match fs::remove_file(&path) {
         Ok(()) => {}
@@ -346,7 +331,46 @@ pub fn clear_callback() -> anyhow::Result<()> {
 }
 
 fn callback_path() -> anyhow::Result<PathBuf> {
-    Ok(runtime_directory()?.join("auth-callback.txt"))
+    Ok(private_runtime_directory()?.join("auth-callback.txt"))
+}
+
+fn private_runtime_directory() -> anyhow::Result<PathBuf> {
+    let directory = runtime_directory()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let metadata = fs::symlink_metadata(&directory)?;
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink() && metadata.is_dir(),
+            "application runtime directory is not a real directory"
+        );
+        anyhow::ensure!(
+            metadata.uid() == current_uid(),
+            "application runtime directory is not owned by the current user"
+        );
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(directory)
+}
+
+fn trim_ascii_space_tab_crlf(value: String) -> String {
+    value
+        .trim_matches(|character| matches!(character, ' ' | '\t' | '\r' | '\n'))
+        .to_owned()
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // `id -u` preserves the ownership check from the C++ implementation while
+    // keeping this crate free of libc FFI and unsafe code.
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(u32::MAX)
 }
 
 fn make_private(path: &Path) -> anyhow::Result<()> {
@@ -364,14 +388,25 @@ fn make_private(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_nintendo_auth_callback;
+    use super::{is_nintendo_auth_callback, trim_ascii_space_tab_crlf};
 
     #[test]
     fn accepts_only_reference_callback_shapes() {
         assert!(is_nintendo_auth_callback("npf71b963c1b7b6d119://auth"));
         assert!(is_nintendo_auth_callback("npf71b963c1b7b6d119://auth/#state=x"));
         assert!(is_nintendo_auth_callback("NPF71B963C1B7B6D119://AUTH?state=x"));
+        assert!(!is_nintendo_auth_callback(" npf71b963c1b7b6d119://auth"));
+        assert!(!is_nintendo_auth_callback("npf71b963c1b7b6d119://auth "));
         assert!(!is_nintendo_auth_callback("npf71b963c1b7b6d119://auth/evil"));
         assert!(!is_nintendo_auth_callback("https://example.com/"));
+    }
+
+    #[test]
+    fn handoff_trim_matches_cpp_ascii_whitespace_only() {
+        assert_eq!(
+            trim_ascii_space_tab_crlf(" \tvalue\r\n".to_owned()),
+            "value"
+        );
+        assert_eq!(trim_ascii_space_tab_crlf("\u{00a0}value\u{00a0}".to_owned()), "\u{00a0}value\u{00a0}");
     }
 }
