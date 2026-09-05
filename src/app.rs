@@ -99,6 +99,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let (sender, receiver) = mpsc::channel::<AppEvent>();
     let stop = Arc::new(AtomicBool::new(false));
     let mut sync_running = false;
+    let mut pending_sync: Option<bool> = None;
     let mut auth_running = false;
     let mut auth_pending = false;
     let mut presence_running = false;
@@ -172,6 +173,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         continue;
                     }
                     sync_running = false;
+                    let mut allow_pending_sync = true;
                     match event.result {
                         Ok(result) => {
                             let now = chrono::Local::now().format("%H:%M (%Y-%m-%d)").to_string();
@@ -202,6 +204,8 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         }
                         Err(error) => {
                             if is_invalid_grant(&error) {
+                                pending_sync = None;
+                                allow_pending_sync = false;
                                 presence_running = false;
                                 presence_refresh_requested = false;
                                 clear_account_state(AccountStateRefs {
@@ -230,6 +234,22 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                             }
                         }
                     }
+                    if allow_pending_sync
+                        && let Some(background) = pending_sync.take()
+                        && !config.snapshot().session_token().is_empty()
+                    {
+                        sync_running = true;
+                        menu.set_status("Syncing album…");
+                        let generation = account_generation.load(Ordering::Acquire);
+                        spawn_sync(
+                            Arc::clone(&sync_engine),
+                            Arc::clone(&stop),
+                            Arc::clone(&account_generation),
+                            sender.clone(),
+                            background,
+                            generation,
+                        );
+                    }
                 }
                 AppEvent::Auth(result) => {
                     auth_running = false;
@@ -239,6 +259,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                             unregister_protocol();
                             let _ = clear_callback();
                             sync_running = false;
+                            pending_sync = None;
                             presence_running = false;
                             presence_refresh_requested = false;
                             let _ = account_generation.fetch_add(1, Ordering::AcqRel);
@@ -299,6 +320,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         Err(error) => {
                             if is_invalid_grant(&error) {
                                 sync_running = false;
+                                pending_sync = None;
                                 presence_running = false;
                                 presence_refresh_requested = false;
                                 clear_account_state(AccountStateRefs {
@@ -365,21 +387,26 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
         let snapshot = config.snapshot();
         if snapshot.auto_sync()
             && !snapshot.session_token().is_empty()
-            && !sync_running
             && Instant::now() >= next_auto_sync
             && !initial_sync_deferred
         {
-            sync_running = true;
-            menu.set_status("Syncing album…");
-            let generation = account_generation.load(Ordering::Acquire);
-            spawn_sync(
-                Arc::clone(&sync_engine),
-                Arc::clone(&stop),
-                Arc::clone(&account_generation),
-                sender.clone(),
-                true,
-                generation,
-            );
+            if sync_running {
+                if pending_sync.is_none() {
+                    pending_sync = Some(true);
+                }
+            } else {
+                sync_running = true;
+                menu.set_status("Syncing album…");
+                let generation = account_generation.load(Ordering::Acquire);
+                spawn_sync(
+                    Arc::clone(&sync_engine),
+                    Arc::clone(&stop),
+                    Arc::clone(&account_generation),
+                    sender.clone(),
+                    true,
+                    generation,
+                );
+            }
             next_auto_sync = jittered_deadline(sync_interval(&snapshot));
         }
         if snapshot.discord_presence()
@@ -437,6 +464,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     let _ = clear_callback();
                     initial_sync_deferred = false;
                     sync_running = false;
+                    pending_sync = None;
                     presence_running = false;
                     presence_refresh_requested = false;
                     clear_account_state(AccountStateRefs {
@@ -463,20 +491,24 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                         );
                     }
                 }
-            } else if menu.matches_item(&menu_event, &menu.sync_now) && !sync_running {
+            } else if menu.matches_item(&menu_event, &menu.sync_now) {
                 if !snapshot.session_token().is_empty() {
                     initial_sync_deferred = false;
-                    sync_running = true;
                     menu.set_status("Syncing album…");
-                    let generation = account_generation.load(Ordering::Acquire);
-                    spawn_sync(
-                        Arc::clone(&sync_engine),
-                        Arc::clone(&stop),
-                        Arc::clone(&account_generation),
-                        sender.clone(),
-                        false,
-                        generation,
-                    );
+                    if sync_running {
+                        pending_sync = Some(false);
+                    } else {
+                        sync_running = true;
+                        let generation = account_generation.load(Ordering::Acquire);
+                        spawn_sync(
+                            Arc::clone(&sync_engine),
+                            Arc::clone(&stop),
+                            Arc::clone(&account_generation),
+                            sender.clone(),
+                            false,
+                            generation,
+                        );
+                    }
                     if snapshot.discord_presence() {
                         if presence_running {
                             presence_refresh_requested = true;
@@ -494,20 +526,21 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
                     } else {
                         "Auto-sync disabled"
                     });
-                    if updated.auto_sync()
-                        && !updated.session_token().is_empty()
-                        && !sync_running
-                    {
-                        sync_running = true;
-                        let generation = account_generation.load(Ordering::Acquire);
-                        spawn_sync(
-                            Arc::clone(&sync_engine),
-                            Arc::clone(&stop),
-                            Arc::clone(&account_generation),
-                            sender.clone(),
-                            false,
-                            generation,
-                        );
+                    if updated.auto_sync() && !updated.session_token().is_empty() {
+                        if sync_running {
+                            pending_sync = Some(false);
+                        } else {
+                            sync_running = true;
+                            let generation = account_generation.load(Ordering::Acquire);
+                            spawn_sync(
+                                Arc::clone(&sync_engine),
+                                Arc::clone(&stop),
+                                Arc::clone(&account_generation),
+                                sender.clone(),
+                                false,
+                                generation,
+                            );
+                        }
                         next_auto_sync = jittered_deadline(sync_interval(&updated));
                     }
                     if updated.notifications() {
@@ -1083,6 +1116,7 @@ struct AccountStateRefs<'a> {
 fn clear_account_state(deps: AccountStateRefs<'_>) {
     let _ = deps.generation.fetch_add(1, Ordering::AcqRel);
     let _ = deps.config.clear_session();
+    let _ = deps.config.update(AppConfig::clear_user_nickname);
     deps.auth.clear_cached_tokens();
     deps.nxapi.clear_user_auth();
     deps.coral.clear_cached_session();
