@@ -5,6 +5,7 @@ use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT_ENCODING, CONNECTION, HeaderMap, HeaderName, HeaderValue, SET_COOKIE};
 use reqwest::{Method, Proxy, redirect::Policy};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io::Read as _;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -75,9 +76,11 @@ impl HttpClient {
     }
 
     pub fn post_form(&self, url: &str, fields: &[(&str, &str)], headers: &[String], timeout_seconds: u64) -> anyhow::Result<HttpResponse> {
-        let body = fields.iter().map(|(key, value)| {
-            format!("{}={}", percent_encoding::utf8_percent_encode(key, percent_encoding::NON_ALPHANUMERIC), percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC))
-        }).collect::<Vec<_>>().join("&");
+        let body = fields
+            .iter()
+            .map(|(key, value)| format!("{}={}", form_component_encode(key), form_component_encode(value)))
+            .collect::<Vec<_>>()
+            .join("&");
         let mut all = headers.to_vec();
         all.push("Content-Type: application/x-www-form-urlencoded".to_owned());
         self.request(Method::POST, url, &all, Some(body.into_bytes()), RequestOptions::bounded(timeout_seconds, DEFAULT_GET_RESPONSE_LIMIT))
@@ -124,6 +127,18 @@ impl HttpClient {
         }
         Ok(builder.build()?)
     }
+}
+
+fn form_component_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 fn redirect_policy(follow_redirects: bool) -> Policy {
@@ -194,4 +209,16 @@ fn collect_response(mut response: Response, max_bytes: usize) -> anyhow::Result<
         body.extend_from_slice(&chunk[..read]);
     }
     Ok(HttpResponse { status, body, headers })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::form_component_encode;
+
+    #[test]
+    fn form_encoding_matches_reference_unreserved_set() {
+        assert_eq!(form_component_encode("A-z_~.123"), "A-z_~.123");
+        assert_eq!(form_component_encode("npf://auth?x=a+b"), "npf%3A%2F%2Fauth%3Fx%3Da%2Bb");
+        assert_eq!(form_component_encode("é"), "%C3%A9");
+    }
 }
