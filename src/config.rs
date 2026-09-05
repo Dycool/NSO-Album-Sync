@@ -336,7 +336,34 @@ pub fn config_directory() -> anyhow::Result<PathBuf> {
 }
 
 pub fn runtime_directory() -> anyhow::Result<PathBuf> {
-    let path = config_directory()?.join("runtime");
+    #[cfg(target_os = "windows")]
+    let path = if let Some(base) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        PathBuf::from(base).join("NSOAlbumSync/Runtime")
+    } else {
+        std::env::temp_dir().join("NSOAlbumSync/Runtime")
+    };
+
+    #[cfg(target_os = "macos")]
+    let path = {
+        let home = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("HOME is unavailable"))?;
+        PathBuf::from(home).join("Library/Caches/NSOAlbumSync/Runtime")
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let path = if let Some(base) = std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty()) {
+        PathBuf::from(base).join("NSOAlbumSync")
+    } else {
+        let home = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("HOME is unavailable"))?;
+        PathBuf::from(home).join(".cache/NSOAlbumSync/runtime")
+    };
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    let path = PathBuf::from("NSOAlbumSync/runtime");
+
     make_private_directory(&path)?;
     Ok(path)
 }
