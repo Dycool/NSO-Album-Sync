@@ -913,7 +913,7 @@ mod tests {
     #[test]
     fn decodes_totk_player_state() {
         let message = decode_live_message(
-            r#"{\"messageType\":\"map_sync_player_info\",\"playerPos\":[1,2,3],\"playerFront\":[0,0,1],\"playerLayer\":\"Ground\"}"#,
+            r#"{"messageType":"map_sync_player_info","playerPos":[1,2,3],"playerFront":[0,0,1],"playerLayer":"Ground"}"#,
             ZeldaGame::TearsOfTheKingdom,
             Instant::now(),
         );
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn malformed_player_update_still_invalidates_live_state() {
         let message = decode_live_message(
-            r#"{\"messageType\":\"map_sync_player_info\",\"playerPos\":[1,2,3],\"playerLayer\":\"Ground\"}"#,
+            r#"{"messageType":"map_sync_player_info","playerPos":[1,2,3],"playerLayer":"Ground"}"#,
             ZeldaGame::TearsOfTheKingdom,
             Instant::now(),
         );
