@@ -107,6 +107,15 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(150));
+
+        if auth_pending
+            && let Event::Opened { urls } = &event
+        {
+            for url in urls {
+                let _ = publish_callback(url.as_str());
+            }
+        }
+
         let Event::NewEvents(cause) = event else {
             return;
         };
