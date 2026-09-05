@@ -369,7 +369,7 @@ pub fn default_album_folder() -> PathBuf {
             return pictures.join("Nintendo Switch");
         }
         let profile = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        return profile.join("Pictures/Nintendo Switch");
+        profile.join("Pictures/Nintendo Switch")
     }
 
     #[cfg(target_os = "macos")]
@@ -385,7 +385,7 @@ pub fn default_album_folder() -> PathBuf {
             base.join("Pictures/Nintendo Switch 2"),
             base.join("Pictures/Nintendo Switch"),
         ];
-        return candidates.into_iter().find(|path| path.exists()).unwrap_or_else(|| base.join("Pictures/Nintendo Switch"));
+        candidates.into_iter().find(|path| path.exists()).unwrap_or_else(|| base.join("Pictures/Nintendo Switch"))
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -401,7 +401,7 @@ pub fn default_album_folder() -> PathBuf {
             base.join("Pictures/Nintendo Switch 2"),
             base.join("Pictures/Nintendo Switch"),
         ];
-        return candidates.into_iter().find(|path| path.exists()).unwrap_or_else(|| base.join("Pictures/Nintendo Switch"));
+        candidates.into_iter().find(|path| path.exists()).unwrap_or_else(|| base.join("Pictures/Nintendo Switch"))
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
