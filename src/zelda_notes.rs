@@ -127,7 +127,6 @@ impl ServerActionContext<'_> {
 
 #[derive(Debug, Clone, Default)]
 struct ResolvedLocation {
-    layer: ZeldaLayer,
     region: String,
     poi: String,
     stage_image_uri: String,
@@ -646,7 +645,7 @@ fn router_state_tree(game: ZeldaGame) -> String {
 }
 
 fn resolve_location(metadata: &WebMetadata, state: &LiveState, previous: &ResolvedLocation) -> ResolvedLocation {
-    let mut result = ResolvedLocation { layer: state.layer, region: resolve_region(metadata, state.game, state.position), ..ResolvedLocation::default() };
+    let mut result = ResolvedLocation { region: resolve_region(metadata, state.game, state.position), ..ResolvedLocation::default() };
     let exact: LocationResult = match state.game { ZeldaGame::TearsOfTheKingdom => resolve_totk_location_3d(state.position, state.layer), ZeldaGame::BreathOfTheWild => resolve_botw_location_3d(state.position), ZeldaGame::Unknown => LocationResult::default() };
     if exact.matched() {
         result.poi = exact.name().to_owned(); result.stage_image_uri = exact.image_url().to_owned(); result.at_poi = true; result.valid = true; return result;
@@ -914,7 +913,7 @@ mod tests {
     #[test]
     fn decodes_totk_player_state() {
         let message = decode_live_message(
-            r#"{"messageType":"map_sync_player_info","playerPos":[1,2,3],"playerFront":[0,0,1],"playerLayer":"Ground"}"#,
+            r#"{\"messageType\":\"map_sync_player_info\",\"playerPos\":[1,2,3],\"playerFront\":[0,0,1],\"playerLayer\":\"Ground\"}"#,
             ZeldaGame::TearsOfTheKingdom,
             Instant::now(),
         );
@@ -927,7 +926,7 @@ mod tests {
     #[test]
     fn malformed_player_update_still_invalidates_live_state() {
         let message = decode_live_message(
-            r#"{"messageType":"map_sync_player_info","playerPos":[1,2,3],"playerLayer":"Ground"}"#,
+            r#"{\"messageType\":\"map_sync_player_info\",\"playerPos\":[1,2,3],\"playerLayer\":\"Ground\"}"#,
             ZeldaGame::TearsOfTheKingdom,
             Instant::now(),
         );
