@@ -10,8 +10,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::process::Command;
 use std::sync::Arc;
-use unicode_normalization::{UnicodeNormalization as _, char::is_combining_mark};
 use walkdir::WalkDir;
 
 const MAX_MEDIA_DOWNLOAD_BYTES: usize = 256 * 1024 * 1024;
@@ -367,14 +368,34 @@ fn is_unicode_dash_or_hyphen(character: char) -> bool {
 
 fn normalize_for_matching_v1(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
-    for character in value.nfd() {
-        if is_combining_mark(character) {
+    for character in value.chars() {
+        if ('\u{0300}'..='\u{036f}').contains(&character) {
             continue;
         }
         if character.is_ascii() {
             if character.is_ascii_alphanumeric() {
                 output.push(character.to_ascii_lowercase());
             }
+            continue;
+        }
+        let mapped = match character {
+            '\u{00c0}' | '\u{00c1}' | '\u{00c2}' | '\u{00c3}' | '\u{00c4}' | '\u{00c5}'
+            | '\u{00e0}' | '\u{00e1}' | '\u{00e2}' | '\u{00e3}' | '\u{00e4}' | '\u{00e5}' => Some('a'),
+            '\u{00c7}' | '\u{00e7}' => Some('c'),
+            '\u{00c8}' | '\u{00c9}' | '\u{00ca}' | '\u{00cb}'
+            | '\u{00e8}' | '\u{00e9}' | '\u{00ea}' | '\u{00eb}' => Some('e'),
+            '\u{00cc}' | '\u{00cd}' | '\u{00ce}' | '\u{00cf}'
+            | '\u{00ec}' | '\u{00ed}' | '\u{00ee}' | '\u{00ef}' => Some('i'),
+            '\u{00d1}' | '\u{00f1}' => Some('n'),
+            '\u{00d2}' | '\u{00d3}' | '\u{00d4}' | '\u{00d5}' | '\u{00d6}' | '\u{00d8}'
+            | '\u{00f2}' | '\u{00f3}' | '\u{00f4}' | '\u{00f5}' | '\u{00f6}' | '\u{00f8}' => Some('o'),
+            '\u{00d9}' | '\u{00da}' | '\u{00db}' | '\u{00dc}'
+            | '\u{00f9}' | '\u{00fa}' | '\u{00fb}' | '\u{00fc}' => Some('u'),
+            '\u{00dd}' | '\u{0178}' | '\u{00fd}' | '\u{00ff}' => Some('y'),
+            _ => None,
+        };
+        if let Some(mapped) = mapped {
+            output.push(mapped);
         } else {
             output.push(character);
         }
@@ -429,7 +450,26 @@ fn preserve_capture_timestamp(path: &Path, timestamp: i64) {
     } else {
         timestamp
     };
+    #[cfg(target_os = "windows")]
+    set_windows_capture_times(path, seconds);
     let _ = set_file_mtime(path, FileTime::from_unix_time(seconds, 0));
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_capture_times(path: &Path, seconds: i64) {
+    const SCRIPT: &str = r#"& {
+param($path, $seconds)
+$ErrorActionPreference = 'Stop'
+$item = Get-Item -LiteralPath $path
+$time = [DateTimeOffset]::FromUnixTimeSeconds([Int64]$seconds).UtcDateTime
+$item.CreationTimeUtc = $time
+$item.LastWriteTimeUtc = $time
+}"#;
+    let _ = Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .arg(path)
+        .arg(seconds.to_string())
+        .status();
 }
 
 fn with_appended_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -454,6 +494,8 @@ mod tests {
     #[test]
     fn folder_matching_retains_v1_semantics() {
         assert_eq!(normalize_for_matching_v1("Pokémon: Violet"), "pokemonviolet");
+        assert_eq!(normalize_for_matching_v1("Ā"), "Ā");
+        assert_eq!(normalize_for_matching_v1("Cafe\u{0301}"), "cafe");
         assert_eq!(sanitize_folder_v1("Bad:/Name*"), "BadName");
         assert_eq!(sanitize_folder_v1("A—B"), "A-B");
     }
