@@ -11,12 +11,26 @@ on:
 permissions:
   contents: read
 
+env:
+  DISCORD_SDK_REPOSITORY: Dycool/NSO-Album-Sync-SDK
+  DISCORD_SDK_REF: 21aa7516c44e2856d1fe0927f0c13c092182e2b7
+
 jobs:
   windows:
     name: Windows package
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Discord Social SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
 
       - name: Enforce Rust safety boundary
         run: python scripts/check_rust_safety.py
@@ -26,10 +40,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # C++ embedded its icon, manifest, version information and third-party
-          # notices in the executable. Recreate those PE resources at packaging
-          # time so the crate remains build.rs-free and the repository safety
-          # boundary stays deterministic.
+          # Match the C++ single-file Windows package: icon, manifest, version
+          # metadata, Discord Social SDK runtime and notices are PE resources.
           $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
           $version = ($metadata.packages | Where-Object { $_.name -eq "nso-album-sync" }).version
           $parts = $version.Split('.')
@@ -37,6 +49,7 @@ jobs:
 
           $iconPath = (Resolve-Path "app.ico").Path.Replace('\', '/')
           $manifestPath = (Resolve-Path "resources/windows/app.manifest").Path.Replace('\', '/')
+          $sdkDllPath = (Resolve-Path "third_party/discord_social_sdk/bin/release/discord_partner_sdk.dll").Path.Replace('\', '/')
           $noticesPath = (Resolve-Path "THIRD-PARTY-NOTICES.txt").Path.Replace('\', '/')
           New-Item -ItemType Directory -Force target | Out-Null
           $rcPath = (Join-Path $PWD "target/nso-album-sync.rc")
@@ -45,6 +58,7 @@ jobs:
           #define NSO_APP_ICON_RESOURCE_ID 101
           NSO_APP_ICON_RESOURCE_ID ICON "$iconPath"
           1 24 "$manifestPath"
+          201 RCDATA "$sdkDllPath"
           202 RCDATA "$noticesPath"
 
           1 VERSIONINFO
@@ -84,8 +98,10 @@ jobs:
           & $rcExe /nologo /fo $resPath $rcPath
           if ($LASTEXITCODE -ne 0) { throw "Windows resource compilation failed" }
 
-          $env:RUSTFLAGS = "-C link-arg=$resPath"
-          cargo build --release --bin nso-album-sync
+          # .cargo/config.toml supplies /DELAYLOAD:discord_partner_sdk.dll.
+          # Add only the final executable resource object here so those flags are
+          # retained rather than replaced through RUSTFLAGS.
+          cargo rustc --release --bin nso-album-sync -- -C "link-arg=$resPath"
           target/release/nso-album-sync.exe --self-test
 
           $versionInfo = (Get-Item target/release/nso-album-sync.exe).VersionInfo
@@ -95,11 +111,13 @@ jobs:
           if ($versionInfo.FileDescription -ne "NSO Album Sync") {
             throw "Windows FileDescription resource was not linked"
           }
+          if ($versionInfo.FileVersion -notlike "$version*") {
+            throw "Windows FileVersion resource does not match $version"
+          }
 
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/nso-album-sync.exe dist/nso-album-sync.exe
-          Copy-Item THIRD-PARTY-NOTICES.txt dist/THIRD-PARTY-NOTICES.txt
-          Compress-Archive -Path dist/* -DestinationPath nso-album-sync-windows.zip -Force
+          Compress-Archive -Path dist/nso-album-sync.exe -DestinationPath nso-album-sync-windows.zip -Force
 
       - uses: actions/upload-artifact@v7
         with:
@@ -113,6 +131,33 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Discord Social SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Repair Discord framework links
+        shell: bash
+        run: |
+          set -euo pipefail
+          framework="third_party/discord_social_sdk/lib/release/discord_partner_sdk.framework"
+          rm -f \
+            "$framework/Versions/Current" \
+            "$framework/Frameworks" \
+            "$framework/Headers" \
+            "$framework/Resources" \
+            "$framework/discord_partner_sdk"
+          ln -s A "$framework/Versions/Current"
+          ln -s Versions/Current/Frameworks "$framework/Frameworks"
+          ln -s Versions/Current/Headers "$framework/Headers"
+          ln -s Versions/Current/Resources "$framework/Resources"
+          ln -s Versions/Current/discord_partner_sdk "$framework/discord_partner_sdk"
+
       - name: Enforce Rust safety boundary
         run: python scripts/check_rust_safety.py
 
@@ -120,19 +165,43 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sdk_release="$PWD/third_party/discord_social_sdk/lib/release"
           cargo build --release --bin nso-album-sync
-          target/release/nso-album-sync --self-test
+          DYLD_FRAMEWORK_PATH="$sdk_release" target/release/nso-album-sync --self-test
 
           app="dist/NSO Album Sync.app"
-          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          framework_source="$sdk_release/discord_partner_sdk.framework"
+          framework_root="$app/Contents/Frameworks/discord_partner_sdk.framework"
+          framework="$framework_root/Versions/A/discord_partner_sdk"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
           cp target/release/nso-album-sync "$app/Contents/MacOS/nso-album-sync"
           cp app.icns "$app/Contents/Resources/app.icns"
           cp THIRD-PARTY-NOTICES.txt "$app/Contents/Resources/THIRD-PARTY-NOTICES.txt"
           cp resources/macos/Info.plist "$app/Contents/Info.plist"
+          ditto "$framework_source" "$framework_root"
 
+          if [[ "$(lipo -archs "$framework")" == *x86_64* ]]; then
+            lipo "$framework" -thin arm64 -output "$framework.arm64"
+            mv "$framework.arm64" "$framework"
+          fi
+
+          rm -rf \
+            "$framework_root/Versions/A/Frameworks/libdiscord_krisp.dylib" \
+            "$framework_root/Versions/A/Resources/Krisp" \
+            "$framework_root/Versions/A/Headers" \
+            "$framework_root/Versions/A/_CodeSignature"
+          rm -f "$framework_root/Headers"
+          find "$framework_root" -type f \( -iname '*krisp*' -o -iname '*.kef' -o -iname '*.kw' \) -delete
+          find "$framework_root" -type d -name '*.dSYM' -prune -exec rm -rf {} + 2>/dev/null || true
+
+          binary="$app/Contents/MacOS/nso-album-sync"
+          codesign --remove-signature "$binary" 2>/dev/null || true
+          codesign --remove-signature "$framework" 2>/dev/null || true
+          strip -S -x "$binary" 2>/dev/null || true
+          strip -S -x "$framework" 2>/dev/null || true
           codesign --force --deep --sign - --timestamp=none "$app"
           codesign --verify --deep --strict "$app"
-          "$app/Contents/MacOS/nso-album-sync" --self-test
+          "$binary" --self-test
           ditto -c -k --sequesterRsrc --keepParent "$app" dist/nso-album-sync-macos.zip
 
       - uses: actions/upload-artifact@v7
@@ -147,6 +216,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Discord Social SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
       - name: Python for safety gate
         uses: actions/setup-python@v6
         with:
@@ -158,7 +237,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev libxdo-dev libayatana-appindicator3-dev pkg-config \
-            curl file libfuse2
+            libpulse0 libasound2-dev curl file libfuse2
 
       - name: Enforce Rust safety boundary
         run: python scripts/check_rust_safety.py
@@ -167,14 +246,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sdk_release="$PWD/third_party/discord_social_sdk/lib/release"
           cargo build --release --bin nso-album-sync
-          target/release/nso-album-sync --self-test
+          LD_LIBRARY_PATH="$sdk_release" target/release/nso-album-sync --self-test
           strip --strip-unneeded target/release/nso-album-sync
+          strip --strip-unneeded "$sdk_release/libdiscord_partner_sdk.so"
 
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications \
+          mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications \
             AppDir/usr/share/icons/hicolor/scalable/apps AppDir/usr/share/doc/nso-album-sync \
             dist tools
           cp target/release/nso-album-sync AppDir/usr/bin/nso-album-sync
+          cp "$sdk_release/libdiscord_partner_sdk.so" AppDir/usr/lib/libdiscord_partner_sdk.so
           cp resources/linux/nso-album-sync.desktop AppDir/usr/share/applications/nso-album-sync.desktop
           cp icon.svg AppDir/usr/share/icons/hicolor/scalable/apps/nso-album-sync.svg
           cp THIRD-PARTY-NOTICES.txt AppDir/usr/share/doc/nso-album-sync/THIRD-PARTY-NOTICES.txt
