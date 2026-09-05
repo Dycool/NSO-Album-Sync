@@ -3,6 +3,8 @@
 use crate::http::HttpClient;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -18,11 +20,13 @@ const BLANCO_VERSION: &str = "2.1.1";
 pub struct AnimalCrossingPresence {
     island_name: String,
     resident_name: String,
+    native_fruit: String,
     image_uri: String,
     active: bool,
 }
 impl AnimalCrossingPresence {
     pub fn active(&self) -> bool { self.active }
+    pub fn native_fruit(&self) -> &str { &self.native_fruit }
     pub fn image_uri(&self) -> &str { &self.image_uri }
     pub fn format_state(&self) -> String { self.island_name.clone() }
     pub fn format_details(&self) -> String {
@@ -37,6 +41,7 @@ impl AnimalCrossingPresence {
 #[derive(Debug, Clone, Default)]
 pub struct Splatoon2Presence {
     player_name: String,
+    weapon_name: String,
     rank_name: String,
     player_level: i64,
     star_rank: i64,
@@ -45,6 +50,7 @@ pub struct Splatoon2Presence {
 }
 impl Splatoon2Presence {
     pub fn active(&self) -> bool { self.active }
+    pub fn weapon_name(&self) -> &str { &self.weapon_name }
     pub fn stage_image_uri(&self) -> &str { &self.stage_image_uri }
     pub fn format_details(&self) -> String { self.player_name.clone() }
     pub fn format_state(&self) -> String {
@@ -101,12 +107,27 @@ impl GameServicesClient {
 
     pub fn fetch_animal_crossing_presence(&self, web_service_token: &str) -> anyhow::Result<AnimalCrossingPresence> {
         if web_service_token.is_empty() { return Ok(AnimalCrossingPresence::default()); }
+        let result = self.fetch_animal_crossing_presence_inner(web_service_token);
+        if result.is_err() {
+            log_nooklink_failure("exception while parsing NookLink response");
+            self.remove_session("nooklink");
+        }
+        Ok(result.unwrap_or_default())
+    }
+
+    fn fetch_animal_crossing_presence_inner(&self, web_service_token: &str) -> anyhow::Result<AnimalCrossingPresence> {
         let (language, country, mut session) = self.session_snapshot("nooklink", web_service_token);
         if session.cookie.is_empty() {
             let response = self.http.get(&launch_url(NOOKLINK_BASE, &language, &country), &bootstrap_headers(web_service_token, &language, WEB_SERVICE_USER_AGENT, false), 10, 4 * 1024 * 1024)?;
-            if response.status() != 200 { return Ok(AnimalCrossingPresence::default()); }
+            if response.status() != 200 {
+                log_nooklink_failure(&format!("launch HTTP {}", response.status()));
+                return Ok(AnimalCrossingPresence::default());
+            }
             let gtoken = cookie_value(&response, "_gtoken");
-            if gtoken.is_empty() { return Ok(AnimalCrossingPresence::default()); }
+            if gtoken.is_empty() {
+                log_nooklink_failure("launch response has no _gtoken cookie");
+                return Ok(AnimalCrossingPresence::default());
+            }
             session.source_token = web_service_token.to_owned();
             session.cookie = merge_cookie_header("", &response);
             if session.cookie.is_empty() { session.cookie = format!("_gtoken={gtoken}"); }
@@ -114,16 +135,34 @@ impl GameServicesClient {
         }
 
         let users_response = self.http.get(&format!("{NOOKLINK_BASE}/api/sd/v1/users"), &nooklink_headers(&session.cookie, &language, &country), 10, 4 * 1024 * 1024)?;
-        if matches!(users_response.status(), 401 | 403) { self.remove_session("nooklink"); return Ok(AnimalCrossingPresence::default()); }
-        if users_response.status() != 200 { return Ok(AnimalCrossingPresence::default()); }
+        if matches!(users_response.status(), 401 | 403) {
+            log_nooklink_failure(&format!("/users HTTP {}", users_response.status()));
+            self.remove_session("nooklink");
+            return Ok(AnimalCrossingPresence::default());
+        }
+        if users_response.status() != 200 {
+            log_nooklink_failure(&format!("/users HTTP {}", users_response.status()));
+            return Ok(AnimalCrossingPresence::default());
+        }
         session.cookie = merge_cookie_header(&session.cookie, &users_response);
         let root: Value = serde_json::from_slice(users_response.body())?;
-        let Some(user) = root.get("users").and_then(Value::as_array).and_then(|users| users.first()) else { return Ok(AnimalCrossingPresence::default()); };
+        let Some(users) = root.get("users").and_then(Value::as_array) else {
+            log_nooklink_failure("/users response has no users array");
+            return Ok(AnimalCrossingPresence::default());
+        };
+        let Some(user) = users.first() else {
+            log_nooklink_failure("/users returned no linked NookLink residents");
+            return Ok(AnimalCrossingPresence::default());
+        };
         let mut presence = AnimalCrossingPresence {
             resident_name: string(user, "name"),
             image_uri: first_string(user, &["image", "image_url"]),
             ..AnimalCrossingPresence::default()
         };
+        if presence.image_uri.len() > 300 {
+            presence.image_uri = self.shorten_image_url(&presence.image_uri);
+            if presence.image_uri.len() > 300 { presence.image_uri.clear(); }
+        }
         session.user_id = value_string(user.get("id"));
         let mut land_id = String::new();
         if let Some(land) = user.get("land") {
@@ -136,10 +175,16 @@ impl GameServicesClient {
             session.user_auth_attempted = true;
             let response = self.http.post_json(&format!("{NOOKLINK_BASE}/api/sd/v1/auth_token"), &serde_json::json!({"userId": session.user_id}), &nooklink_headers(&session.cookie, &language, &country), 10)?;
             session.cookie = merge_cookie_header(&session.cookie, &response);
-            if response.status() / 100 == 2
-                && let Ok(json) = serde_json::from_slice::<Value>(response.body())
-            {
-                session.auth_token = string(&json, "token");
+            if response.status() / 100 == 2 {
+                match serde_json::from_slice::<Value>(response.body()) {
+                    Ok(json) => {
+                        session.auth_token = string(&json, "token");
+                        if session.auth_token.is_empty() { log_nooklink_failure("/auth_token response has no token"); }
+                    }
+                    Err(_) => log_nooklink_failure("/auth_token response is not valid JSON"),
+                }
+            } else {
+                log_nooklink_failure(&format!("/auth_token HTTP {}", response.status()));
             }
         }
 
@@ -150,14 +195,20 @@ impl GameServicesClient {
             session.cookie = merge_cookie_header(&session.cookie, &profile);
             let mut auth_valid = true;
             if matches!(profile.status(), 401 | 403) {
+                log_nooklink_failure(&format!("resident profile HTTP {}", profile.status()));
                 session.auth_token.clear();
                 auth_valid = false;
-            } else if profile.status() == 200
-                && let Ok(json) = serde_json::from_slice::<Value>(profile.body())
-            {
-                let resident = string(&json, "mPNm"); if !resident.is_empty() { presence.resident_name = resident; }
-                let island = string(&json, "landName"); if !island.is_empty() { presence.island_name = island; }
-                let image = first_string(&json, &["image", "image_url"]); if !image.is_empty() { presence.image_uri = image; }
+            } else if profile.status() == 200 {
+                match serde_json::from_slice::<Value>(profile.body()) {
+                    Ok(json) => {
+                        let resident = string(&json, "mPNm"); if !resident.is_empty() { presence.resident_name = resident; }
+                        let island = string(&json, "landName"); if !island.is_empty() { presence.island_name = island; }
+                        let image = first_string(&json, &["image", "image_url"]); if !image.is_empty() { presence.image_uri = image; }
+                    }
+                    Err(_) => log_nooklink_failure("resident profile response is not valid JSON"),
+                }
+            } else {
+                log_nooklink_failure(&format!("resident profile HTTP {}", profile.status()));
             }
             if auth_valid && !land_id.is_empty() {
                 let mut headers = nooklink_headers(&session.cookie, &language, &country);
@@ -165,24 +216,39 @@ impl GameServicesClient {
                 let island = self.http.get(&format!("{NOOKLINK_BASE}/api/sd/v1/lands/{land_id}/profile?language=en-GB"), &headers, 10, 4 * 1024 * 1024)?;
                 session.cookie = merge_cookie_header(&session.cookie, &island);
                 if matches!(island.status(), 401 | 403) {
+                    log_nooklink_failure(&format!("island profile HTTP {}", island.status()));
                     session.auth_token.clear();
-                } else if island.status() == 200
-                    && let Ok(json) = serde_json::from_slice::<Value>(island.body())
-                {
-                    let name = string(&json, "mVNm"); if !name.is_empty() { presence.island_name = name; }
+                } else if island.status() == 200 {
+                    match serde_json::from_slice::<Value>(island.body()) {
+                        Ok(json) => {
+                            let name = string(&json, "mVNm"); if !name.is_empty() { presence.island_name = name; }
+                            if let Some(fruit) = json.get("mFruit").and_then(Value::as_object) {
+                                presence.native_fruit = fruit.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+                            }
+                        }
+                        Err(_) => log_nooklink_failure("island profile response is not valid JSON"),
+                    }
+                } else {
+                    log_nooklink_failure(&format!("island profile HTTP {}", island.status()));
                 }
             }
         }
 
         if presence.image_uri.len() > 300 { presence.image_uri = self.shorten_image_url(&presence.image_uri); }
         if presence.image_uri.len() > 300 { presence.image_uri.clear(); }
-        presence.active = !presence.resident_name.is_empty() || !presence.island_name.is_empty();
+        if !presence.active { log_nooklink_failure("/users returned no usable resident or island name"); }
         self.store_session("nooklink", &language, &country, session);
         Ok(presence)
     }
 
     pub fn fetch_splatoon2_presence(&self, web_service_token: &str) -> anyhow::Result<Splatoon2Presence> {
         if web_service_token.is_empty() { return Ok(Splatoon2Presence::default()); }
+        let result = self.fetch_splatoon2_presence_inner(web_service_token);
+        if result.is_err() { self.remove_session("splatnet2"); }
+        Ok(result.unwrap_or_default())
+    }
+
+    fn fetch_splatoon2_presence_inner(&self, web_service_token: &str) -> anyhow::Result<Splatoon2Presence> {
         let (language, country, mut session) = self.session_snapshot("splatnet2", web_service_token);
         if session.cookie.is_empty() || session.user_id.is_empty() {
             let response = self.http.get(&launch_url(SPLATNET2_BASE, &language, &country), &bootstrap_headers(web_service_token, &language, WEB_SERVICE_USER_AGENT, false), 10, 8 * 1024 * 1024)?;
@@ -208,12 +274,12 @@ impl GameServicesClient {
         let player_name = string(player, "nickname");
         let player_level = integer(player, "player_rank");
         let star_rank = integer(player, "star_rank");
-        let stage_image_uri = player.get("weapon").map(|weapon| string(weapon, "image")).unwrap_or_default();
+        let (weapon_name, stage_image_uri) = player.get("weapon").map(|weapon| (string(weapon, "name"), string(weapon, "image"))).unwrap_or_default();
         let ranks = [("udemae_zones", "Zones"), ("udemae_tower", "Tower"), ("udemae_rainmaker", "Rainmaker"), ("udemae_clam", "Clams")]
             .into_iter().filter_map(|(key, short)| rank_value(player, key, short)).collect::<Vec<_>>();
         let presence = Splatoon2Presence {
-            active: !player_name.is_empty() || player_level > 0 || !stage_image_uri.is_empty(),
-            player_name, rank_name: ranks.join(" / "), player_level, star_rank, stage_image_uri,
+            active: !player_name.is_empty() || !weapon_name.is_empty() || player_level > 0,
+            player_name, weapon_name, rank_name: ranks.join(" / "), player_level, star_rank, stage_image_uri,
         };
         self.store_session("splatnet2", &language, &country, session);
         Ok(presence)
@@ -250,6 +316,15 @@ impl GameServicesClient {
     }
 
     fn remove_session(&self, key: &str) { self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).sessions.remove(key); }
+}
+
+fn log_nooklink_failure(stage: &str) {
+    let line = format!("[NookLink] {stage}");
+    eprintln!("{line}");
+    let path = std::env::temp_dir().join("nso-album-sync-rpc.log");
+    if let Ok(mut output) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(output, "{line}");
+    }
 }
 
 fn launch_url(base: &str, language: &str, country: &str) -> String { format!("{base}/?lang={language}&na_country={country}&na_lang={language}") }
