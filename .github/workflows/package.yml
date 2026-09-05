@@ -42,7 +42,6 @@ jobs:
           $rcPath = (Join-Path $PWD "target/nso-album-sync.rc")
           $resPath = (Join-Path $PWD "target/nso-album-sync.res")
           $rcSource = @"
-          #include <windows.h>
           #define NSO_APP_ICON_RESOURCE_ID 101
           NSO_APP_ICON_RESOURCE_ID ICON "$iconPath"
           1 24 "$manifestPath"
@@ -53,8 +52,8 @@ jobs:
            PRODUCTVERSION $($parts[0]),$($parts[1]),$($parts[2]),0
            FILEFLAGSMASK 0x3fL
            FILEFLAGS 0x0L
-           FILEOS VOS_NT_WINDOWS32
-           FILETYPE VFT_APP
+           FILEOS 0x00040004L
+           FILETYPE 0x00000001L
            FILESUBTYPE 0x0L
           BEGIN
               BLOCK "StringFileInfo"
