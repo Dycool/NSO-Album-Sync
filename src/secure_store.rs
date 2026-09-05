@@ -52,7 +52,7 @@ impl SecureStore {
             remove_legacy_credential(account);
             erase_legacy_rust(account);
             stored?;
-            return Ok(());
+            Ok(())
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -102,7 +102,7 @@ impl SecureStore {
             let _ = erase_native(account);
             remove_legacy_credential(account);
             erase_legacy_rust(account);
-            return Ok(());
+            Ok(())
         }
         #[cfg(not(target_os = "macos"))]
         {
