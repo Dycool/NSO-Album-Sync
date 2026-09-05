@@ -4,10 +4,24 @@ use keyring::v1::Entry as V1Entry;
 use keyring_core::{Entry, Error};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::fs::{self, File};
+#[cfg(target_os = "macos")]
+use std::io::Read as _;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::MetadataExt as _;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 
 const LEGACY_RUST_SERVICE: &str = "NSO Album Sync";
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const APPLE_SERVICE: &str = "org.nsoalbumsync.session-token";
+#[cfg(target_os = "macos")]
+const MAX_LEGACY_SECRET_BYTES: u64 = 64 * 1024;
 #[cfg(target_os = "linux")]
 const LINUX_APPLICATION: &str = "NsoAlbumSync";
 #[cfg(target_os = "linux")]
@@ -19,20 +33,52 @@ pub struct SecureStore;
 
 impl SecureStore {
     pub fn available() -> bool {
-        V1Entry::store_status().is_ok()
+        #[cfg(target_os = "macos")]
+        {
+            migrate_known_legacy_credentials();
+            true
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            V1Entry::store_status().is_ok()
+        }
     }
 
     pub fn put(account: &str, secret: &str) -> anyhow::Result<()> {
         anyhow::ensure!(Self::available(), "OS credential store is unavailable");
-        put_native(account, secret)?;
-        erase_legacy_rust(account);
-        Ok(())
+        #[cfg(target_os = "macos")]
+        {
+            let stored = put_native(account, secret);
+            remove_legacy_credential(account);
+            erase_legacy_rust(account);
+            stored?;
+            return Ok(());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            put_native(account, secret)?;
+            erase_legacy_rust(account);
+            Ok(())
+        }
     }
 
     pub fn get(account: &str) -> anyhow::Result<Option<String>> {
         if !Self::available() {
             return Ok(None);
         }
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(secret) = get_native(account).ok().flatten() {
+                remove_legacy_credential(account);
+                erase_legacy_rust(account);
+                return Ok(Some(secret));
+            }
+            if let Some(secret) = migrate_legacy_credential(account) {
+                erase_legacy_rust(account);
+                return Ok(Some(secret));
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         if let Some(secret) = get_native(account)? {
             erase_legacy_rust(account);
             return Ok(Some(secret));
@@ -51,9 +97,19 @@ impl SecureStore {
         if !Self::available() {
             return Ok(());
         }
-        erase_native(account)?;
-        erase_legacy_rust(account);
-        Ok(())
+        #[cfg(target_os = "macos")]
+        {
+            let _ = erase_native(account);
+            remove_legacy_credential(account);
+            erase_legacy_rust(account);
+            return Ok(());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            erase_native(account)?;
+            erase_legacy_rust(account);
+            Ok(())
+        }
     }
 }
 
@@ -197,6 +253,99 @@ fn erase_native(account: &str) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn legacy_credentials_directory() -> PathBuf {
+    let home = std::env::var_os("HOME").unwrap_or_else(|| ".".into());
+    PathBuf::from(home).join("Library/Application Support/NSOAlbumSync/credentials")
+}
+
+#[cfg(target_os = "macos")]
+fn safe_account_name(account: &str) -> String {
+    let safe = account
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') {
+                char::from(byte)
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if safe.is_empty() { "credential".to_owned() } else { safe }
+}
+
+#[cfg(target_os = "macos")]
+fn legacy_credential_path(account: &str) -> PathBuf {
+    legacy_credentials_directory().join(format!("{}.dat", safe_account_name(account)))
+}
+
+#[cfg(target_os = "macos")]
+fn remove_legacy_credential(account: &str) {
+    let _ = fs::remove_file(legacy_credential_path(account));
+    let _ = fs::remove_dir(legacy_credentials_directory());
+}
+
+#[cfg(target_os = "macos")]
+fn current_uid() -> Option<u32> {
+    let output = Command::new("/usr/bin/id").arg("-u").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn read_legacy_credential(account: &str) -> Option<String> {
+    let path = legacy_credential_path(account);
+    let path_metadata = fs::symlink_metadata(&path).ok()?;
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return None;
+    }
+    let mut file = File::open(&path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let uid = current_uid()?;
+    if !metadata.is_file()
+        || metadata.uid() != uid
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() == 0
+        || metadata.len() > MAX_LEGACY_SECRET_BYTES
+    {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 != metadata.len() {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn migrate_legacy_credential(account: &str) -> Option<String> {
+    let legacy = read_legacy_credential(account);
+    let Some(secret) = legacy else {
+        remove_legacy_credential(account);
+        return None;
+    };
+    let stored = put_native(account, &secret).is_ok();
+    remove_legacy_credential(account);
+    stored.then_some(secret)
+}
+
+#[cfg(target_os = "macos")]
+fn migrate_known_legacy_credentials() {
+    static MIGRATED: OnceLock<()> = OnceLock::new();
+    MIGRATED.get_or_init(|| {
+        for account in ["NintendoAccount", "CoralCredential"] {
+            if get_native(account).ok().flatten().is_some() {
+                remove_legacy_credential(account);
+            } else {
+                let _ = migrate_legacy_credential(account);
+            }
+        }
+    });
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
