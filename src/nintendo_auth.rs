@@ -100,17 +100,13 @@ impl NintendoAuthManager {
             cache.oauth_state = state.clone();
             cache.pkce_verifier = verifier;
         }
-        let mut url = url::Url::parse(AUTHORIZE_URL)?;
-        url.query_pairs_mut()
-            .append_pair("state", &state)
-            .append_pair("redirect_uri", NINTENDO_REDIRECT_URI)
-            .append_pair("client_id", CLIENT_ID)
-            .append_pair("scope", SCOPE)
-            .append_pair("response_type", "session_token_code")
-            .append_pair("session_token_code_challenge", &challenge)
-            .append_pair("session_token_code_challenge_method", "S256")
-            .append_pair("theme", "login_form");
-        Ok(url.into())
+        Ok(format!(
+            "{AUTHORIZE_URL}?state={}&redirect_uri={}&client_id={CLIENT_ID}&scope={}&response_type=session_token_code&session_token_code_challenge={}&session_token_code_challenge_method=S256&theme=login_form",
+            encode_component(&state),
+            encode_component(NINTENDO_REDIRECT_URI),
+            encode_component(SCOPE),
+            encode_component(&challenge),
+        ))
     }
 
     pub fn complete_login(&self, callback_url: &str) -> anyhow::Result<AuthResult> {
@@ -126,14 +122,12 @@ impl NintendoAuthManager {
             is_nintendo_auth_callback(callback_url),
             "Nintendo sign-in did not return through the registered browser callback."
         );
-        let callback = url::Url::parse(callback_url)?;
-        let returned_state = callback_parameter(&callback, "state");
-        let error = callback_parameter(&callback, "error");
-        let code = callback_parameter(&callback, "session_token_code");
+        let returned_state = extract_parameter(callback_url, "state");
         anyhow::ensure!(
             !returned_state.is_empty() && returned_state == expected_state,
             "Nintendo sign-in callback had an invalid OAuth state."
         );
+        let error = extract_parameter(callback_url, "error");
         if !error.is_empty() {
             anyhow::bail!(if error == "access_denied" {
                 "Nintendo Account sign-in was cancelled.".to_owned()
@@ -141,6 +135,7 @@ impl NintendoAuthManager {
                 format!("Nintendo Account sign-in failed: {error}")
             });
         }
+        let code = extract_parameter(callback_url, "session_token_code");
         anyhow::ensure!(
             !code.is_empty(),
             "Nintendo sign-in callback did not include a session token code."
@@ -285,32 +280,78 @@ impl NintendoAuthManager {
     }
 }
 
-fn callback_parameter(url: &url::Url, name: &str) -> String {
-    if let Some(value) = url
-        .query_pairs()
-        .find(|(key, _)| key == name)
-        .map(|(_, value)| value.into_owned())
-    {
-        return value;
+fn encode_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut output = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            output.push(char::from(byte));
+        } else {
+            output.push('%');
+            output.push(char::from(HEX[usize::from(byte >> 4)]));
+            output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
     }
-    url.fragment()
-        .and_then(|fragment| {
-            url::form_urlencoded::parse(fragment.as_bytes())
-                .find(|(key, _)| key == name)
-                .map(|(_, value)| value.into_owned())
-        })
-        .unwrap_or_default()
+    output
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            output.push((high << 4) | low);
+            index += 3;
+            continue;
+        }
+        output.push(if bytes[index] == b'+' { b' ' } else { bytes[index] });
+        index += 1;
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+fn extract_parameter(input: &str, name: &str) -> String {
+    let marker = format!("{name}=");
+    let mut search_from = 0;
+    while let Some(relative) = input[search_from..].find(&marker) {
+        let position = search_from + relative;
+        if position == 0 || input.as_bytes().get(position - 1).is_some_and(|byte| matches!(byte, b'?' | b'#' | b'&')) {
+            let start = position + marker.len();
+            let tail = &input[start..];
+            let end = tail.find(['&', '#']).unwrap_or(tail.len());
+            return decode_component(&tail[..end]);
+        }
+        search_from = position + 1;
+    }
+    String::new()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::callback_parameter;
+    use super::{decode_component, encode_component, extract_parameter};
 
     #[test]
-    fn reads_fragment_callback_parameters() {
-        let url = url::Url::parse("npf71b963c1b7b6d119://auth#state=abc&session_token_code=def")
-            .expect("callback URL");
-        assert_eq!(callback_parameter(&url, "state"), "abc");
-        assert_eq!(callback_parameter(&url, "session_token_code"), "def");
+    fn callback_parameters_match_cpp_parser() {
+        let url = "npf71b963c1b7b6d119://auth#state=abc&session_token_code=def";
+        assert_eq!(extract_parameter(url, "state"), "abc");
+        assert_eq!(extract_parameter(url, "session_token_code"), "def");
+        assert_eq!(decode_component("a+b%20c"), "a b c");
+    }
+
+    #[test]
+    fn authorize_components_use_rfc3986_unreserved_encoding() {
+        assert_eq!(encode_component("openid user~x"), "openid%20user~x");
     }
 }
