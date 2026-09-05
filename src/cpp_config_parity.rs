@@ -1,4 +1,4 @@
-use nso_album_sync::model::{AppConfig, DISCORD_APPLICATION_ID};
+use crate::model::{AppConfig, DISCORD_APPLICATION_ID};
 
 #[test]
 fn app_config_defaults_match_cpp_reference() {

@@ -10,6 +10,9 @@ pub mod model;
 pub mod util;
 pub mod zelda_regions;
 
+#[cfg(test)]
+mod cpp_config_parity;
+
 #[cfg(feature = "desktop")]
 pub mod app;
 #[cfg(feature = "desktop")]
