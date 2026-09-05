@@ -21,6 +21,7 @@ const FALLBACK_START_ACTION: &str = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba"
 const FALLBACK_ACK_ACTION: &str = "400d043452ef637b91e45e5861062b9677aa6fbf22";
 const FALLBACK_DEPLOYMENT_ID: &str = "783666f6880ab3979bdc7b15f8ad24f544e472e5";
 const LIVE_FRESHNESS: Duration = Duration::from_secs(30);
+const LIVE_RECONNECT_IDLE: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ZeldaNotesPresence {
@@ -57,6 +58,7 @@ struct LiveMessage {
     game_session_id: String,
     needs_ack: bool,
     request_id: String,
+    updates_live_state: bool,
     state: Option<LiveState>,
     valid: bool,
 }
@@ -70,7 +72,7 @@ struct MapPlace {
     position: Vector3,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct WebMetadata {
     start_action: String,
     end_action: String,
@@ -80,13 +82,9 @@ struct WebMetadata {
     labels: HashMap<String, String>,
     places: Vec<MapPlace>,
 }
-impl Default for WebMetadata {
-    fn default() -> Self {
-        Self {
-            start_action: FALLBACK_START_ACTION.to_owned(), end_action: FALLBACK_START_ACTION.to_owned(),
-            ack_action: FALLBACK_ACK_ACTION.to_owned(), deployment_id: FALLBACK_DEPLOYMENT_ID.to_owned(),
-            custom_avatar_url: String::new(), labels: HashMap::new(), places: Vec::new(),
-        }
+impl WebMetadata {
+    fn protocol_ready(&self) -> bool {
+        !self.start_action.is_empty() && !self.end_action.is_empty() && !self.ack_action.is_empty()
     }
 }
 
@@ -109,8 +107,10 @@ impl ServerActionContext<'_> {
             format!("Next-Router-State-Tree: {}", router_state_tree(self.game)),
             format!("Origin: {BASE_URL}"),
             format!("Referer: {page_url}"),
-            format!("X-Deployment-Id: {}", self.metadata.deployment_id),
         ]);
+        if !self.metadata.deployment_id.is_empty() {
+            headers.push(format!("X-Deployment-Id: {}", self.metadata.deployment_id));
+        }
         let response = self.http.post_text(
             &page_url,
             &Value::Array(arguments).to_string(),
@@ -127,6 +127,7 @@ impl ServerActionContext<'_> {
 
 #[derive(Debug, Clone, Default)]
 struct ResolvedLocation {
+    layer: ZeldaLayer,
     region: String,
     poi: String,
     stage_image_uri: String,
@@ -194,7 +195,7 @@ impl ZeldaNotesClient {
     pub fn fetch_presence(&self, web_service_token: &str) -> anyhow::Result<ZeldaNotesPresence> {
         if web_service_token.is_empty() { return Ok(ZeldaNotesPresence::default()); }
         self.session.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).latest_web_token = web_service_token.to_owned();
-        let _ = self.ensure_session(web_service_token)?;
+        let _ = self.ensure_session(web_service_token);
         Ok(ZeldaNotesPresence::default())
     }
 
@@ -251,8 +252,10 @@ impl ZeldaNotesClient {
                     let session = self.session.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     (session.language.clone(), session.country.clone())
                 };
-                metadata = discover_web_metadata(&self.http, game, &session_cookie, &language, &country)
-                    .unwrap_or_else(|_| WebMetadata::default());
+                if !metadata.protocol_ready() {
+                    metadata = discover_web_metadata(&self.http, game, &session_cookie, &language, &country)?;
+                }
+                anyhow::ensure!(metadata.protocol_ready(), "Zelda Notes map-sync actions unavailable");
                 let action_context = ServerActionContext {
                     http: &self.http,
                     metadata: &metadata,
@@ -271,9 +274,10 @@ impl ZeldaNotesClient {
                 let mut protocol_failure = false;
                 let response = sse.stream(&url, &headers, |event| {
                     if self.live_stop.load(Ordering::Acquire) { return false; }
-                    let message = decode_live_message(event.data(), game, Instant::now());
+                    let received_at = Instant::now();
+                    let message = decode_live_message(event.data(), game, received_at);
                     if !message.valid { return true; }
-                    last_message.set(Instant::now());
+                    last_message.set(received_at);
                     if !message.game_session_id.is_empty() { game_session_id = message.game_session_id.clone(); }
                     if message.needs_ack && !message.request_id.is_empty() {
                         let _ = action_context.send(&metadata.ack_action, vec![Value::String(message.request_id)]);
@@ -299,9 +303,12 @@ impl ZeldaNotesClient {
                             ],
                         ).unwrap_or(false);
                         if !started { protocol_failure = true; return false; }
-                    } else if let Some(state) = message.state {
+                    } else if message.updates_live_state
+                        && let Some(state) = message.state
+                    {
                         if !state.synchronized || state.received_at.elapsed() >= LIVE_FRESHNESS {
-                            previous = ResolvedLocation::default(); self.publish(ZeldaNotesPresence::default());
+                            previous = ResolvedLocation::default();
+                            self.publish(ZeldaNotesPresence::default());
                         } else {
                             let location = resolve_location(&metadata, &state, &previous);
                             previous = location.clone();
@@ -310,8 +317,9 @@ impl ZeldaNotesClient {
                     }
                     true
                 }, || {
-                    if last_message.get().elapsed() >= LIVE_FRESHNESS { self.publish(ZeldaNotesPresence::default()); }
-                    self.live_stop.load(Ordering::Acquire)
+                    let idle = last_message.get().elapsed();
+                    if idle >= LIVE_FRESHNESS { self.publish(ZeldaNotesPresence::default()); }
+                    self.live_stop.load(Ordering::Acquire) || idle >= LIVE_RECONNECT_IDLE
                 }, 20, 1024 * 1024)?;
                 if !game_session_id.is_empty() {
                     let _ = action_context.send(
@@ -342,7 +350,12 @@ impl ZeldaNotesClient {
     fn publish(&self, presence: ZeldaNotesPresence) {
         let changed = {
             let mut current = self.live_presence.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if *current == presence { false } else { *current = presence; true }
+            let changed = current.active != presence.active
+                || current.title_name != presence.title_name
+                || current.profile_summary != presence.profile_summary
+                || current.stage_image_uri != presence.stage_image_uri;
+            if changed { *current = presence; }
+            changed
         };
         if changed
             && let Some(callback) = self.refresh_callback.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
@@ -371,20 +384,35 @@ fn decode_live_message(payload: &str, game: ZeldaGame, received_at: Instant) -> 
     let mut message = LiveMessage {
         message_type, game_session_id: object.get("gameSessionId").and_then(Value::as_str).unwrap_or_default().to_owned(),
         needs_ack: object.get("needsAck").and_then(Value::as_bool).unwrap_or(false), request_id: object.get("messageRequestId").and_then(Value::as_str).unwrap_or_default().to_owned(),
-        state: None, valid: true,
+        updates_live_state: false, state: None, valid: true,
     };
     if message_type != LiveMessageType::MapSyncPlayerInfo { return message; }
+    message.updates_live_state = true;
     let position = read_vector3(object.get("playerPos"));
     let front = read_vector3(object.get("playerFront"));
-    let layer = if game == ZeldaGame::TearsOfTheKingdom { layer_from_wire(object.get("playerLayer").and_then(Value::as_str).unwrap_or_default()) } else { ZeldaLayer::Ground };
-    if let (Some(position), Some(_front)) = (position, front) {
-        let synchronized = game == ZeldaGame::BreathOfTheWild || layer != ZeldaLayer::Unknown;
-        message.state = Some(LiveState { game, layer, position, received_at, synchronized });
-    }
+    let layer = match game {
+        ZeldaGame::TearsOfTheKingdom => layer_from_wire(object.get("playerLayer").and_then(Value::as_str).unwrap_or_default()),
+        ZeldaGame::BreathOfTheWild => ZeldaLayer::Ground,
+        ZeldaGame::Unknown => ZeldaLayer::Unknown,
+    };
+    let synchronized = position.is_some()
+        && front.is_some()
+        && match game {
+            ZeldaGame::TearsOfTheKingdom => layer != ZeldaLayer::Unknown,
+            ZeldaGame::BreathOfTheWild => true,
+            ZeldaGame::Unknown => false,
+        };
+    message.state = Some(LiveState {
+        game,
+        layer,
+        position: position.unwrap_or_default(),
+        received_at,
+        synchronized,
+    });
     message
 }
 
-fn invalid_message() -> LiveMessage { LiveMessage { message_type: LiveMessageType::Unknown, game_session_id: String::new(), needs_ack: false, request_id: String::new(), state: None, valid: false } }
+fn invalid_message() -> LiveMessage { LiveMessage { message_type: LiveMessageType::Unknown, game_session_id: String::new(), needs_ack: false, request_id: String::new(), updates_live_state: false, state: None, valid: false } }
 
 fn read_vector3(value: Option<&Value>) -> Option<Vector3> {
     let values = value?.as_array()?;
@@ -397,16 +425,17 @@ fn layer_from_wire(value: &str) -> ZeldaLayer { match value { "Ground" => ZeldaL
 fn discover_web_metadata(http: &HttpClient, game: ZeldaGame, session: &str, language: &str, country: &str) -> anyhow::Result<WebMetadata> {
     let mut metadata = WebMetadata::default();
     let page_url = route_url(game);
+    if page_url.is_empty() { return Ok(metadata); }
     let page = http.get(&page_url, &authenticated_headers(session, language, country, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"), 12, 4 * 1024 * 1024)?;
     if page.status() / 100 != 2 { return Ok(metadata); }
     let html = page.text();
-    if let Some(value) = find_server_reference(&html, "sendMapSyncStartAction") { metadata.start_action = value; }
-    if let Some(value) = find_server_reference(&html, "sendMapSyncEndAction") { metadata.end_action = value; }
-    if let Some(value) = find_server_reference(&html, "sendAckAction") { metadata.ack_action = value; }
-    if let Some(value) = page.header("x-deployment-id").filter(|value| !value.is_empty()) { metadata.deployment_id = value.to_owned(); }
+    metadata.start_action = find_server_reference(&html, "sendMapSyncStartAction").unwrap_or_default();
+    metadata.end_action = find_server_reference(&html, "sendMapSyncEndAction").unwrap_or_default();
+    metadata.ack_action = find_server_reference(&html, "sendAckAction").unwrap_or_default();
+    metadata.deployment_id = page.header("x-deployment-id").unwrap_or_default().to_owned();
     let scripts = extract_script_urls(&html);
     for script_url in scripts.into_iter().take(64) {
-        if metadata.deployment_id == FALLBACK_DEPLOYMENT_ID
+        if metadata.deployment_id.is_empty()
             && let Some(value) = deployment_id_from_url(&script_url)
         {
             metadata.deployment_id = value;
@@ -414,25 +443,57 @@ fn discover_web_metadata(http: &HttpClient, game: ZeldaGame, session: &str, lang
         let Ok(response) = http.get(&script_url, &authenticated_headers(session, language, country, "application/javascript,text/javascript,*/*;q=0.8"), 12, 2 * 1024 * 1024) else { continue; };
         if response.status() / 100 != 2 { continue; }
         let script = response.text();
-        if let Some(value) = find_server_reference(&script, "sendMapSyncStartAction") { metadata.start_action = value; }
-        if let Some(value) = find_server_reference(&script, "sendMapSyncEndAction") { metadata.end_action = value; }
-        if let Some(value) = find_server_reference(&script, "sendAckAction") { metadata.ack_action = value; }
+        if metadata.start_action.is_empty() {
+            metadata.start_action = find_server_reference(&script, "sendMapSyncStartAction").unwrap_or_default();
+        }
+        if metadata.end_action.is_empty() {
+            metadata.end_action = find_server_reference(&script, "sendMapSyncEndAction").unwrap_or_default();
+        }
+        if metadata.ack_action.is_empty() {
+            metadata.ack_action = find_server_reference(&script, "sendAckAction").unwrap_or_default();
+        }
         if metadata.places.is_empty() { metadata.places = extract_map_dataset(&script, game).unwrap_or_default(); }
     }
+    if metadata.start_action.is_empty() { metadata.start_action = FALLBACK_START_ACTION.to_owned(); }
+    if metadata.end_action.is_empty() { metadata.end_action = FALLBACK_START_ACTION.to_owned(); }
+    if metadata.ack_action.is_empty() { metadata.ack_action = FALLBACK_ACK_ACTION.to_owned(); }
+    if metadata.deployment_id.is_empty() { metadata.deployment_id = FALLBACK_DEPLOYMENT_ID.to_owned(); }
+
+    metadata.custom_avatar_url = find_ugc_avatar(&html);
+    if metadata.custom_avatar_url.is_empty() {
+        let profile_url = format!("{BASE_URL}/{}/profile", short_name(game));
+        let profile_page = http.get(
+            &profile_url,
+            &authenticated_headers(session, language, country, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+            8,
+            4 * 1024 * 1024,
+        )?;
+        if profile_page.status() == 200 {
+            metadata.custom_avatar_url = find_ugc_avatar(&profile_page.text());
+        }
+    }
     metadata.labels = fetch_labels(http, session, language, country).unwrap_or_default();
-    metadata.custom_avatar_url = find_google_avatar(&html);
     Ok(metadata)
 }
 
 fn find_server_reference(source: &str, action_name: &str) -> Option<String> {
-    let name_at = source.find(action_name)?;
-    let begin = name_at.saturating_sub(512);
-    let before = &source[begin..name_at];
-    let mut best = None;
-    for piece in before.split('"') {
-        if piece.len() == 40 && piece.bytes().all(|byte| byte.is_ascii_hexdigit()) { best = Some(piece.to_owned()); }
+    let mut search_from = 0;
+    while let Some(relative) = source[search_from..].find(action_name) {
+        let name_at = search_from + relative;
+        let begin = name_at.saturating_sub(512);
+        let before = &source[begin..name_at];
+        let mut best = None;
+        let mut pieces = before.split('"');
+        while let Some(_before_quote) = pieces.next() {
+            let Some(candidate) = pieces.next() else { break; };
+            if candidate.len() == 40 && candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                best = Some(candidate.to_owned());
+            }
+        }
+        if best.is_some() { return best; }
+        search_from = name_at + action_name.len();
     }
-    best
+    None
 }
 
 fn extract_script_urls(html: &str) -> Vec<String> {
@@ -440,11 +501,14 @@ fn extract_script_urls(html: &str) -> Vec<String> {
     let mut cursor = 0;
     while let Some(relative) = html[cursor..].find("src=") {
         cursor += relative + 4;
+        while html[cursor..].chars().next().is_some_and(char::is_whitespace) {
+            cursor += html[cursor..].chars().next().map_or(0, char::len_utf8);
+        }
         let rest = &html[cursor..];
         let Some(quote) = rest.chars().next().filter(|value| matches!(value, '"' | '\'')) else { continue; };
         let body = &rest[quote.len_utf8()..];
         let Some(end) = body.find(quote) else { break; };
-        let mut url = body[..end].replace("&amp;", "&");
+        let mut url = html_unescape(&body[..end]);
         cursor += quote.len_utf8() + end + quote.len_utf8();
         if !url.contains("/_next/") || !url.contains(".js") { continue; }
         if url.starts_with('/') { url = format!("{BASE_URL}{url}"); }
@@ -492,7 +556,7 @@ fn decode_js_single_quoted(value: &str) -> String {
     let mut chars = value.chars();
     while let Some(character) = chars.next() {
         if character != '\\' { output.push(character); continue; }
-        let Some(next) = chars.next() else { break; };
+        let Some(next) = chars.next() else { output.push('\\'); break; };
         match next { '\\' => output.push('\\'), '\'' => output.push('\''), '"' => output.push('"'), '/' => output.push('/'), 'b' => output.push('\u{0008}'), 'f' => output.push('\u{000C}'), 'n' => output.push('\n'), 'r' => output.push('\r'), 't' => output.push('\t'), other => { output.push('\\'); output.push(other); } }
     }
     output
@@ -501,6 +565,9 @@ fn decode_js_single_quoted(value: &str) -> String {
 fn parse_map_array(text: &str, game: ZeldaGame) -> Option<Vec<MapPlace>> {
     let root = serde_json::from_str::<Value>(text).ok()?;
     let array = root.as_array()?;
+    if array.is_empty() { return None; }
+    let looks_like_map = array.iter().any(|item| item.get("uid").is_some() && item.get("viewCategory").is_some() && item.get("coordinates").is_some());
+    if !looks_like_map { return None; }
     let looks_totk = array.iter().any(|item| item.get("layer").is_some());
     if (game == ZeldaGame::TearsOfTheKingdom) != looks_totk { return None; }
     let mut output = Vec::new();
@@ -538,23 +605,51 @@ fn fetch_labels(http: &HttpClient, session: &str, language: &str, country: &str)
     if labels.is_empty() && language != "en-GB" { fetch("en-GB") } else { Ok(labels) }
 }
 
-fn find_google_avatar(source: &str) -> String {
+fn html_unescape(value: &str) -> String { value.replace("&amp;", "&") }
+
+fn percent_decode(value: &str) -> String {
+    percent_encoding::percent_decode_str(value).decode_utf8_lossy().into_owned()
+}
+
+fn find_ugc_avatar(source: &str) -> String {
     let Some(marker) = source.find("storage.googleapis.com") else { return String::new(); };
-    let start = source[..marker].rfind("https://storage.googleapis.com").unwrap_or(marker);
-    if start == marker { return String::new(); }
-    source[start..].split(['"', '\'', ' ']).next().unwrap_or_default().replace("&amp;", "&")
+    if let Some(start) = source[..marker].rfind("url=") {
+        let value_start = start + 4;
+        let tail = &source[value_start..];
+        let end = tail.find(['&', '"', '\'', ' ']).unwrap_or(tail.len());
+        return percent_decode(&html_unescape(&tail[..end]));
+    }
+    let Some(start) = source[..=marker].rfind("https://storage.googleapis.com") else { return String::new(); };
+    let tail = &source[start..];
+    let end = tail.find(['"', '\'', ' ']).unwrap_or(tail.len());
+    html_unescape(&tail[..end])
+}
+
+fn percent_encode(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut output = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            output.push(char::from(byte));
+        } else {
+            output.push('%');
+            output.push(char::from(HEX[usize::from(byte >> 4)]));
+            output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    output
 }
 
 fn router_state_tree(game: ZeldaGame) -> String {
     let raw = format!("[\"\",{{\"children\":[\"{}\",{{\"children\":[\"complete-guide\",{{\"children\":[\"__PAGE__\",{{}},null,null]}},null,null]}},null,null,true]}},null,null,true]", short_name(game));
-    percent_encoding::utf8_percent_encode(&raw, percent_encoding::NON_ALPHANUMERIC).to_string()
+    percent_encode(&raw)
 }
 
 fn resolve_location(metadata: &WebMetadata, state: &LiveState, previous: &ResolvedLocation) -> ResolvedLocation {
-    let mut result = ResolvedLocation { region: resolve_region(metadata, state.game, state.position), ..ResolvedLocation::default() };
+    let mut result = ResolvedLocation { layer: state.layer, region: resolve_region(metadata, state.game, state.position), ..ResolvedLocation::default() };
     let exact: LocationResult = match state.game { ZeldaGame::TearsOfTheKingdom => resolve_totk_location_3d(state.position, state.layer), ZeldaGame::BreathOfTheWild => resolve_botw_location_3d(state.position), ZeldaGame::Unknown => LocationResult::default() };
     if exact.matched() {
-        result.poi = exact.name().to_owned(); result.stage_image_uri = exact.image_url().to_owned(); result.subcategory = exact.category().to_ascii_lowercase(); result.at_poi = true; result.valid = true; return result;
+        result.poi = exact.name().to_owned(); result.stage_image_uri = exact.image_url().to_owned(); result.at_poi = true; result.valid = true; return result;
     }
     let mut best: Option<(&MapPlace, f64, f64)> = None;
     for place in &metadata.places {
@@ -583,45 +678,163 @@ fn resolve_location(metadata: &WebMetadata, state: &LiveState, previous: &Resolv
     result
 }
 
-fn format_presence(metadata: &WebMetadata, state: &LiveState, location: &ResolvedLocation) -> ZeldaNotesPresence {
+fn format_presence(_metadata: &WebMetadata, state: &LiveState, location: &ResolvedLocation) -> ZeldaNotesPresence {
     if !location.valid { return ZeldaNotesPresence::default(); }
-    let details = if !location.poi.is_empty() { format!("{} {}", if location.at_poi { "At" } else { "Near" }, location.poi) } else if !location.region.is_empty() { format!("Exploring {}", location.region) } else { "Exploring Hyrule".to_owned() };
+    let details = if !location.poi.is_empty() && location.at_poi {
+        format!("At {}", location.poi)
+    } else if !location.poi.is_empty() {
+        format!("Near {}", location.poi)
+    } else if !location.region.is_empty() {
+        format!("Exploring {}", location.region)
+    } else {
+        "Exploring Hyrule".to_owned()
+    };
     let secondary = lore_activity(state, location);
     if details.is_empty() || secondary.is_empty() { return ZeldaNotesPresence::default(); }
     ZeldaNotesPresence {
-        profile_summary: clamp_text(details), title_name: clamp_text(secondary),
+        profile_summary: clamp_text(details),
+        title_name: clamp_text(secondary),
         stage_image_uri: if location.stage_image_uri.is_empty() { resolve_region_artwork(&location.region, state.game, state.layer) } else { location.stage_image_uri.clone() },
         stage_name: if location.poi.is_empty() { if location.region.is_empty() { "Hyrule".to_owned() } else { location.region.clone() } } else { location.poi.clone() },
-        avatar_url: metadata.custom_avatar_url.clone(), active: true,
+        avatar_url: String::new(),
+        active: true,
     }
 }
 
 fn lore_activity(state: &LiveState, location: &ResolvedLocation) -> String {
-    let poi = &location.poi; let region = &location.region; let category = &location.subcategory;
+    let poi = &location.poi;
+    let region = &location.region;
+    let category = &location.subcategory;
+    let x = state.position.x();
+    let y = state.position.y();
+    let z = state.position.z();
+
     if location.at_poi || location.near_poi {
-        if poi.contains("Hyrule Castle") { return "Infiltrating the Sacred Seat of Hyrule".to_owned(); }
+        if poi.contains("Hyrule Castle") || poi.contains("Sanctum") { return "Infiltrating the Sacred Seat of Hyrule".to_owned(); }
         if poi.contains("Temple of Time") { return "Sacred Ruins of the Ancient Realm".to_owned(); }
+        if poi.contains("Forgotten Temple") { return "Exploring the Ancient Hidden Temple".to_owned(); }
         if poi.contains("Yiga") || poi.contains("Hideout") { return "Infiltrating Enemy Stronghold".to_owned(); }
-        if poi.contains("Cave") || poi.contains("Well") { return "Exploring Caverns & Tunnels".to_owned(); }
-        if poi.contains("Tower") || matches!(category.as_str(), "skyviewtower" | "tower") { return "Surveying from High Vantage Point".to_owned(); }
-        if poi.contains("Stable") || matches!(category.as_str(), "stable" | "hatago") { return "Resting at the Stable".to_owned(); }
+        if poi.contains("Coliseum") || poi.contains("Colosseum") { return "Challenging Ancient Arenas".to_owned(); }
+        if poi.contains("Citadel") { return "Exploring Ancient Citadel Ruins".to_owned(); }
+        if poi.contains("Labyrinth") || poi.contains("Maze") { return "Navigating Ancient Labyrinths".to_owned(); }
+        if poi.contains("Chasm") { return "Descending into the Depths".to_owned(); }
+        if poi.contains("Cave") || poi.contains("Well") || poi.contains("Grotto") { return "Exploring Caverns & Tunnels".to_owned(); }
+        if poi.contains("Fairy") { return "Visiting the Great Fairy".to_owned(); }
+        if poi.contains("Lab") { return "Visiting the Ancient Tech Lab".to_owned(); }
+        if poi.contains("Hudson Construction") { return "Building the Future of Hyrule".to_owned(); }
+        if poi.contains("Tower") || matches!(category.as_str(), "skyviewTower" | "tower") {
+            if matches!(region.as_str(), "Hebra" | "Tabantha") { return "Surveying the Frozen Mountain Peaks".to_owned(); }
+            if region == "Akkala" { return "Surveying the Autumn Highlands".to_owned(); }
+            if matches!(region.as_str(), "Eldin" | "Death Mountain") { return "Overlooking the Volcanic Realm".to_owned(); }
+            if region == "Gerudo" { return "Overlooking the Shifting Sands".to_owned(); }
+            if region == "Lanayru" { return "Surveying the Rushing Waterways".to_owned(); }
+            if matches!(region.as_str(), "Necluda" | "Dueling Peaks") { return "Surveying the Peaceful Valleys".to_owned(); }
+            if matches!(region.as_str(), "Faron" | "Lake Hylia") { return "Overlooking the Dense Jungle Wilds".to_owned(); }
+            if region == "Great Plateau" { return "Surveying the Ancient Plateau".to_owned(); }
+            return "Surveying from High Vantage Point".to_owned();
+        }
+        if poi.contains("Stable") || matches!(category.as_str(), "stable" | "hatago") {
+            if matches!(region.as_str(), "Hebra" | "Tabantha") { return "Resting by the Frozen Snowfields".to_owned(); }
+            if region == "Akkala" { return "Resting on the Road to the Sea".to_owned(); }
+            if region == "Eldin" { return "Resting by the Foot of the Volcano".to_owned(); }
+            if region == "Gerudo" { return "Resting on the Way to the Desert".to_owned(); }
+            if region == "Lanayru" { return "Resting along the Waterways".to_owned(); }
+            if matches!(region.as_str(), "Necluda" | "Dueling Peaks") { return "Resting near the Cleft of the Peaks".to_owned(); }
+            if matches!(region.as_str(), "Faron" | "Lake Hylia") { return "Resting by the Southern Shores".to_owned(); }
+            return "Resting at the Stable".to_owned();
+        }
         if poi.contains("Shrine") || category == "shrine" { return "Investigating a Sacred Shrine".to_owned(); }
         if poi.contains("Lightroot") || category == "lightroot" { return "Resting in the Glow of a Lightroot".to_owned(); }
-        if category == "village" || poi.contains("Town") || poi.contains("Village") || poi.contains("Domain") || poi.contains("City") { return "Visiting Local Settlement".to_owned(); }
+        if poi.contains("Temple") || poi.contains("Mine") || poi.contains("Forge") || category == "dungeon" { return "Delving into Ancient Ruins".to_owned(); }
+        if (poi.contains("Archipelago") || poi.contains("Island")) && state.layer == ZeldaLayer::Sky { return "Navigating High Sky Islands".to_owned(); }
+        if poi.contains("Tarrey Town") { return "Settlement on the Island Bluff".to_owned(); }
+        if poi.contains("Lookout Landing") { return "Heart of the Resistance".to_owned(); }
+        if poi.contains("Rito Village") { return "Home of the Champions".to_owned(); }
+        if poi.contains("Goron City") { return "City in the Mountain Crags".to_owned(); }
+        if poi.contains("Zora") && poi.contains("Domain") { return "Domain of the Water Tribe".to_owned(); }
+        if poi.contains("Gerudo Town") || poi.contains("Kara Kara") { return "Oasis in the Desert Sands".to_owned(); }
+        if poi.contains("Hateno Village") { return "Idyllic Countryside Pastures".to_owned(); }
+        if poi.contains("Kakariko Village") { return "Hidden Haven of the Sheikah".to_owned(); }
+        if poi.contains("Lurelin Village") { return "Tropical Seaside Haven".to_owned(); }
+        if poi.contains("Korok Forest") { return "Sanctuary of the Great Deku Tree".to_owned(); }
+        if category == "village" || poi.contains("Town") || poi.contains("Village") || poi.contains("Landing") || poi.contains("Domain") || poi.contains("City") { return "Visiting Local Settlement".to_owned(); }
     }
-    if state.game == ZeldaGame::TearsOfTheKingdom && state.layer == ZeldaLayer::Sky { return if state.position.y() > 2200.0 { "Soaring in the Upper Stratosphere" } else { "Soaring above the Clouds" }.to_owned(); }
-    if state.game == ZeldaGame::TearsOfTheKingdom && state.layer == ZeldaLayer::Underground { return if state.position.y() < -800.0 { "Trekking the Abyssal Depths" } else { "Trekking the Lightless Depths" }.to_owned(); }
-    match region.as_str() {
-        "Hebra" | "Tabantha" => "Braving the Frozen Mountain Wilds",
-        "Gerudo" => "Crossing the Shifting Desert Sands",
-        "Eldin" => "Roaming the Volcanic Foothills",
-        "Akkala" => "Wandering the Autumn Highlands",
-        "Lanayru" => "Roaming the Rushing Waterways",
-        "Necluda" | "Dueling Peaks" => "Wandering the Peaceful Countryside",
-        "Faron" | "Lake Hylia" => "Venturing through the Dense Jungle",
-        "Great Hyrule Forest" => "Navigating the Mystical Lost Woods",
-        _ => "Roaming the Open Wilds",
-    }.to_owned()
+
+    if state.game == ZeldaGame::TearsOfTheKingdom && state.layer == ZeldaLayer::Sky {
+        if y > 2200.0 { return "Soaring in the Upper Stratosphere".to_owned(); }
+        if x > 3000.0 && z < -1000.0 { return "Navigating High Sky Islands".to_owned(); }
+        if x < -2500.0 && z < -1500.0 { return "Navigating the Cold Sky Realm".to_owned(); }
+        if x < -2500.0 && z > 1500.0 { return "Navigating the Desert Sky Realm".to_owned(); }
+        if x > 1500.0 && z < -1500.0 { return "Navigating the Volcanic Sky Realm".to_owned(); }
+        if x > 1500.0 && z > 1500.0 { return "Navigating the Southern Sky Realm".to_owned(); }
+        if x > -500.0 && x < 1000.0 && z > 500.0 && z < 2000.0 { return "Exploring Ancient Sky Ruins".to_owned(); }
+        return "Soaring above the Clouds".to_owned();
+    }
+
+    if state.game == ZeldaGame::TearsOfTheKingdom && state.layer == ZeldaLayer::Underground {
+        if y < -800.0 { return "Trekking the Abyssal Depths".to_owned(); }
+        if x > 2500.0 && z < -1000.0 { return "Trekking the Eastern Depths".to_owned(); }
+        if x > 1000.0 && z < -2000.0 { return "Navigating the Volcanic Depths".to_owned(); }
+        if x < -2000.0 && z > 1000.0 { return "Trekking the Desert Depths".to_owned(); }
+        if x < -2000.0 && z < -1000.0 { return "Braving the Freezing Depths".to_owned(); }
+        if x > 1500.0 && z > -500.0 && z < 1000.0 { return "Navigating the Underground Waterways".to_owned(); }
+        if x > -1500.0 && x < 1500.0 && z > -1500.0 && z < 1500.0 { return "Trekking the Central Depths".to_owned(); }
+        return "Trekking the Lightless Depths".to_owned();
+    }
+
+    if region == "Akkala" {
+        if x > 4000.0 && z < -2000.0 { return "Wandering the Rist Peninsula Coast".to_owned(); }
+        if z < -2800.0 { return "Traversing the Deep Highlands".to_owned(); }
+        if z < -2200.0 && x < 3600.0 { return "Investigating Skull Lake".to_owned(); }
+        if x > 3200.0 && z > -2000.0 && z < -1200.0 { return "Wandering around the Lake Caldera".to_owned(); }
+        if z > -1200.0 { return "Traversing the Southern Plains".to_owned(); }
+        return "Wandering the Autumn Highlands".to_owned();
+    }
+    if matches!(region.as_str(), "Central Hyrule" | "Hyrule Field") {
+        if z < -1000.0 && x > -500.0 && x < 500.0 { return "Surveying Ancient Castle Town Ruins".to_owned(); }
+        if x < -1000.0 { return "Roaming the Western Plains".to_owned(); }
+        if x > 1000.0 { return "Wandering near Crenel Hills".to_owned(); }
+        if z > 500.0 { return "Traversing the Vast Plains".to_owned(); }
+        return "Roaming the Heart of the Plains".to_owned();
+    }
+    if matches!(region.as_str(), "Eldin" | "Death Mountain") {
+        if x > 2000.0 && z < -2500.0 { return "Scaling the Summit of the Volcano".to_owned(); }
+        if z < -3000.0 { return "Climbing the Northern Peaks".to_owned(); }
+        if x < 1500.0 { return "Braving the Crags of the Canyon".to_owned(); }
+        return "Traversing the Scorching Lava Beds".to_owned();
+    }
+    if matches!(region.as_str(), "Hebra" | "Tabantha") {
+        if x < -2500.0 && z < -2500.0 { return "Braving the Summit of the Mountain".to_owned(); }
+        if x > -2500.0 && z < -2500.0 { return "Traversing the Tundra Snowfields".to_owned(); }
+        if z > -2000.0 { return "Wandering the Western Frontier".to_owned(); }
+        return "Braving the Freezing Mountain Peaks".to_owned();
+    }
+    if region == "Gerudo" {
+        if z > 2500.0 && x < -2500.0 { return "Traversing the Great Desert Dunes".to_owned(); }
+        if z < 1500.0 { return "Scaling the Frozen Highlands".to_owned(); }
+        if x > -2500.0 { return "Navigating the Narrow Canyons".to_owned(); }
+        return "Traversing the Shifting Sands".to_owned();
+    }
+    if region == "Lanayru" {
+        if x > 3000.0 && z > 500.0 { return "Braving the High Peak Snowfields".to_owned(); }
+        if x < 2000.0 && z > -500.0 { return "Navigating the Vast Wetlands".to_owned(); }
+        if x > 2500.0 && z < -500.0 { return "Roaming the Domain Waterways".to_owned(); }
+        return "Roaming the Rushing Waterways".to_owned();
+    }
+    if matches!(region.as_str(), "Necluda" | "Dueling Peaks") {
+        if x < 2000.0 { return "Traversing the Cleft of the Peaks".to_owned(); }
+        if x > 3000.0 { return "Roaming the Eastern Valleys".to_owned(); }
+        return "Wandering the Peaceful Countryside".to_owned();
+    }
+    if matches!(region.as_str(), "Faron" | "Lake Hylia") {
+        if x < 500.0 && z > 2000.0 { return "Roaming the Shores of the Great Lake".to_owned(); }
+        if x > 2500.0 { return "Wandering the Sunny Palmorae Coast".to_owned(); }
+        return "Venturing through the Dense Jungle".to_owned();
+    }
+    if region == "Great Hyrule Forest" { return "Navigating the Mystical Lost Woods".to_owned(); }
+    if region == "Hyrule Ridge" { return "Traversing the Windy Plateaus".to_owned(); }
+    if region == "Great Plateau" { return "Trekking the Ancient Plateau".to_owned(); }
+    "Roaming the Open Wilds".to_owned()
 }
 
 fn clamp_text(mut value: String) -> String {
@@ -670,7 +883,10 @@ fn thresholds(category: &str) -> (f64, f64) { match category { "village" => (180
 fn category_priority(category: &str) -> i32 { match category { "village" => 100, "stable" | "hatago" => 95, "structure" => 90, "other" => 85, "skyviewTower" | "tower" => 75, "shrine" | "dungeon" | "lightroot" => 60, _ => 40 } }
 fn game_id(game: ZeldaGame) -> &'static str { match game { ZeldaGame::BreathOfTheWild => "0", ZeldaGame::TearsOfTheKingdom => "1", ZeldaGame::Unknown => "" } }
 fn short_name(game: ZeldaGame) -> &'static str { match game { ZeldaGame::BreathOfTheWild => "botw", ZeldaGame::TearsOfTheKingdom => "totk", ZeldaGame::Unknown => "" } }
-fn route_url(game: ZeldaGame) -> String { format!("{BASE_URL}/{}/complete-guide", short_name(game)) }
+fn route_url(game: ZeldaGame) -> String {
+    let short = short_name(game);
+    if short.is_empty() { String::new() } else { format!("{BASE_URL}/{short}/complete-guide") }
+}
 
 fn bootstrap_headers(token: &str, language: &str, country: &str) -> Vec<String> {
     vec!["Upgrade-Insecure-Requests: 1".to_owned(), format!("User-Agent: {USER_AGENT}"), "x-appplatform: android".to_owned(), "x-appcolorscheme: DARK".to_owned(), format!("x-gamewebtoken: {token}"), "dnt: 1".to_owned(), "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8".to_owned(), format!("Accept-Language: {language}"), format!("X-NACountry: {country}"), "X-Requested-With: com.nintendo.znca".to_owned()]
@@ -680,8 +896,12 @@ fn authenticated_headers(session: &str, language: &str, country: &str, accept: &
 }
 fn session_cookie(response: &crate::http::HttpResponse) -> String {
     response.header("set-cookie").unwrap_or_default().lines().find_map(|line| {
-        let pair = line.split(';').next()?.trim(); let (name, value) = pair.split_once('=')?; let lower = name.to_ascii_lowercase();
-        (lower == "a5_token" || lower.contains("session")).then(|| format!("{}={}", name.trim(), value.trim()))
+        let trimmed = line.trim_start();
+        let (name, rest) = trimmed.split_once('=')?;
+        let lower = name.to_ascii_lowercase();
+        if lower != "a5_token" && !lower.contains("session") { return None; }
+        let value = rest.split(';').next().unwrap_or(rest);
+        Some(format!("{name}={value}"))
     }).unwrap_or_default()
 }
 
@@ -699,7 +919,21 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(message.message_type, LiveMessageType::MapSyncPlayerInfo);
-        assert_eq!(message.state.expect("state").layer, ZeldaLayer::Ground);
+        let state = message.state.expect("state");
+        assert_eq!(state.layer, ZeldaLayer::Ground);
+        assert!(state.synchronized);
+    }
+
+    #[test]
+    fn malformed_player_update_still_invalidates_live_state() {
+        let message = decode_live_message(
+            r#"{"messageType":"map_sync_player_info","playerPos":[1,2,3],"playerLayer":"Ground"}"#,
+            ZeldaGame::TearsOfTheKingdom,
+            Instant::now(),
+        );
+        assert!(message.valid);
+        assert!(message.updates_live_state);
+        assert!(!message.state.expect("state").synchronized);
     }
 
     #[test]
