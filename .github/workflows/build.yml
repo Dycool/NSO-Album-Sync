@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+env:
+  DISCORD_SDK_REPOSITORY: Dycool/NSO-Album-Sync-SDK
+  DISCORD_SDK_REF: 21aa7516c44e2856d1fe0927f0c13c092182e2b7
+
 jobs:
   rust:
     name: Rust ${{ matrix.os }}
@@ -22,13 +26,42 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Discord Social SDK
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DISCORD_SDK_REPOSITORY }}
+          ref: ${{ env.DISCORD_SDK_REF }}
+          path: third_party/discord_social_sdk
+          token: ${{ secrets.NSO_SDK_REPO_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Repair macOS Discord framework links
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          framework="third_party/discord_social_sdk/lib/release/discord_partner_sdk.framework"
+          rm -f \
+            "$framework/Versions/Current" \
+            "$framework/Frameworks" \
+            "$framework/Headers" \
+            "$framework/Resources" \
+            "$framework/discord_partner_sdk"
+          ln -s A "$framework/Versions/Current"
+          ln -s Versions/Current/Frameworks "$framework/Frameworks"
+          ln -s Versions/Current/Headers "$framework/Headers"
+          ln -s Versions/Current/Resources "$framework/Resources"
+          ln -s Versions/Current/discord_partner_sdk "$framework/discord_partner_sdk"
+
       - name: Linux native dependencies
         if: runner.os == 'Linux'
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev pkg-config
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev pkg-config \
+            libpulse0 libasound2-dev
 
       - name: Toolchain
         run: rustup show active-toolchain
@@ -45,10 +78,46 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Clippy Discord boundary
+        run: cargo clippy --manifest-path discord-social-sdk/Cargo.toml --all-targets -- -D warnings
+
       - name: Tests
+        shell: bash
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/discord_social_sdk/lib/release
+          DYLD_FRAMEWORK_PATH: ${{ github.workspace }}/third_party/discord_social_sdk/lib/release
         run: cargo test --all-targets
 
-      - name: Self test
+      - name: Build Windows self-test resource
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdkDll = (Resolve-Path "third_party/discord_social_sdk/bin/release/discord_partner_sdk.dll").Path.Replace('\', '/')
+          New-Item -ItemType Directory -Force target | Out-Null
+          $rcPath = (Join-Path $PWD "target/discord-self-test.rc")
+          $resPath = (Join-Path $PWD "target/discord-self-test.res")
+          Set-Content -LiteralPath $rcPath -Value "201 RCDATA `"$sdkDll`"" -Encoding ascii
+          $rcExe = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe" |
+            Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+          if (-not $rcExe) { throw "Windows resource compiler was not found" }
+          & $rcExe /nologo /fo $resPath $rcPath
+          if ($LASTEXITCODE -ne 0) { throw "Windows resource compilation failed" }
+          "NSO_DISCORD_SELF_TEST_RES=$resPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Self test Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo rustc --bin nso-album-sync -- -C "link-arg=$env:NSO_DISCORD_SELF_TEST_RES"
+          target/debug/nso-album-sync.exe --self-test
+
+      - name: Self test Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/discord_social_sdk/lib/release
+          DYLD_FRAMEWORK_PATH: ${{ github.workspace }}/third_party/discord_social_sdk/lib/release
         run: cargo run -- --self-test
 
       - name: Export dependency lock
