@@ -5,13 +5,14 @@ use atomic_write_file::AtomicWriteFile;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const NINTENDO_CALLBACK_SCHEME: &str = "npf71b963c1b7b6d119";
 pub const NINTENDO_REDIRECT_URI: &str = "npf71b963c1b7b6d119://auth";
+const MAX_CALLBACK_BYTES: usize = 16 * 1024;
 
 #[cfg(target_os = "windows")]
 const WINDOWS_HANDLER_DESCRIPTION: &str = "URL:NSO Album Sync Nintendo Account callback";
@@ -24,13 +25,24 @@ const LINUX_DESKTOP_ID: &str = "nso-album-sync-auth.desktop";
 const LINUX_MIME_TYPE: &str = "x-scheme-handler/npf71b963c1b7b6d119";
 
 pub fn is_nintendo_auth_callback(input: &str) -> bool {
-    let Ok(url) = url::Url::parse(input.trim()) else {
+    let value = input.trim();
+    if value.len() < NINTENDO_REDIRECT_URI.len()
+        || !value[..NINTENDO_REDIRECT_URI.len()].eq_ignore_ascii_case(NINTENDO_REDIRECT_URI)
+    {
         return false;
-    };
-    url.scheme().eq_ignore_ascii_case(NINTENDO_CALLBACK_SCHEME)
-        && url
-            .host_str()
-            .is_some_and(|host| host.eq_ignore_ascii_case("auth"))
+    }
+
+    let mut suffix = &value[NINTENDO_REDIRECT_URI.len()..];
+    if suffix.is_empty() {
+        return true;
+    }
+    if let Some(rest) = suffix.strip_prefix('/') {
+        suffix = rest;
+        if suffix.is_empty() {
+            return true;
+        }
+    }
+    matches!(suffix.as_bytes().first(), Some(b'#' | b'?'))
 }
 
 pub fn callback_from_args(args: &[String]) -> Option<String> {
@@ -40,31 +52,22 @@ pub fn callback_from_args(args: &[String]) -> Option<String> {
 }
 
 /// Register the Nintendo callback protocol for the active sign-in flow.
-///
-/// This intentionally mirrors the C++ reference: Windows/Linux refuse to take
-/// the scheme from another application instead of silently overwriting it.
 pub fn register_protocol() -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     register_protocol_windows()?;
     #[cfg(target_os = "linux")]
     register_protocol_linux()?;
     #[cfg(target_os = "macos")]
-    {
-        // The scheme is declared by the application bundle's Info.plist.
-    }
+    register_protocol_macos();
     Ok(())
 }
 
 pub fn unregister_protocol() {
     #[cfg(target_os = "windows")]
     unregister_protocol_windows();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        // Deliberately a no-op, matching the C++ Linux implementation.
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Bundle protocol registration is managed by Launch Services.
+        // Deliberately a no-op, matching the C++ Linux/macOS implementations.
     }
 }
 
@@ -242,14 +245,34 @@ fn desktop_quote(value: &str) -> String {
     escaped
 }
 
+#[cfg(target_os = "macos")]
+fn register_protocol_macos() {
+    // Info.plist declares the scheme. Force-register the containing app bundle
+    // with Launch Services so moved/ad-hoc builds are rediscovered, mirroring
+    // the C++ LSRegisterURL call without FFI in this crate.
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let Some(bundle) = executable
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+    else {
+        return;
+    };
+    let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+    let _ = Command::new(lsregister).args(["-f"]).arg(bundle).status();
+}
+
 pub fn publish_callback(callback: &str) -> anyhow::Result<()> {
+    let callback = callback.trim();
     anyhow::ensure!(
         is_nintendo_auth_callback(callback),
         "refusing invalid callback URL"
     );
+    anyhow::ensure!(callback.len() <= MAX_CALLBACK_BYTES, "callback URL is too large");
     let path = callback_path()?;
     let mut file = AtomicWriteFile::open(&path)?;
-    file.write_all(callback.trim().as_bytes())?;
+    file.write_all(callback.as_bytes())?;
     file.flush()?;
     file.commit()?;
     make_private(&path)?;
@@ -261,6 +284,23 @@ pub fn take_callback() -> anyhow::Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
+
+    let metadata = fs::symlink_metadata(&path)?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_CALLBACK_BYTES as u64 {
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.uid() != unsafe_free_current_uid()
+            || metadata.mode() & 0o077 != 0
+        {
+            let _ = fs::remove_file(&path);
+            return Ok(None);
+        }
+    }
+
     let value = fs::read_to_string(&path)?;
     let _ = fs::remove_file(&path);
     let value = value.trim().to_owned();
@@ -271,13 +311,38 @@ pub fn take_callback() -> anyhow::Result<Option<String>> {
     }
 }
 
+#[cfg(unix)]
+fn unsafe_free_current_uid() -> u32 {
+    // `id -u` preserves the ownership check from the C++ implementation while
+    // keeping this crate free of libc FFI and unsafe code.
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(u32::MAX)
+}
+
 pub fn clear_callback() -> anyhow::Result<()> {
-    let path = callback_path()?;
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+    let directory = runtime_directory()?;
+    let path = directory.join("auth-callback.txt");
+    match fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
+
+    if let Ok(entries) = fs::read_dir(&directory) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with("auth-callback.tmp.") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn callback_path() -> anyhow::Result<PathBuf> {
@@ -295,4 +360,18 @@ fn make_private(path: &Path) -> anyhow::Result<()> {
         let _ = path;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_nintendo_auth_callback;
+
+    #[test]
+    fn accepts_only_reference_callback_shapes() {
+        assert!(is_nintendo_auth_callback("npf71b963c1b7b6d119://auth"));
+        assert!(is_nintendo_auth_callback("npf71b963c1b7b6d119://auth/#state=x"));
+        assert!(is_nintendo_auth_callback("NPF71B963C1B7B6D119://AUTH?state=x"));
+        assert!(!is_nintendo_auth_callback("npf71b963c1b7b6d119://auth/evil"));
+        assert!(!is_nintendo_auth_callback("https://example.com/"));
+    }
 }
