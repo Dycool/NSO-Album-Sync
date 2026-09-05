@@ -15,6 +15,10 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "delayimp")
+#pragma comment(linker, "/delayload:discord_partner_sdk.dll")
+#endif
 #endif
 
 #ifndef NSO_DISCORD_SOCIAL_SDK_VERSION
@@ -36,7 +40,7 @@ bool ensure_embedded_discord_sdk_loaded() {
         const HRSRC resource = FindResourceW(
             executable,
             MAKEINTRESOURCEW(NSO_DISCORD_SDK_RESOURCE_ID),
-            RT_RCDATA);
+            MAKEINTRESOURCEW(10));
         if (resource == nullptr) return false;
 
         const HGLOBAL data_handle = LoadResource(executable, resource);
