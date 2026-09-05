@@ -17,7 +17,9 @@ const HISTORY_RECORD_QUERY: &str = "a654ecc80161a7ca5c38761c1d9e502d405eae764e2d
 #[derive(Debug, Clone, Default)]
 pub struct SplatNetPresence {
     player_name: String,
+    player_id: String,
     title: String,
+    weapon_name: String,
     rank_name: String,
     player_level: i64,
     stage_image_uri: String,
@@ -25,6 +27,8 @@ pub struct SplatNetPresence {
 }
 impl SplatNetPresence {
     pub fn active(&self) -> bool { self.active }
+    pub fn player_id(&self) -> &str { &self.player_id }
+    pub fn weapon_name(&self) -> &str { &self.weapon_name }
     pub fn stage_image_uri(&self) -> &str { &self.stage_image_uri }
     pub fn format_details(&self) -> String {
         if self.player_name.is_empty() { return self.title.clone(); }
@@ -100,12 +104,26 @@ impl SplatNetClient {
         let Some(data) = root.get("data") else { return Ok(SplatNetPresence::default()); };
         let Some(player) = data.get("currentPlayer") else { return Ok(SplatNetPresence::default()); };
         let player_name = string(player, "name");
+        let player_id = string(player, "nameId");
         let title = string(player, "byname");
-        let stage_image_uri = player.get("weapon").and_then(|weapon| weapon.get("image")).map(|image| string(image, "url")).map(|url| discord_weapon_image_url(&url)).unwrap_or_default();
+        let (weapon_name, stage_image_uri) = player.get("weapon").map(|weapon| {
+            let name = string(weapon, "name");
+            let image = weapon.get("image").map(|image| string(image, "url")).map(|url| discord_weapon_image_url(&url)).unwrap_or_default();
+            (name, image)
+        }).unwrap_or_default();
         let history = data.get("playHistory").unwrap_or(&Value::Null);
         let player_level = history.get("rank").and_then(Value::as_i64).unwrap_or_default();
         let rank_name = history.get("udemae").map(|rank| rank.as_str().map(ToOwned::to_owned).or_else(|| rank.get("name").and_then(Value::as_str).map(ToOwned::to_owned)).unwrap_or_default()).unwrap_or_default();
-        Ok(SplatNetPresence { active: !player_name.is_empty() || !title.is_empty() || player_level > 0, player_name, title, rank_name, player_level, stage_image_uri })
+        Ok(SplatNetPresence {
+            active: !player_name.is_empty() || !weapon_name.is_empty() || !title.is_empty(),
+            player_name,
+            player_id,
+            title,
+            weapon_name,
+            rank_name,
+            player_level,
+            stage_image_uri,
+        })
     }
 
     fn ensure_bullet_token(&self, web_service_token: &str) -> anyhow::Result<String> {
@@ -163,3 +181,14 @@ fn discord_weapon_image_url(signed_url: &str) -> String {
 }
 
 fn string(value: &Value, key: &str) -> String { value.get(key).and_then(Value::as_str).unwrap_or_default().to_owned() }
+
+#[cfg(test)]
+mod tests {
+    use super::discord_weapon_image_url;
+
+    #[test]
+    fn signed_weapon_url_uses_reference_mirror_shape() {
+        let source = "https://api.lp1.av5ja.srv.nintendo.net/resources/prod/weapon.png?Signature=long";
+        assert_eq!(discord_weapon_image_url(source), "https://splatoon3.ink/assets/splatnet/weapon.png");
+    }
+}
