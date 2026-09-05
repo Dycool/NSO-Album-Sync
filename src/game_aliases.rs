@@ -62,7 +62,7 @@ pub static GAME_ALIAS_GROUPS: &[&[&str]] = &[
     &["Fire Emblem Three Houses", "Fire Emblem: Three Houses", "ファイアーエムブレム 風花雪月"],
     &["Fire Emblem Engage", "ファイアーエムブレム エンゲージ"],
     &["Fire Emblem Warriors Three Hopes", "ファイアーエムブレム無双 風花雪月"],
-    &["Nintendo Switch Sports"],
+    &["Nintendo Switch Sports", "Nintendo Switch Sports"],
     &["Ring Fit Adventure", "リングフィット アドベンチャー"],
     &["Clubhouse Games 51 Worldwide Classics", "世界のアソビ大全51", "51 Worldwide Games"],
     &["Nintendo Entertainment System - Nintendo Switch Online", "Family Computer - Nintendo Switch Online", "ファミリーコンピュータ Nintendo Switch Online", "NES - Nintendo Switch Online", "FC - Nintendo Switch Online"],
