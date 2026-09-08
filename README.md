@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="icon.svg" alt="NSO Album Sync icon" width="128" height="128">
-</p>
-
 # NSO Album Sync
 
 **Automatically sync your Nintendo Switch Online album to your computer.**
