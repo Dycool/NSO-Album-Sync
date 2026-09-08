@@ -298,7 +298,7 @@ GtkWidget* create_dialog(
     gtk_container_set_border_width(GTK_CONTAINER(content), 20);
     gtk_box_set_spacing(GTK_BOX(content), 10);
 
-    auto* brand = gtk_label_new("Nintendo Switch Online · Album Sync");
+    auto* brand = gtk_label_new("NSO Album Sync");
     gtk_label_set_xalign(GTK_LABEL(brand), 0.0f);
     gtk_style_context_add_class(
         gtk_widget_get_style_context(brand),

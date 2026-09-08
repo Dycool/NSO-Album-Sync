@@ -55,6 +55,12 @@ The app shows a disclosure before sign-in because the Nintendo Account `id_token
 
 ---
 
+## ⚖️ Legal Disclaimer
+
+NSO Album Sync is an independent, unofficial open-source project and is not affiliated with, endorsed by, or sponsored by Nintendo. Nintendo Switch and Nintendo Switch Online are registered trademarks of Nintendo Co., Ltd. and Nintendo of America Inc. All game titles, screenshots, and artwork remain the property of their respective owners.
+
+---
+
 ## 📄 License
 
 Licensed under the [MIT License](LICENSE). Third-party runtime notices are listed in [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt).
