@@ -31,6 +31,7 @@ namespace {
 
 enum MenuCommand : NSInteger {
     SyncNow = 1,
+    CopyLastCapture,
     ToggleAutoSync,
     ToggleNotifications,
     ToggleDiscord,
@@ -100,6 +101,9 @@ void dispatch_menu_action(PlatformUi::Impl* impl, NSInteger command) {
     switch (static_cast<MenuCommand>(command)) {
         case SyncNow:
             callbacks.sync_now();
+            break;
+        case CopyLastCapture:
+            callbacks.copy_last_capture();
             break;
         case ToggleAutoSync:
             callbacks.toggle_auto();
@@ -267,6 +271,13 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         false,
         state.signed_in,
         @"arrow.triangle.2.circlepath");
+    add_menu_item(
+        impl->menu,
+        @"Copy Last Capture",
+        CopyLastCapture,
+        false,
+        state.signed_in,
+        @"doc.on.clipboard");
     add_menu_item(
         impl->menu,
         auto_sync_title(state.sync_interval_minutes),
@@ -450,6 +461,31 @@ void PlatformUi::notify(
     const std::string& title,
     const std::string& message) {
     deliver_notification(ns_string(title), ns_string(message));
+}
+
+bool PlatformUi::copy_file_to_clipboard(const std::filesystem::path& path) {
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(path, error);
+    if (error || !std::filesystem::is_regular_file(absolute, error) || error) {
+        return false;
+    }
+
+    const auto native_path = absolute.string();
+    __block bool success = false;
+    void (^copy_to_clipboard)(void) = ^{
+        NSURL* url = [NSURL fileURLWithPath:ns_string(native_path)];
+        if (url == nil) return;
+        NSPasteboard* clipboard = [NSPasteboard generalPasteboard];
+        [clipboard clearContents];
+        success = [clipboard writeObjects:@[url]];
+    };
+
+    if ([NSThread isMainThread]) {
+        copy_to_clipboard();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), copy_to_clipboard);
+    }
+    return success;
 }
 
 std::string PlatformUi::prompt(

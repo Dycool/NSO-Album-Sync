@@ -824,6 +824,49 @@ int App::run() {
         }
     };
 
+    callbacks.copy_last_capture = [this] {
+        const auto generation = account_generation_.load();
+        try {
+            {
+                std::lock_guard state_lock(state_mutex_);
+                status_ = "Fetching latest capture…";
+            }
+            update_menu();
+
+            const auto path = sync_.fetch_latest_capture();
+            if (stopping_ || account_generation_.load() != generation) return;
+            if (!ui_.copy_file_to_clipboard(path)) {
+                throw std::runtime_error("Could not place the latest capture on the clipboard");
+            }
+
+            {
+                std::lock_guard state_lock(state_mutex_);
+                status_ = "Last capture copied to clipboard";
+            }
+            const auto config = config_.snapshot();
+            if (config.notifications) {
+                ui_.notify(
+                    "NSO Album Sync",
+                    "Latest capture copied to the clipboard.");
+            }
+        } catch (const std::exception& error) {
+            if (stopping_ || account_generation_.load() != generation) return;
+            if (is_invalid_grant(error.what())) {
+                invalidate_session(
+                    "Nintendo Account session expired. Sign in again to continue.");
+                return;
+            }
+            {
+                std::lock_guard state_lock(state_mutex_);
+                status_ = error.what();
+            }
+            if (config_.snapshot().notifications) {
+                ui_.notify("NSO Album Sync", error.what());
+            }
+        }
+        update_menu();
+    };
+
     callbacks.toggle_auto = [this] {
         const auto config = config_.update([](AppConfig& value) {
             value.auto_sync = !value.auto_sync;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <functional>
 #include <string>
 
@@ -21,6 +22,7 @@ struct MenuState {
 struct PlatformCallbacks {
     std::function<void()> ready;
     std::function<void()> sync_now;
+    std::function<void()> copy_last_capture;
     std::function<void()> toggle_auto;
     std::function<void()> toggle_notifications;
     std::function<void()> toggle_discord;
@@ -41,6 +43,7 @@ public:
     void stop();
     void update(const MenuState& state);
     void notify(const std::string& title, const std::string& message);
+    bool copy_file_to_clipboard(const std::filesystem::path& path);
 
     std::string prompt(
         const std::string& title,

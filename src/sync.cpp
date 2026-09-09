@@ -7,6 +7,7 @@
 #include "nso_album_sync/windows_compat.hpp"
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -105,6 +106,10 @@ void validate_media_item_for_download(const MediaItem& item) {
         throw std::runtime_error(
             "Nintendo media download size is missing or exceeds the 256 MiB safety limit");
     }
+}
+
+std::int64_t media_timestamp(const MediaItem& item) {
+    return item.captured_at != 0 ? item.captured_at : item.uploaded_at;
 }
 
 void append_utf8(std::string& output, std::uint32_t code_point) {
@@ -569,6 +574,77 @@ SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
     }
 
     return {static_cast<int>(media.size()), downloaded};
+}
+
+std::filesystem::path SyncEngine::fetch_latest_capture() {
+    const auto config = config_.snapshot();
+    if (config.session_token.empty()) {
+        throw std::runtime_error("Not signed in to Nintendo Account");
+    }
+
+    const auto media = coral_.media_list(config.session_token);
+    if (media.empty()) {
+        throw std::runtime_error("No captures are currently available from Nintendo");
+    }
+
+    const auto latest = std::max_element(
+        media.begin(),
+        media.end(),
+        [](const MediaItem& left, const MediaItem& right) {
+            return media_timestamp(left) < media_timestamp(right);
+        });
+    validate_media_item_for_download(*latest);
+
+    const auto extension = lower(latest->type) == "video" ? "mp4" : "jpg";
+    const auto cache_directory = config_.directory() / "clipboard-cache";
+    std::filesystem::create_directories(cache_directory);
+    const auto destination = cache_directory / ("latest-capture." + extension);
+    auto temporary = destination;
+    temporary += ".part";
+
+    const auto response = http_.get(latest->content_uri, {}, 60);
+    if (response.status / 100 != 2) {
+        throw std::runtime_error(
+            "Latest capture download failed (HTTP " +
+            std::to_string(response.status) + ")");
+    }
+    if (response.body.size() != static_cast<std::size_t>(latest->content_length)) {
+        throw std::runtime_error(
+            "Latest capture size did not match Nintendo's content length");
+    }
+    if (response.body.size() > static_cast<std::size_t>(kMaxMediaDownloadBytes)) {
+        throw std::runtime_error("Latest capture exceeded the 256 MiB safety limit");
+    }
+
+    std::error_code cleanup_error;
+    std::filesystem::remove(temporary, cleanup_error);
+    try {
+        {
+            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+            if (!file) throw std::runtime_error("Could not create clipboard media file");
+            file.write(
+                reinterpret_cast<const char*>(response.body.data()),
+                static_cast<std::streamsize>(response.body.size()));
+            file.flush();
+            if (!file) throw std::runtime_error("Could not write clipboard media file");
+        }
+
+        std::error_code remove_error;
+        std::filesystem::remove(destination, remove_error);
+        std::error_code rename_error;
+        std::filesystem::rename(temporary, destination, rename_error);
+        if (rename_error) {
+            throw std::runtime_error(
+                "Could not finalize clipboard media: " + rename_error.message());
+        }
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw;
+    }
+
+    preserve_capture_timestamp(destination, media_timestamp(*latest));
+    return destination;
 }
 
 }  // namespace nso

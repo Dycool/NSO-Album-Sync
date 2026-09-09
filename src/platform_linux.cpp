@@ -224,6 +224,11 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         "Sync Now",
         &impl->callbacks.sync_now,
         state.signed_in);
+    append_menu_item(
+        impl->menu,
+        "Copy Last Capture",
+        &impl->callbacks.copy_last_capture,
+        state.signed_in);
     append_check_item(
         impl->menu,
         auto_sync_label(state.sync_interval_minutes),
@@ -492,6 +497,40 @@ void PlatformUi::notify(
         std::cerr << "Notification launch failed: " << error->message << '\n';
         g_error_free(error);
     }
+#endif
+}
+
+bool PlatformUi::copy_file_to_clipboard(const std::filesystem::path& path) {
+#ifdef NSO_HAVE_GTK
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(path, error);
+    if (error || !std::filesystem::is_regular_file(absolute, error) || error) {
+        return false;
+    }
+
+    GError* uri_error = nullptr;
+    gchar* uri = g_filename_to_uri(absolute.c_str(), nullptr, &uri_error);
+    if (uri == nullptr) {
+        if (uri_error != nullptr) {
+            std::cerr << "Clipboard URI conversion failed: " << uri_error->message << '\n';
+            g_error_free(uri_error);
+        }
+        return false;
+    }
+
+    gchar* uris[] = {uri, nullptr};
+    auto* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    if (clipboard == nullptr) {
+        g_free(uri);
+        return false;
+    }
+    gtk_clipboard_set_uris(clipboard, uris);
+    gtk_clipboard_store(clipboard);
+    g_free(uri);
+    return true;
+#else
+    (void)path;
+    return false;
 #endif
 }
 

@@ -24,7 +24,7 @@ constexpr char kNxapiSourceUrl[] =
     "https://github.com/samuelthomas2774/nxapi-znca-api";
 
 enum Command : UINT {
-    CmdSync = 1001, CmdAuto, CmdNotifications, CmdDiscord, CmdFolder,
+    CmdSync = 1001, CmdCopy, CmdAuto, CmdNotifications, CmdDiscord, CmdFolder,
     CmdOpen, CmdStartup, CmdProxy, CmdAccount, CmdExit,
 };
 
@@ -482,6 +482,7 @@ void invoke(PlatformUi::Impl* ui, UINT command) {
     const auto& c = ui->callbacks;
     switch (command) {
         case CmdSync: c.sync_now(); break;
+        case CmdCopy: c.copy_last_capture(); break;
         case CmdAuto: c.toggle_auto(); break;
         case CmdNotifications: c.toggle_notifications(); break;
         case CmdDiscord: c.toggle_discord(); break;
@@ -512,6 +513,7 @@ void tray_menu(PlatformUi::Impl* ui) {
     add(0, L"Last sync: " + wide(s.last_sync), MF_GRAYED);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     add(CmdSync, L"Sync Now", s.signed_in ? MF_STRING : MF_GRAYED);
+    add(CmdCopy, L"Copy Last Capture", s.signed_in ? MF_STRING : MF_GRAYED);
     add(
         CmdAuto,
         auto_label(s.sync_interval_minutes),
@@ -658,6 +660,47 @@ void PlatformUi::notify(
     impl_->tray.dwInfoFlags = NIIF_INFO;
     Shell_NotifyIconW(NIM_MODIFY, &impl_->tray);
     impl_->tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+}
+
+bool PlatformUi::copy_file_to_clipboard(const std::filesystem::path& path) {
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(path, error);
+    if (error || !std::filesystem::is_regular_file(absolute, error) || error) {
+        return false;
+    }
+
+    const auto native = absolute.wstring();
+    const auto allocation_size = sizeof(DROPFILES) +
+        (native.size() + 2) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, allocation_size);
+    if (memory == nullptr) return false;
+
+    auto* drop = static_cast<DROPFILES*>(GlobalLock(memory));
+    if (drop == nullptr) {
+        GlobalFree(memory);
+        return false;
+    }
+
+    drop->pFiles = sizeof(DROPFILES);
+    drop->fWide = TRUE;
+    auto* files = reinterpret_cast<wchar_t*>(
+        reinterpret_cast<unsigned char*>(drop) + sizeof(DROPFILES));
+    std::copy(native.begin(), native.end(), files);
+    files[native.size()] = L'\0';
+    files[native.size() + 1] = L'\0';
+    GlobalUnlock(memory);
+
+    bool success = false;
+    if (OpenClipboard(impl_->window)) {
+        if (EmptyClipboard() && SetClipboardData(CF_HDROP, memory) != nullptr) {
+            success = true;
+            memory = nullptr;
+        }
+        CloseClipboard();
+    }
+
+    if (memory != nullptr) GlobalFree(memory);
+    return success;
 }
 
 std::string PlatformUi::prompt(
