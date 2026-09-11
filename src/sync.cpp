@@ -595,7 +595,7 @@ std::filesystem::path SyncEngine::fetch_latest_capture() {
         });
     validate_media_item_for_download(*latest);
 
-    const auto extension = lower(latest->type) == "video" ? "mp4" : "jpg";
+    const std::string extension = lower(latest->type) == "video" ? "mp4" : "jpg";
     const auto cache_directory = config_.directory() / "clipboard-cache";
     std::filesystem::create_directories(cache_directory);
     const auto destination = cache_directory / ("latest-capture." + extension);

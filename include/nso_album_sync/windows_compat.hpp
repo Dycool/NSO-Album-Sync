@@ -19,5 +19,6 @@
 #endif
 
 #include <windows.h>
+#include <shlobj.h>
 
 #endif
