@@ -1134,6 +1134,7 @@ ZeldaNotesPresence format_rpc_presence(
     const WebMetadata& metadata,
     const ZeldaNotesLiveState& state,
     const ZeldaNotesResolvedLocation& location) {
+    (void)metadata;
     ZeldaNotesPresence presence;
     if (!location.valid) return presence;
 
