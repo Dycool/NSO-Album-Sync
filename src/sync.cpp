@@ -38,6 +38,75 @@ void throw_if_cancelled(const std::function<bool()>& cancelled) {
     if (should_cancel(cancelled)) throw std::runtime_error("Sync cancelled");
 }
 
+std::string path_to_utf8(const std::filesystem::path& path) {
+#ifdef _WIN32
+    const auto& native = path.native();
+    if (native.empty()) return {};
+
+    const int required = WideCharToMultiByte(
+        CP_UTF8,
+        WC_ERR_INVALID_CHARS,
+        native.data(),
+        static_cast<int>(native.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (required <= 0) {
+        throw std::runtime_error("Could not encode filesystem path as UTF-8");
+    }
+
+    std::string encoded(static_cast<std::size_t>(required), '\0');
+    const int written = WideCharToMultiByte(
+        CP_UTF8,
+        WC_ERR_INVALID_CHARS,
+        native.data(),
+        static_cast<int>(native.size()),
+        encoded.data(),
+        required,
+        nullptr,
+        nullptr);
+    if (written != required) {
+        throw std::runtime_error("Could not encode filesystem path as UTF-8");
+    }
+    return encoded;
+#else
+    return path.string();
+#endif
+}
+
+std::filesystem::path path_from_utf8(const std::string& text) {
+#ifdef _WIN32
+    if (text.empty()) return {};
+
+    const int required = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        text.data(),
+        static_cast<int>(text.size()),
+        nullptr,
+        0);
+    if (required <= 0) {
+        throw std::runtime_error("Filesystem path is not valid UTF-8");
+    }
+
+    std::wstring decoded(static_cast<std::size_t>(required), L'\0');
+    const int written = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        text.data(),
+        static_cast<int>(text.size()),
+        decoded.data(),
+        required);
+    if (written != required) {
+        throw std::runtime_error("Filesystem path is not valid UTF-8");
+    }
+    return std::filesystem::path(decoded);
+#else
+    return std::filesystem::path(text);
+#endif
+}
+
 bool ends_with_ascii(const std::string& value, std::string_view suffix) {
     return value.size() >= suffix.size() &&
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
@@ -311,7 +380,7 @@ std::string capture_timestamp_prefix(std::int64_t timestamp) {
 }
 
 std::string prefix_from_existing_filename(const std::filesystem::path& path) {
-    std::string prefix = path.stem().string();
+    std::string prefix = path_to_utf8(path.stem());
     if (prefix.size() > 2 && prefix.ends_with("_c")) {
         prefix.resize(prefix.size() - 2);
     } else if (prefix.size() > 3 && prefix.ends_with("-00")) {
@@ -331,7 +400,7 @@ ExistingAlbumIndex index_existing_album(
         throw_if_cancelled(cancelled);
         if (!iterator->is_regular_file()) continue;
 
-        const auto filename_lower = lower(iterator->path().filename().string());
+        const auto filename_lower = lower(path_to_utf8(iterator->path().filename()));
         if (filename_lower.ends_with(".part") || filename_lower.ends_with(".tmp")) {
             continue;
         }
@@ -339,12 +408,12 @@ ExistingAlbumIndex index_existing_album(
         std::error_code error;
         if (iterator->file_size(error) == 0) continue;
         const auto& path = iterator->path();
-        const auto filename = path.filename().string();
+        const auto filename = path_to_utf8(path.filename());
         const auto prefix = prefix_from_existing_filename(path);
         index.filenames_and_prefixes.insert(lower(filename));
         index.filenames_and_prefixes.insert(lower(prefix));
         index.folder_by_timestamp_prefix.emplace(
-            lower(prefix), path.parent_path().filename().string());
+            lower(prefix), path_to_utf8(path.parent_path().filename()));
     }
     return index;
 }
@@ -421,7 +490,7 @@ std::string SyncEngine::resolve_game_folder(
         std::vector<DirectoryName> directories;
         for (const auto& directory : std::filesystem::directory_iterator(album_directory)) {
             if (!directory.is_directory()) continue;
-            const auto name = directory.path().filename().string();
+            const auto name = path_to_utf8(directory.path().filename());
             directories.push_back({name, normalize_for_matching_v1(name)});
         }
 
@@ -489,13 +558,13 @@ SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
     throw_if_cancelled(cancelled);
 
     const std::filesystem::path root = config.destination_folder.empty()
-        ? std::filesystem::path(default_album_folder())
-        : std::filesystem::path(config.destination_folder);
+        ? path_from_utf8(default_album_folder())
+        : path_from_utf8(config.destination_folder);
     std::filesystem::create_directories(root);
 
     auto existing = index_existing_album(root, cancelled);
     const auto title_folders = learn_title_folders(media, existing);
-    const bool root_is_album_directory = lower(root.filename().string()) == "album";
+    const bool root_is_album_directory = lower(path_to_utf8(root.filename())) == "album";
     const auto album_directory = root_is_album_directory ? root : root / "Album";
 
     int downloaded = 0;
@@ -521,7 +590,8 @@ SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
             game_folder = resolve_game_folder(album_directory, item.app_name);
         }
 
-        const auto destination = album_directory / game_folder / filename;
+        const auto destination =
+            album_directory / path_from_utf8(game_folder) / path_from_utf8(filename);
         std::filesystem::create_directories(destination.parent_path());
 
         const auto response = http_.get(item.content_uri, {}, 60);
