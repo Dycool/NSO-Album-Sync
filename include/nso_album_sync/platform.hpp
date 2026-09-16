@@ -4,6 +4,78 @@
 #include <functional>
 #include <string>
 
+#if defined(__linux__) && defined(NSO_HAVE_GTK)
+#include <gtk/gtk.h>
+
+namespace nso::detail {
+
+struct GtkClipboardUriData {
+    std::string uri;
+};
+
+inline void gtk_clipboard_uri_get(
+    GtkClipboard*,
+    GtkSelectionData* selection_data,
+    guint info,
+    gpointer user_data) {
+    auto* data = static_cast<GtkClipboardUriData*>(user_data);
+    if (data == nullptr) {
+        return;
+    }
+
+    if (info == 0) {
+        gchar* uris[] = {data->uri.data(), nullptr};
+        gtk_selection_data_set_uris(selection_data, uris);
+        return;
+    }
+
+    const std::string payload = "copy\n" + data->uri;
+    gtk_selection_data_set(
+        selection_data,
+        gtk_selection_data_get_target(selection_data),
+        8,
+        reinterpret_cast<const guchar*>(payload.data()),
+        static_cast<gint>(payload.size()));
+}
+
+inline void gtk_clipboard_uri_clear(GtkClipboard*, gpointer user_data) {
+    delete static_cast<GtkClipboardUriData*>(user_data);
+}
+
+inline gboolean gtk_clipboard_set_uris_compat(
+    GtkClipboard* clipboard,
+    gchar** uris) {
+    if (clipboard == nullptr || uris == nullptr || uris[0] == nullptr ||
+        uris[0][0] == '\0') {
+        return FALSE;
+    }
+
+    GtkTargetEntry targets[] = {
+        {const_cast<gchar*>("text/uri-list"), 0, 0},
+        {const_cast<gchar*>("x-special/gnome-copied-files"), 0, 1},
+    };
+
+    auto* data = new GtkClipboardUriData{uris[0]};
+    if (!gtk_clipboard_set_with_data(
+            clipboard,
+            targets,
+            G_N_ELEMENTS(targets),
+            gtk_clipboard_uri_get,
+            gtk_clipboard_uri_clear,
+            data)) {
+        delete data;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+}  // namespace nso::detail
+
+#define gtk_clipboard_set_uris(clipboard, uris) \
+    ::nso::detail::gtk_clipboard_set_uris_compat((clipboard), (uris))
+#endif
+
 namespace nso {
 
 struct MenuState {
