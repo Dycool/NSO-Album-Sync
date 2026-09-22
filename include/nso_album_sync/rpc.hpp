@@ -119,7 +119,24 @@ inline NintendoPresence rpc_display_presence(NintendoPresence presence) {
         presence.sys_description.clear();
         presence.total_play_time = 0;
     }
-    if (!presence.rpc.show_elapsed_time) presence.updated_at = 0;
+    if (!presence.rpc.show_elapsed_time) presence.elapsed_started_at_ms = 0;
     return presence;
+}
+
+inline std::string rpc_store_url(const NintendoPresence& presence) {
+    // Build a public link from the title only. Never publish Nintendo's
+    // account-localized shopUri or its query parameters.
+    auto title_id = presence.title_id;
+    constexpr char prefix[] = "https://ec.nintendo.com/apps/";
+    if (title_id.empty() && presence.shop_uri.rfind(prefix, 0) == 0) {
+        title_id = presence.shop_uri.substr(sizeof(prefix) - 1, 16);
+    }
+    if (title_id.size() != 16) return {};
+    for (auto& character : title_id) {
+        if (character >= 'A' && character <= 'F') character += 'a' - 'A';
+        if (!((character >= '0' && character <= '9') ||
+              (character >= 'a' && character <= 'f'))) return {};
+    }
+    return std::string(prefix) + title_id + "/US";
 }
 }  // namespace nso

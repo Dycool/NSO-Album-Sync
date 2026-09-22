@@ -41,6 +41,8 @@ struct NintendoPresence {
     std::string shop_uri;
     std::string sys_description;
     std::int64_t updated_at = 0;
+    // Local start of the continuously observed game, in Unix milliseconds.
+    std::int64_t elapsed_started_at_ms = 0;
     std::int64_t total_play_time = 0;
 
     RpcSettings rpc;

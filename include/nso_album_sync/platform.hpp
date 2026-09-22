@@ -91,6 +91,7 @@ struct MenuState {
     RpcSettings rpc;
     bool start_on_boot = false;
     bool signed_in = false;
+    bool sync_busy = false;
     int sync_interval_minutes = 60;
 };
 

@@ -13,6 +13,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -268,7 +269,18 @@ struct DiscordPresence::Impl {
 
     void remember_base(const NintendoPresence& presence) {
         std::lock_guard lock(presence_mutex);
+        const auto game_key = [](const NintendoPresence& value) {
+            return value.title_id.empty() ? value.game_name : value.title_id;
+        };
+        // Coral's updatedAt is a presence update, not a game-session start.
+        // Keep a local start stable across polls, enrichment and settings changes.
+        const auto started_at = has_last_base_presence &&
+                game_key(last_base_presence) == game_key(presence)
+            ? last_base_presence.elapsed_started_at_ms
+            : std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::system_clock::now().time_since_epoch()).count();
         last_base_presence = presence;
+        last_base_presence.elapsed_started_at_ms = started_at;
         has_last_base_presence = true;
     }
 
@@ -338,13 +350,12 @@ struct DiscordPresence::Impl {
             activity.SetState(presence.console_name());
         }
 
-        if (presence.updated_at > 0) {
-            const auto start_seconds = presence.updated_at > 10'000'000'000LL
-                ? presence.updated_at / 1000
-                : presence.updated_at;
+        if (presence.rpc.show_elapsed_time && presence.elapsed_started_at_ms > 0) {
             discordpp::ActivityTimestamps timestamps;
-            timestamps.SetStart(static_cast<std::uint64_t>(start_seconds));
+            timestamps.SetStart(static_cast<std::uint64_t>(presence.elapsed_started_at_ms));
             activity.SetTimestamps(timestamps);
+        } else {
+            activity.SetTimestamps(std::nullopt);
         }
 
         const auto large_image_uri = normalize_discord_image_url(
@@ -369,8 +380,9 @@ struct DiscordPresence::Impl {
                     !presence.custom_large_text.empty()
                         ? presence.custom_large_text
                         : presence.game_name);
-                if (is_valid_discord_image_url(presence.shop_uri)) {
-                    assets.SetLargeUrl(presence.shop_uri);
+                const auto store_url = rpc_store_url(presence);
+                if (!store_url.empty()) {
+                    assets.SetLargeUrl(store_url);
                 }
             }
             if (is_valid_discord_image_url(small_image_uri)) {
@@ -443,7 +455,14 @@ void DiscordPresence::set_rpc_settings(const RpcSettings& settings) {
     if (!impl) return;
     {
         std::lock_guard lock(impl->presence_mutex);
+        const bool removing_timer = impl->rpc_settings.show_elapsed_time &&
+            !settings.show_elapsed_time;
         impl->rpc_settings = settings;
+        if (removing_timer && impl->has_last_base_presence) {
+            // Drop the previous timed activity before publishing the untimed one.
+            // Keep the local session start for a later re-enable.
+            impl->clear_sdk_presence();
+        }
     }
     impl->refresh_zelda_overlay();
 }

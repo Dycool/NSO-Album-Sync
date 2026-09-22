@@ -283,7 +283,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         @"Sync Now",
         SyncNow,
         false,
-        state.signed_in,
+        state.signed_in && !state.sync_busy,
         @"arrow.triangle.2.circlepath");
     add_menu_item(
         impl->menu,

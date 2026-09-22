@@ -116,6 +116,10 @@ void App::update_menu() {
     menu.rpc = config.rpc;
     menu.start_on_boot = start_on_boot_enabled();
     menu.signed_in = !config.session_token.empty();
+    {
+        std::lock_guard lock(sync_queue_mutex_);
+        menu.sync_busy = sync_requested_ || sync_running_;
+    }
     menu.sync_interval_minutes = std::max(1, config.sync_interval_minutes);
     ui_.update(menu);
 }
@@ -198,18 +202,18 @@ void App::sync_now(bool background) {
     update_menu();
 }
 
-void App::queue_sync(bool background) {
-    std::lock_guard lock(sync_queue_mutex_);
-    if (stopping_) return;
-    if (!sync_requested_) {
+bool App::queue_sync(bool background) {
+    {
+        std::lock_guard lock(sync_queue_mutex_);
+        // Guard the queue as well as the menu: a click from an already-open
+        // menu or an automatic request must not schedule a second sync.
+        if (stopping_ || sync_requested_ || sync_running_) return false;
         sync_requested_ = true;
         sync_request_background_ = background;
-    } else if (!background) {
-        // A manual request should keep its user-visible completion notification
-        // even if an automatic request was already queued.
-        sync_request_background_ = false;
     }
+    update_menu();
     sync_queue_cv_.notify_one();
+    return true;
 }
 
 void App::request_presence_refresh() {
@@ -228,10 +232,16 @@ void App::sync_loop() {
             });
             if (stopping_) break;
             background = sync_request_background_;
+            sync_running_ = true;
             sync_requested_ = false;
             sync_request_background_ = true;
         }
         sync_now(background);
+        {
+            std::lock_guard lock(sync_queue_mutex_);
+            sync_running_ = false;
+        }
+        update_menu();
     }
 }
 
@@ -742,7 +752,7 @@ int App::run() {
 
     callbacks.sync_now = [this] {
         initial_sync_deferred_.store(false, std::memory_order_release);
-        queue_sync(false);
+        if (!queue_sync(false)) return;
         const auto config = config_.snapshot();
         if (config.discord_presence && !config.session_token.empty()) {
             request_presence_refresh();

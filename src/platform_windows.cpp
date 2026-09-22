@@ -526,7 +526,7 @@ void tray_menu(PlatformUi::Impl* ui) {
         MF_GRAYED);
     add(0, L"Last sync: " + wide(s.last_sync), MF_GRAYED);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    add(CmdSync, L"Sync Now", s.signed_in ? MF_STRING : MF_GRAYED);
+    add(CmdSync, L"Sync Now", s.signed_in && !s.sync_busy ? MF_STRING : MF_GRAYED);
     add(CmdCopy, L"Copy Last Capture", s.signed_in ? MF_STRING : MF_GRAYED);
     add(
         CmdAuto,

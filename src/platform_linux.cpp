@@ -223,7 +223,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         impl->menu,
         "Sync Now",
         &impl->callbacks.sync_now,
-        state.signed_in);
+        state.signed_in && !state.sync_busy);
     append_menu_item(
         impl->menu,
         "Copy Last Capture",

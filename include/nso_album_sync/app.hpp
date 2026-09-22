@@ -59,6 +59,7 @@ private:
     std::mutex sync_queue_mutex_;
     std::condition_variable sync_queue_cv_;
     bool sync_requested_ = false;
+    bool sync_running_ = false;
     bool sync_request_background_ = true;
 
     std::mutex auth_flow_mutex_;
@@ -73,7 +74,7 @@ private:
 
     void update_menu();
     void sync_now(bool background);
-    void queue_sync(bool background);
+    bool queue_sync(bool background);
     void request_presence_refresh();
     void sign_in_or_out();
     void complete_pending_login(const std::string& redirect_url_or_code);
