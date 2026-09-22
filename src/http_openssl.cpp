@@ -517,8 +517,13 @@ std::string build_request_headers(
         (destination.scheme == "https" && destination.port != 443) ||
         (destination.scheme == "http" && destination.port != 80);
     if (non_default_port) request << ':' << destination.port;
-    request << "\r\nConnection: close\r\nAccept-Encoding: identity\r\n";
-    for (const auto& header : headers) request << header << "\r\n";
+    for (const auto& header : headers) {
+        const auto colon = header.find(':');
+        auto name = colon == std::string::npos ? header : header.substr(0, colon);
+        name = lowercase(trim_ascii(std::move(name)));
+        if (name == "x-nso-internal-manual-redirect") continue;
+        request << header << "\r\n";
+    }
     if (!content_type.empty()) request << "Content-Type: " << content_type << "\r\n";
     const bool method_can_have_body =
         method == "POST" || method == "PUT" || method == "PATCH";

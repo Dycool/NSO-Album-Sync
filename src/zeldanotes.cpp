@@ -187,7 +187,9 @@ std::vector<std::string> set_cookie_lines(const HttpResponse& response) {
 }
 
 std::string session_cookie(const HttpResponse& response) {
+    std::map<std::string, std::string> cookies;
     std::string discovered_names;
+
     for (const auto& line : set_cookie_lines(response)) {
         std::size_t start = 0;
         while (start < line.size() &&
@@ -195,47 +197,37 @@ std::string session_cookie(const HttpResponse& response) {
             ++start;
         }
         const auto eq = line.find('=', start);
-        if (eq == std::string::npos) continue;
+        if (eq == std::string::npos || eq == start) continue;
         const auto name = line.substr(start, eq - start);
-        const auto lower_name = lower(name);
         if (!discovered_names.empty()) discovered_names += ",";
         discovered_names += name;
-        if (lower_name != "a5_token" &&
-            lower_name.find("session") == std::string::npos) {
-            continue;
-        }
         const auto value_start = eq + 1;
         auto end = line.find(';', value_start);
         if (end == std::string::npos) end = line.size();
-        return name + "=" + line.substr(value_start, end - value_start);
+        cookies[name] = line.substr(value_start, end - value_start);
     }
-    for (const auto& line : set_cookie_lines(response)) {
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        auto name = line.substr(0, eq);
-        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) name.erase(name.begin());
-        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
-        const auto lower_name = lower(name);
-        if (lower_name.empty() || lower_name == "_abck" ||
-            lower_name == "bm_sz" || lower_name == "ak_bmsc" ||
-            lower_name == "akaze" || lower_name == "awsalbtg" ||
-            lower_name == "awsalb" || lower_name == "awsalbc" ||
-            lower_name.find("tracking") != std::string::npos) {
-            continue;
-        }
-        auto end = line.find(';', eq + 1);
-        if (end == std::string::npos) end = line.size();
-        auto value = line.substr(eq + 1, end - eq - 1);
-        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) value.erase(value.begin());
-        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
-        if (!value.empty()) {
-            log_zelda("using application cookie: " + name);
-            return name + "=" + value;
-        }
-    }
-    log_zelda("title-select cookies discovered: " +
+
+    log_zelda("bootstrap cookies discovered: " +
         (discovered_names.empty() ? std::string("none") : discovered_names));
-    return {};
+
+    bool has_session = false;
+    for (const auto& [name, _] : cookies) {
+        const auto lower_name = lower(name);
+        if (lower_name == "a5_token" || lower_name.find("session") != std::string::npos) {
+            has_session = true;
+            break;
+        }
+    }
+    if (!has_session) {
+        return {};
+    }
+
+    std::string result;
+    for (const auto& [name, value] : cookies) {
+        if (!result.empty()) result += "; ";
+        result += name + "=" + value;
+    }
+    return result;
 }
 
 std::vector<std::string> bootstrap_headers(
@@ -253,10 +245,14 @@ std::vector<std::string> bootstrap_headers(
         "Accept-Language: " + language,
         "X-NACountry: " + country,
         "X-Requested-With: com.nintendo.znca",
+        "x-nso-internal-manual-redirect: 1",
     };
 }
 
 std::string cookie_header(const std::string& session, const std::string& language) {
+    if (session.find("lang=") != std::string::npos) {
+        return "Cookie: " + session;
+    }
     return "Cookie: " + session + "; lang=" + language;
 }
 
@@ -600,6 +596,7 @@ std::map<std::string, std::string> fetch_labels(
     const std::string& session,
     const std::string& language,
     const std::string& country) {
+    (void)language;
     const auto fetch = [&](const std::string& locale) {
         const auto response = http.get(
             std::string(kBaseUrl) + "/common/locales/" + locale + "/complete_guide.json",
@@ -610,8 +607,9 @@ std::map<std::string, std::string> fetch_labels(
         return parse_labels(response.text());
     };
 
-    auto labels = fetch(language);
-    if (labels.empty() && language != "en-GB") labels = fetch("en-GB");
+    // Discord Rich Presence text must always be in English.
+    auto labels = fetch("en-US");
+    if (labels.empty()) labels = fetch("en-GB");
     return labels;
 }
 
@@ -688,13 +686,13 @@ WebMetadata discover_web_metadata(
         metadata.start_action = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba";
     }
     if (metadata.end_action.empty()) {
-        metadata.end_action = "70133dd2eb7d5126fda8aa9c8ff56d5a0376deadba";
+        metadata.end_action = "70610b1c9c921932c897ffa511487e10eb0b1f06a2";
     }
     if (metadata.ack_action.empty()) {
         metadata.ack_action = "400d043452ef637b91e45e5861062b9677aa6fbf22";
     }
     if (metadata.deployment_id.empty()) {
-        metadata.deployment_id = "783666f6880ab3979bdc7b15f8ad24f544e472e5";
+        metadata.deployment_id = "00c5aa87895e5348d190329235eda31aeb725717";
     }
 
     log_zelda(
@@ -872,6 +870,36 @@ bool same_layer(const MapPlace& place, const ZeldaNotesLiveState& state) {
     return place.layer == state.layer;
 }
 
+std::string sanitize_zelda_poi_english(std::string poi) {
+    if (poi.empty()) return poi;
+    // Normalizes non-English shrine prefixes to canonical English "[Name] Shrine"
+    // e.g. "Santuário Muwo Jeem" -> "Muwo Jeem Shrine"
+    const std::string santuario_accent = "Santu\xc3\xa1rio ";
+    const std::string santuario_plain = "Santuario ";
+    if (poi.rfind(santuario_accent, 0) == 0) {
+        return poi.substr(santuario_accent.size()) + " Shrine";
+    }
+    if (poi.rfind(santuario_plain, 0) == 0) {
+        return poi.substr(santuario_plain.size()) + " Shrine";
+    }
+    if (poi.rfind("Sanctuaire de ", 0) == 0) {
+        return poi.substr(14) + " Shrine";
+    }
+    if (poi.rfind("Sanctuaire d'", 0) == 0) {
+        return poi.substr(13) + " Shrine";
+    }
+    if (poi.rfind("Sanctuaire ", 0) == 0) {
+        return poi.substr(11) + " Shrine";
+    }
+    if (poi.rfind("Sacrario di ", 0) == 0) {
+        return poi.substr(12) + " Shrine";
+    }
+    if (poi.rfind("Sacrario ", 0) == 0) {
+        return poi.substr(9) + " Shrine";
+    }
+    return poi;
+}
+
 ZeldaNotesResolvedLocation resolve_location(
     const WebMetadata& metadata,
     const ZeldaNotesLiveState& state,
@@ -937,7 +965,8 @@ ZeldaNotesResolvedLocation resolve_location(
     }
 
     if (best.place != nullptr) {
-        result.poi = localized_label(metadata, best.place->message_label);
+        result.poi = sanitize_zelda_poi_english(
+            localized_label(metadata, best.place->message_label));
         result.poi_uid = best.place->uid;
         result.poi_distance = best.distance;
         result.subcategory = best.place->subcategory;
@@ -1033,7 +1062,8 @@ std::string generate_zelda_lore_activity(
             if (region == "Faron" || region == "Lake Hylia") return "Resting by the Southern Shores";
             return "Resting at the Stable";
         }
-        if (poi.find("Shrine") != std::string::npos || subcategory == "shrine") {
+        if (poi.find("Shrine") != std::string::npos || subcategory == "shrine" ||
+            poi.find("Santu") != std::string::npos || poi.find("Sanctu") != std::string::npos) {
             return "Investigating a Sacred Shrine";
         }
         if (poi.find("Lightroot") != std::string::npos || subcategory == "lightroot") {
@@ -1388,33 +1418,26 @@ bool ZeldaNotesClient::ensure_session(const std::string& web_service_token) {
     const auto locale_query = "?lang=" + language + "&na_country=" + country +
         "&na_lang=" + language;
     const auto bootstrap = http_.get(
-        std::string(kBaseUrl) + "/title-select" + locale_query,
+        std::string(kBaseUrl) + "/" + locale_query,
         bootstrap_headers(web_service_token, language, country),
         10,
         8 * 1024 * 1024);
     log_zelda(
-        "ensure_session /title-select HTTP " +
+        "ensure_session / HTTP " +
         std::to_string(bootstrap.status));
     if (bootstrap.status / 100 != 2 && bootstrap.status / 100 != 3) {
         return false;
     }
 
     const auto cookie = session_cookie(bootstrap);
-    if (cookie.empty()) {
+    if (cookie.empty() || cookie.find("a5_token=") == std::string::npos) {
         std::string header_names;
         for (const auto& [name, value] : bootstrap.headers) {
             if (!header_names.empty()) header_names += ",";
             header_names += name;
         }
-        log_zelda("ensure_session: no session cookie in title-select response; headers=" +
+        log_zelda("ensure_session: no session cookie in bootstrap response; headers=" +
             (header_names.empty() ? std::string("none") : header_names));
-        return false;
-    }
-    std::string cookie_name = cookie.substr(0, cookie.find('='));
-    std::transform(cookie_name.begin(), cookie_name.end(), cookie_name.begin(),
-        [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
-    if (cookie_name == "awsalbtg" || cookie_name == "awsalb" || cookie_name == "awsalbc") {
-        log_zelda("ensure_session: response contained only an AWS load-balancer cookie; Zelda session cookie is missing");
         return false;
     }
 
@@ -1631,11 +1654,8 @@ void ZeldaNotesClient::run_live_session(
                             return false;
                         }
                     } else if (message.updates_live_state) {
-                        if (!zelda_notes_live_state_is_fresh(
+                        if (zelda_notes_live_state_is_fresh(
                                 message.live_state, received_at)) {
-                            previous_location = {};
-                            publish_live_presence({});
-                        } else {
                             healthy_stream = true;
                             const auto location = resolve_location(
                                 metadata, message.live_state, previous_location);
@@ -1649,9 +1669,6 @@ void ZeldaNotesClient::run_live_session(
                 [&] {
                     if (live_stop_.load()) return true;
                     const auto now = std::chrono::steady_clock::now();
-                    if (now - last_message >= kZeldaNotesLiveFreshness) {
-                        publish_live_presence({});
-                    }
                     return now - last_message >= std::chrono::minutes(10);
                 },
                 20,
@@ -1681,8 +1698,10 @@ void ZeldaNotesClient::run_live_session(
                 }
             }
 
-            publish_live_presence({});
-            if (live_stop_.load()) break;
+            if (live_stop_.load()) {
+                publish_live_presence({});
+                break;
+            }
             if (response.status != 0 && response.status / 100 != 2) {
                 protocol_failure = true;
             }
@@ -1691,12 +1710,16 @@ void ZeldaNotesClient::run_live_session(
         } catch (const std::exception& error) {
             if (!live_stop_.load()) {
                 log_zelda("Live map sync unavailable: " + std::string(error.what()));
+            } else {
+                publish_live_presence({});
             }
-            publish_live_presence({});
             backoff_seconds = next_backoff(backoff_seconds);
         } catch (...) {
-            log_zelda("Live map sync unknown error");
-            publish_live_presence({});
+            if (!live_stop_.load()) {
+                log_zelda("Live map sync unknown error");
+            } else {
+                publish_live_presence({});
+            }
             backoff_seconds = next_backoff(backoff_seconds);
         }
 

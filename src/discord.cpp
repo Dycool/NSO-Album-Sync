@@ -1,6 +1,7 @@
 #include "nso_album_sync/discord.hpp"
 #include "nso_album_sync/rpc.hpp"
 #include "nso_album_sync/zeldanotes.hpp"
+#include "nso_album_sync/zeldanotes_regions.hpp"
 
 #define DISCORDPP_IMPLEMENTATION
 #include "discordpp.h"
@@ -132,21 +133,51 @@ bool is_zelda_notes_presence(const NintendoPresence& presence) {
         name.find("ティアーズ オブ ザ キングダム") != std::string::npos;
 }
 
-NintendoPresence with_live_zelda_location(const NintendoPresence& base) {
+NintendoPresence with_live_zelda_location(
+    const NintendoPresence& base,
+    ZeldaNotesPresence& last_zelda,
+    std::string& last_zelda_key,
+    std::chrono::steady_clock::time_point& last_zelda_time) {
     auto effective = rpc_display_presence(base);
-    if (!base.rpc.zelda || !base.zelda_notes_enabled || !is_zelda_notes_presence(base)) return effective;
+    if (!base.rpc.zelda || !base.zelda_notes_enabled || !is_zelda_notes_presence(base)) {
+        last_zelda = {};
+        last_zelda_key.clear();
+        last_zelda_time = {};
+        return effective;
+    }
+
+    const auto game_key = !base.title_id.empty() ? base.title_id : base.game_name;
+    if (last_zelda_key != game_key) {
+        last_zelda_key = game_key;
+        last_zelda = {};
+        last_zelda_time = {};
+    }
 
     const auto live = zelda_notes_current_live_presence();
-    if (!live.active) return effective;
-
-    const auto details = live.format_details();
-    const auto state = live.format_state();
-    if (!details.empty()) effective.custom_details = details;
-    if (!state.empty()) effective.custom_state = state;
-    if (!live.stage_image_uri.empty()) {
-        effective.custom_large_image_uri = live.stage_image_uri;
-        effective.custom_large_text = live.stage_name.empty() ? effective.game_name : live.stage_name;
+    const auto now = std::chrono::steady_clock::now();
+    if (live.active) {
+        last_zelda = live;
+        last_zelda_time = now;
+    } else if (last_zelda.active && last_zelda_time != std::chrono::steady_clock::time_point{} &&
+               now - last_zelda_time > std::chrono::minutes(5)) {
+        last_zelda = {};
     }
+
+    if (last_zelda.active) {
+        const auto details = last_zelda.format_details();
+        const auto state = last_zelda.format_state();
+        if (!details.empty()) effective.custom_details = details;
+        if (!state.empty()) effective.custom_state = state;
+        if (!last_zelda.stage_image_uri.empty()) {
+            effective.custom_large_image_uri = last_zelda.stage_image_uri;
+            effective.custom_large_text =
+                last_zelda.stage_name.empty() ? effective.game_name : last_zelda.stage_name;
+        }
+        return effective;
+    }
+
+    // In the main menu (as in, the game does not have yet the position of the player),
+    // show the generic RPC instead of an artificial fallback.
     return effective;
 }
 
@@ -288,6 +319,9 @@ struct DiscordPresence::Impl {
         std::lock_guard lock(presence_mutex);
         last_base_presence = {};
         has_last_base_presence = false;
+        last_zelda_presence = {};
+        last_zelda_game_key.clear();
+        last_zelda_time = {};
     }
 
     void refresh_zelda_overlay() {
@@ -297,7 +331,7 @@ struct DiscordPresence::Impl {
         if (!has_last_base_presence || !last_base_presence.is_playing()) return;
         auto base = last_base_presence;
         base.rpc = rpc_settings;
-        publish(with_live_zelda_location(base));
+        publish(with_live_zelda_location(base, last_zelda_presence, last_zelda_game_key, last_zelda_time));
     }
 
     void clear_sdk_presence() {
@@ -420,6 +454,9 @@ struct DiscordPresence::Impl {
     NintendoPresence last_base_presence;
     RpcSettings rpc_settings;
     bool has_last_base_presence = false;
+    ZeldaNotesPresence last_zelda_presence;
+    std::string last_zelda_game_key;
+    std::chrono::steady_clock::time_point last_zelda_time;
 };
 
 DiscordPresence::DiscordPresence(std::uint64_t application_id)

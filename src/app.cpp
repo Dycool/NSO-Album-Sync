@@ -444,16 +444,17 @@ void App::presence_loop() {
                     const bool changed = enrichment.begin(game_key, generation, revision);
                     const bool enabled = rpc_service_enabled(service, config.rpc);
                     if (changed) zeldanotes_.clear_cache();
-                    presence.zelda_notes_enabled = enabled &&
-                        service == RpcGameService::ZeldaNotes && enrichment.success;
+                    const bool probing = enabled && enrichment.should_probe(RpcEnrichmentCache::Clock::now());
+
+                    presence.zelda_notes_enabled = enabled && service == RpcGameService::ZeldaNotes &&
+                        (enrichment.success || !probing);
                     enrichment.apply(presence);
 
-                    // Publish cached enrichment directly on recurring polls.
-                    // A new title appears immediately while its service loads.
-                    discord_.update(presence);
-                    release_deferred_sync(session_token);
+                    if (!probing) {
+                        release_deferred_sync(session_token);
+                    }
 
-                    if (enabled && enrichment.should_probe(RpcEnrichmentCache::Clock::now())) {
+                    if (probing) {
                         bool service_ready = false;
                         // Game WebView bootstraps use the Nintendo Account locale
                         // in nxapi and in the working backend. This profile data
@@ -588,6 +589,7 @@ void App::presence_loop() {
                         enrichment.complete(presence, service_ready, RpcEnrichmentCache::Clock::now());
                         presence.zelda_notes_enabled = enabled &&
                             service == RpcGameService::ZeldaNotes && enrichment.success;
+                        release_deferred_sync(session_token);
                     }
 
                     // A sign-out clears Discord immediately. Do not allow a slow

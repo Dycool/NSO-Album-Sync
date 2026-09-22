@@ -8,3 +8,15 @@ CMakeUserPresets.json
 dist/
 third_party/discord_social_sdk/
 third_party/DiscordSocialSdk-*.zip
+third_party/_sdk_extract/
+
+# Build artifacts
+*.obj
+*.exe
+*.log
+
+# SDK archives
+*.zip
+
+# Scratch / temp
+scratch/

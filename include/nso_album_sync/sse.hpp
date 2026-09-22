@@ -579,7 +579,8 @@ inline SseResponse stream_windows(
     response.status = static_cast<long>(status);
     response.headers = read_headers(request.get());
 
-    DWORD receive_timeout = static_cast<DWORD>(kReadPollSeconds * 1000L);
+    DWORD receive_timeout = static_cast<DWORD>(
+        std::max<long>(connect_timeout_seconds, 60L) * 1000L);
     if (!WinHttpSetOption(
             request.get(), WINHTTP_OPTION_RECEIVE_TIMEOUT,
             &receive_timeout, sizeof(receive_timeout))) {
@@ -592,7 +593,10 @@ inline SseResponse stream_windows(
         if (cancelled(should_cancel)) return response;
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request.get(), &available)) {
-            if (GetLastError() == ERROR_WINHTTP_TIMEOUT) continue;
+            if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
+                parser.finish(on_event);
+                return response;
+            }
             throw_winhttp_error("WinHttpQueryDataAvailable");
         }
         if (available == 0) {
@@ -606,7 +610,10 @@ inline SseResponse stream_windows(
                 available, buffer.size()));
             DWORD read = 0;
             if (!WinHttpReadData(request.get(), buffer.data(), requested, &read)) {
-                if (GetLastError() == ERROR_WINHTTP_TIMEOUT) break;
+                if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
+                    parser.finish(on_event);
+                    return response;
+                }
                 throw_winhttp_error("WinHttpReadData");
             }
             if (read == 0) {

@@ -18,7 +18,7 @@ inline constexpr std::uint64_t kZeldaNotesGameServiceIdAlt = 4974384874151936ULL
 
 inline constexpr char kZeldaNotesBotwTitleId[] = "01007ef00011e000";
 inline constexpr char kZeldaNotesTotkTitleId[] = "0100f2c0115b6000";
-inline constexpr auto kZeldaNotesLiveFreshness = std::chrono::seconds(30);
+inline constexpr auto kZeldaNotesLiveFreshness = std::chrono::minutes(5);
 
 enum class ZeldaNotesGame {
     Unknown,
@@ -94,6 +94,22 @@ inline ZeldaNotesGame zelda_notes_game_for_title_id(const std::string& title_id)
         return ZeldaNotesGame::BreathOfTheWild;
     }
     if (title_id == kZeldaNotesTotkTitleId) {
+        return ZeldaNotesGame::TearsOfTheKingdom;
+    }
+    return ZeldaNotesGame::Unknown;
+}
+
+inline ZeldaNotesGame zelda_notes_game_for_presence(
+    const std::string& title_id,
+    const std::string& game_name) {
+    const auto by_id = zelda_notes_game_for_title_id(title_id);
+    if (by_id != ZeldaNotesGame::Unknown) return by_id;
+    if (game_name.find("Breath of the Wild") != std::string::npos ||
+        game_name.find("ブレス オブ ザ ワイルド") != std::string::npos) {
+        return ZeldaNotesGame::BreathOfTheWild;
+    }
+    if (game_name.find("Tears of the Kingdom") != std::string::npos ||
+        game_name.find("ティアーズ オブ ザ キングダム") != std::string::npos) {
         return ZeldaNotesGame::TearsOfTheKingdom;
     }
     return ZeldaNotesGame::Unknown;
