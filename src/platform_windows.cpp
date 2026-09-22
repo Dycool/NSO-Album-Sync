@@ -527,15 +527,16 @@ void tray_menu(PlatformUi::Impl* ui) {
     add(0, L"Last sync: " + wide(s.last_sync), MF_GRAYED);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     add(CmdSync, L"Sync Now", s.signed_in && !s.sync_busy ? MF_STRING : MF_GRAYED);
-    add(CmdCopy, L"Copy Last Capture", s.signed_in ? MF_STRING : MF_GRAYED);
     add(
         CmdAuto,
         auto_label(s.sync_interval_minutes),
         MF_STRING | (s.auto_sync ? MF_CHECKED : 0));
-    add(
-        CmdNotifications,
-        L"Notifications",
-        MF_STRING | (s.notifications ? MF_CHECKED : 0));
+    add(CmdCopy, L"Copy Last Capture", s.signed_in ? MF_STRING : MF_GRAYED);
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    HMENU notifications = CreatePopupMenu();
+    AppendMenuW(notifications, MF_STRING | (s.notifications ? MF_CHECKED : 0),
+        CmdNotifications, L"Enabled");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(notifications), L"Notifications");
     HMENU rpc = CreatePopupMenu();
     const auto rpc_check = [&](UINT id, const wchar_t* label, bool checked) {
         AppendMenuW(rpc, MF_STRING | (checked ? MF_CHECKED : 0), id, label);

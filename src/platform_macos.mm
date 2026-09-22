@@ -287,13 +287,6 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         @"arrow.triangle.2.circlepath");
     add_menu_item(
         impl->menu,
-        @"Copy Last Capture",
-        CopyLastCapture,
-        false,
-        state.signed_in,
-        @"doc.on.clipboard");
-    add_menu_item(
-        impl->menu,
         auto_sync_title(state.sync_interval_minutes),
         ToggleAutoSync,
         state.auto_sync,
@@ -301,11 +294,18 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         @"clock.arrow.circlepath");
     add_menu_item(
         impl->menu,
-        @"Notifications",
-        ToggleNotifications,
-        state.notifications,
-        true,
-        @"bell");
+        @"Copy Last Capture",
+        CopyLastCapture,
+        false,
+        state.signed_in,
+        @"doc.on.clipboard");
+    [impl->menu addItem:[NSMenuItem separatorItem]];
+    auto* notifications = [[NSMenu alloc] initWithTitle:@"Notifications"];
+    notifications.autoenablesItems = NO;
+    auto* notifications_item = add_menu_item(impl->menu, @"Notifications", 0,
+        false, true, @"bell");
+    notifications_item.submenu = notifications;
+    add_menu_item(notifications, @"Enabled", ToggleNotifications, state.notifications);
     auto* rpc = [[NSMenu alloc] initWithTitle:@"Discord Rich Presence"];
     rpc.autoenablesItems = NO;
     auto* rpc_item = add_menu_item(impl->menu, @"Discord Rich Presence", 0,

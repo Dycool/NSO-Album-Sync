@@ -224,20 +224,21 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         "Sync Now",
         &impl->callbacks.sync_now,
         state.signed_in && !state.sync_busy);
-    append_menu_item(
-        impl->menu,
-        "Copy Last Capture",
-        &impl->callbacks.copy_last_capture,
-        state.signed_in);
     append_check_item(
         impl->menu,
         auto_sync_label(state.sync_interval_minutes),
         state.auto_sync,
         &impl->callbacks.toggle_auto);
-    append_check_item(
+    append_menu_item(
         impl->menu,
-        "Notifications",
-        state.notifications,
+        "Copy Last Capture",
+        &impl->callbacks.copy_last_capture,
+        state.signed_in);
+    append_separator(impl->menu);
+    auto* notifications = gtk_menu_new();
+    auto* notifications_item = append_menu_item(impl->menu, "Notifications", nullptr);
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(notifications_item), notifications);
+    append_check_item(notifications, "Enabled", state.notifications,
         &impl->callbacks.toggle_notifications);
     auto* rpc = gtk_menu_new();
     auto* rpc_item = append_menu_item(impl->menu, "Discord Rich Presence", nullptr);
