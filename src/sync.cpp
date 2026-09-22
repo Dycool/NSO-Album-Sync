@@ -1,4 +1,5 @@
 #include "nso_album_sync/sync.hpp"
+#include "nso_album_sync/path.hpp"
 
 #include "nso_album_sync/game_aliases.hpp"
 #include "nso_album_sync/util.hpp"
@@ -36,75 +37,6 @@ bool should_cancel(const std::function<bool()>& cancelled) {
 
 void throw_if_cancelled(const std::function<bool()>& cancelled) {
     if (should_cancel(cancelled)) throw std::runtime_error("Sync cancelled");
-}
-
-std::string path_to_utf8(const std::filesystem::path& path) {
-#ifdef _WIN32
-    const auto& native = path.native();
-    if (native.empty()) return {};
-
-    const int required = WideCharToMultiByte(
-        CP_UTF8,
-        WC_ERR_INVALID_CHARS,
-        native.data(),
-        static_cast<int>(native.size()),
-        nullptr,
-        0,
-        nullptr,
-        nullptr);
-    if (required <= 0) {
-        throw std::runtime_error("Could not encode filesystem path as UTF-8");
-    }
-
-    std::string encoded(static_cast<std::size_t>(required), '\0');
-    const int written = WideCharToMultiByte(
-        CP_UTF8,
-        WC_ERR_INVALID_CHARS,
-        native.data(),
-        static_cast<int>(native.size()),
-        encoded.data(),
-        required,
-        nullptr,
-        nullptr);
-    if (written != required) {
-        throw std::runtime_error("Could not encode filesystem path as UTF-8");
-    }
-    return encoded;
-#else
-    return path.string();
-#endif
-}
-
-std::filesystem::path path_from_utf8(const std::string& text) {
-#ifdef _WIN32
-    if (text.empty()) return {};
-
-    const int required = MultiByteToWideChar(
-        CP_UTF8,
-        MB_ERR_INVALID_CHARS,
-        text.data(),
-        static_cast<int>(text.size()),
-        nullptr,
-        0);
-    if (required <= 0) {
-        throw std::runtime_error("Filesystem path is not valid UTF-8");
-    }
-
-    std::wstring decoded(static_cast<std::size_t>(required), L'\0');
-    const int written = MultiByteToWideChar(
-        CP_UTF8,
-        MB_ERR_INVALID_CHARS,
-        text.data(),
-        static_cast<int>(text.size()),
-        decoded.data(),
-        required);
-    if (written != required) {
-        throw std::runtime_error("Filesystem path is not valid UTF-8");
-    }
-    return std::filesystem::path(decoded);
-#else
-    return std::filesystem::path(text);
-#endif
 }
 
 bool ends_with_ascii(const std::string& value, std::string_view suffix) {

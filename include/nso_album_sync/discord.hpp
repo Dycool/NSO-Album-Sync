@@ -16,6 +16,7 @@ public:
     bool self_test_runtime();
     void update(const NintendoPresence& presence);
     void clear();
+    void set_rpc_settings(const RpcSettings& settings);
 
 private:
     struct Impl;

@@ -35,6 +35,11 @@ enum MenuCommand : NSInteger {
     ToggleAutoSync,
     ToggleNotifications,
     ToggleDiscord,
+    RpcUsername,
+    RpcProfilePicture,
+    RpcPlayTime,
+    RpcElapsedTime,
+    RpcZelda, RpcAnimalCrossing, RpcSplatoon3, RpcSplatoon2, RpcRefresh,
     SelectFolder,
     OpenFolder,
     ToggleStartOnBoot,
@@ -111,6 +116,15 @@ void dispatch_menu_action(PlatformUi::Impl* impl, NSInteger command) {
         case ToggleNotifications:
             callbacks.toggle_notifications();
             break;
+        case RpcUsername: callbacks.toggle_rpc_username(); break;
+        case RpcProfilePicture: callbacks.toggle_rpc_profile_picture(); break;
+        case RpcPlayTime: callbacks.toggle_rpc_play_time(); break;
+        case RpcElapsedTime: callbacks.toggle_rpc_elapsed_time(); break;
+        case RpcZelda: callbacks.toggle_rpc_zelda(); break;
+        case RpcAnimalCrossing: callbacks.toggle_rpc_animal_crossing(); break;
+        case RpcSplatoon3: callbacks.toggle_rpc_splatoon3(); break;
+        case RpcSplatoon2: callbacks.toggle_rpc_splatoon2(); break;
+        case RpcRefresh: callbacks.refresh_rpc(); break;
         case ToggleDiscord:
             callbacks.toggle_discord();
             break;
@@ -292,13 +306,24 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         state.notifications,
         true,
         @"bell");
-    add_menu_item(
-        impl->menu,
-        @"Discord Rich Presence",
-        ToggleDiscord,
-        state.discord,
-        true,
-        @"person.2.wave.2");
+    auto* rpc = [[NSMenu alloc] initWithTitle:@"Discord Rich Presence"];
+    rpc.autoenablesItems = NO;
+    auto* rpc_item = add_menu_item(impl->menu, @"Discord Rich Presence", 0,
+        false, true, @"person.2.wave.2");
+    rpc_item.submenu = rpc;
+    add_menu_item(rpc, @"Enabled", ToggleDiscord, state.discord);
+    [rpc addItem:[NSMenuItem separatorItem]];
+    add_menu_item(rpc, @"Show Switch username", RpcUsername, state.rpc.show_username);
+    add_menu_item(rpc, @"Show profile picture", RpcProfilePicture, state.rpc.show_profile_picture);
+    add_menu_item(rpc, @"Show total play time", RpcPlayTime, state.rpc.show_play_time);
+    add_menu_item(rpc, @"Show elapsed timer", RpcElapsedTime, state.rpc.show_elapsed_time);
+    [rpc addItem:[NSMenuItem separatorItem]];
+    add_menu_item(rpc, @"Zelda Notes live location", RpcZelda, state.rpc.zelda);
+    add_menu_item(rpc, @"Animal Crossing details", RpcAnimalCrossing, state.rpc.animal_crossing);
+    add_menu_item(rpc, @"Splatoon 3 details", RpcSplatoon3, state.rpc.splatoon3);
+    add_menu_item(rpc, @"Splatoon 2 details", RpcSplatoon2, state.rpc.splatoon2);
+    [rpc addItem:[NSMenuItem separatorItem]];
+    add_menu_item(rpc, @"Refresh Now", RpcRefresh, false, state.discord && state.signed_in);
 
     [impl->menu addItem:[NSMenuItem separatorItem]];
     add_menu_item(

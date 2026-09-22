@@ -239,11 +239,22 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         "Notifications",
         state.notifications,
         &impl->callbacks.toggle_notifications);
-    append_check_item(
-        impl->menu,
-        "Discord Rich Presence",
-        state.discord,
-        &impl->callbacks.toggle_discord);
+    auto* rpc = gtk_menu_new();
+    auto* rpc_item = append_menu_item(impl->menu, "Discord Rich Presence", nullptr);
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(rpc_item), rpc);
+    append_check_item(rpc, "Enabled", state.discord, &impl->callbacks.toggle_discord);
+    append_separator(rpc);
+    append_check_item(rpc, "Show Switch username", state.rpc.show_username, &impl->callbacks.toggle_rpc_username);
+    append_check_item(rpc, "Show profile picture", state.rpc.show_profile_picture, &impl->callbacks.toggle_rpc_profile_picture);
+    append_check_item(rpc, "Show total play time", state.rpc.show_play_time, &impl->callbacks.toggle_rpc_play_time);
+    append_check_item(rpc, "Show elapsed timer", state.rpc.show_elapsed_time, &impl->callbacks.toggle_rpc_elapsed_time);
+    append_separator(rpc);
+    append_check_item(rpc, "Zelda Notes live location", state.rpc.zelda, &impl->callbacks.toggle_rpc_zelda);
+    append_check_item(rpc, "Animal Crossing details", state.rpc.animal_crossing, &impl->callbacks.toggle_rpc_animal_crossing);
+    append_check_item(rpc, "Splatoon 3 details", state.rpc.splatoon3, &impl->callbacks.toggle_rpc_splatoon3);
+    append_check_item(rpc, "Splatoon 2 details", state.rpc.splatoon2, &impl->callbacks.toggle_rpc_splatoon2);
+    append_separator(rpc);
+    append_menu_item(rpc, "Refresh Now", &impl->callbacks.refresh_rpc, state.discord && state.signed_in);
 
     append_separator(impl->menu);
     append_menu_item(

@@ -201,11 +201,15 @@ public:
 
 private:
     bool ensure_session(const std::string& web_service_token);
+    void set_active_game_locked(ZeldaNotesGame game);
     void stop_live_session();
     void run_live_session(ZeldaNotesGame game, std::string web_service_token);
     void publish_live_presence(ZeldaNotesPresence presence);
 
     HttpClient& http_;
+
+    // UI sign-out and the presence worker can both stop/select live sessions.
+    std::mutex lifecycle_mutex_;
 
     mutable std::mutex mutex_;
     std::string language_ = "en-GB";

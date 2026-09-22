@@ -1,4 +1,5 @@
 #include "nso_album_sync/util.hpp"
+#include "nso_album_sync/path.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -428,7 +429,11 @@ void open_url(const std::string& url) {
 }
 
 void open_path(const std::filesystem::path& path) {
-    open_url(path.string());
+#ifdef _WIN32
+    ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    open_url(path_to_utf8(path));
+#endif
 }
 
 }  // namespace nso

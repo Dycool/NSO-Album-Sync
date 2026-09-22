@@ -1,5 +1,7 @@
 #pragma once
 
+#include "nso_album_sync/rpc_settings.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -19,6 +21,7 @@ struct AppConfig {
     int auto_sync_setting_version = 1;
     bool notifications = false;
     bool discord_presence = false;
+    RpcSettings rpc;
     int discord_presence_setting_version = 1;
     bool start_on_boot = false;
 

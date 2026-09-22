@@ -1,4 +1,6 @@
 #include "nso_album_sync/app.hpp"
+#include "nso_album_sync/path.hpp"
+#include "nso_album_sync/rpc.hpp"
 
 #include "nso_album_sync/auth_callback.hpp"
 #include "nso_album_sync/util.hpp"
@@ -68,53 +70,6 @@ bool is_invalid_grant(const std::string& message) {
     return message.find("invalid_grant") != std::string::npos;
 }
 
-enum class RpcGameService {
-    None,
-    Splatoon3,
-    ZeldaNotes,
-    AnimalCrossing,
-    Splatoon2,
-};
-
-bool contains_any(const std::string& text, std::initializer_list<const char*> needles) {
-    for (const auto* needle : needles) {
-        if (needle != nullptr && text.find(needle) != std::string::npos) return true;
-    }
-    return false;
-}
-
-RpcGameService rpc_game_service_for(const NintendoPresence& presence) {
-    // Prefer Nintendo's stable application/title ID. Coral names are localized,
-    // so routing only by English/Japanese substrings silently disables RPC
-    // enrichment for other Nintendo Account languages.
-    if (presence.title_id == "0100c2500fc20000") return RpcGameService::Splatoon3;
-    if (presence.title_id == "01003bc0000a0000") return RpcGameService::Splatoon2;
-    if (presence.title_id == "01006f8002326000") return RpcGameService::AnimalCrossing;
-    if (presence.title_id == "01007ef00011e000" ||
-        presence.title_id == "0100f2c0115b6000") {
-        return RpcGameService::ZeldaNotes;
-    }
-
-    // Name fallbacks cover Coral payloads that omit an application ID and
-    // Nintendo Switch 2 Edition display names. Keep Zelda deliberately narrow:
-    // Zelda Notes supports BOTW/TOTK, not every Zelda-family title.
-    if (contains_any(presence.game_name, {"Splatoon 3", "スプラトゥーン3"})) {
-        return RpcGameService::Splatoon3;
-    }
-    if (contains_any(presence.game_name, {
-            "Breath of the Wild", "ブレス オブ ザ ワイルド",
-            "Tears of the Kingdom", "ティアーズ オブ ザ キングダム"})) {
-        return RpcGameService::ZeldaNotes;
-    }
-    if (contains_any(presence.game_name, {
-            "Animal Crossing", "New Horizons", "どうぶつの森", "あつ森"})) {
-        return RpcGameService::AnimalCrossing;
-    }
-    if (contains_any(presence.game_name, {"Splatoon 2", "スプラトゥーン2"})) {
-        return RpcGameService::Splatoon2;
-    }
-    return RpcGameService::None;
-}
 
 }  // namespace
 
@@ -132,6 +87,7 @@ App::App()
       discord_(config_.snapshot().discord_application_id) {
     const auto config = config_.snapshot();
     http_.set_proxy(config.proxy_url);
+    discord_.set_rpc_settings(config.rpc);
     last_sync_ = config.last_sync.empty() ? "Never" : config.last_sync;
 }
 
@@ -157,6 +113,7 @@ void App::update_menu() {
     menu.auto_sync = config.auto_sync;
     menu.notifications = config.notifications;
     menu.discord = config.discord_presence;
+    menu.rpc = config.rpc;
     menu.start_on_boot = start_on_boot_enabled();
     menu.signed_in = !config.session_token.empty();
     menu.sync_interval_minutes = std::max(1, config.sync_interval_minutes);
@@ -426,19 +383,8 @@ void App::sign_in_or_out() {
 }
 
 void App::presence_loop() {
-    std::string active_game_key;
-    bool enrichment_attempted = false;
-    std::string cached_custom_details;
-    std::string cached_custom_state;
-    std::string cached_custom_image_uri;
-
-    const auto reset_enrichment = [&] {
-        active_game_key.clear();
-        enrichment_attempted = false;
-        cached_custom_details.clear();
-        cached_custom_state.clear();
-        cached_custom_image_uri.clear();
-    };
+    RpcEnrichmentCache enrichment;
+    const auto reset_enrichment = [&] { enrichment = {}; };
 
     const auto release_deferred_sync = [&](const std::string& session_token) {
         const auto state = config_.snapshot();
@@ -480,47 +426,25 @@ void App::presence_loop() {
                 config.session_token == session_token &&
                 account_generation_.load() == generation) {
                 if (presence.is_playing()) {
-                    // Publish the fast Coral-only RPC immediately. Game-specific
-                    // enrichment is optional and must never delay Discord startup.
-                    const auto basic_state = config_.snapshot();
-                    if (!stopping_ && basic_state.discord_presence &&
-                        basic_state.session_token == session_token &&
-                        account_generation_.load() == generation) {
-                        discord_.update(presence);
-                    }
-
-                    // Once basic RPC is visible, release startup album sync. This
-                    // keeps ShowSelf ahead of the heavier startup work without
-                    // imposing any fixed sleep or artificial delay.
-                    release_deferred_sync(session_token);
-
+                    const auto revision = rpc_revision_.load();
+                    presence.rpc = config.rpc;
                     const auto service = rpc_game_service_for(presence);
                     const auto game_key = !presence.title_id.empty()
-                        ? presence.title_id
-                        : presence.game_name;
+                        ? presence.title_id : presence.game_name;
+                    const bool changed = enrichment.begin(game_key, generation, revision);
+                    const bool enabled = rpc_service_enabled(service, config.rpc);
+                    if (changed) zeldanotes_.clear_cache();
+                    presence.zelda_notes_enabled = enabled &&
+                        service == RpcGameService::ZeldaNotes && enrichment.success;
+                    enrichment.apply(presence);
 
-                    // Treat a title transition as the start of a new play
-                    // session. Rich game-service data is fetched at most once
-                    // for that continuous session; later polls use Coral only
-                    // and reapply the cached Discord fields.
-                    if (active_game_key != game_key) {
-                        active_game_key = game_key;
-                        enrichment_attempted = false;
-                        cached_custom_details.clear();
-                        cached_custom_state.clear();
-                        cached_custom_image_uri.clear();
-                    }
+                    // Publish cached enrichment directly on recurring polls.
+                    // A new title appears immediately while its service loads.
+                    discord_.update(presence);
+                    release_deferred_sync(session_token);
 
-                    const bool should_probe_game_service =
-                        service != RpcGameService::None && !enrichment_attempted;
-
-                    if (should_probe_game_service) {
-                        // Mark the attempt before any network work. A transient
-                        // game-service failure must not turn into automatic
-                        // retries every minute; the next attempt is the next
-                        // detected game session.
-                        enrichment_attempted = true;
-
+                    if (enabled && enrichment.should_probe(RpcEnrichmentCache::Clock::now())) {
+                        bool service_ready = false;
                         // Game WebView bootstraps use the Nintendo Account locale
                         // in nxapi and in the working backend. This profile data
                         // is only needed for the one enrichment probe.
@@ -550,6 +474,7 @@ void App::presence_loop() {
                                             if (splat_presence.active) {
                                                 presence.custom_details =
                                                     splat_presence.format_details();
+                                                presence.custom_details_without_name = splat_presence.title;
                                                 presence.custom_state =
                                                     splat_presence.format_state();
                                                 if (!splat_presence.stage_image_uri.empty()) {
@@ -563,8 +488,14 @@ void App::presence_loop() {
                                     break;
                                 case RpcGameService::ZeldaNotes:
                                     try {
-                                        auto web_token = coral_.get_web_service_token(
-                                            session_token, kZeldaNotesGameServiceId);
+                                        std::string web_token;
+                                        try {
+                                            web_token = coral_.get_web_service_token(
+                                                session_token, kZeldaNotesGameServiceId);
+                                        } catch (const std::exception& error) {
+                                            if (is_invalid_grant(error.what())) throw;
+                                            std::cerr << "Presence: Zelda Notes primary token unavailable\n";
+                                        }
                                         if (web_token.empty()) {
                                             std::cerr << "Presence: ZeldaNotes primary service token empty, falling back." << std::endl;
                                             web_token = coral_.get_web_service_token(
@@ -573,6 +504,7 @@ void App::presence_loop() {
                                         if (!web_token.empty()) {
                                             const auto zelda_presence =
                                                 zeldanotes_.fetch_presence(web_token);
+                                            service_ready = true; // Live worker handles bootstrap/reconnect.
                                             if (zelda_presence.active) {
                                                 const auto state_str =
                                                     zelda_presence.format_state();
@@ -603,11 +535,12 @@ void App::presence_loop() {
                                             if (ac_presence.active) {
                                                 const auto state_str = ac_presence.format_state();
                                                 const auto details_str = ac_presence.format_details();
+                                                presence.custom_details_without_name = ac_presence.island_name;
                                                 if (!state_str.empty()) presence.custom_state = state_str;
                                                 if (!details_str.empty()) presence.custom_details = details_str;
                                                 if (!ac_presence.image_uri.empty() &&
                                                     ac_presence.image_uri.size() <= 300) {
-                                                    presence.custom_image_uri = ac_presence.image_uri;
+                                                    presence.profile_image_uri = ac_presence.image_uri;
                                                 }
                                             }
                                         }
@@ -625,6 +558,7 @@ void App::presence_loop() {
                                             if (splat2_presence.active) {
                                                 const auto state_str = splat2_presence.format_state();
                                                 const auto details_str = splat2_presence.format_details();
+                                                presence.custom_details_without_name.clear();
                                                 if (!state_str.empty()) presence.custom_state = state_str;
                                                 if (!details_str.empty()) presence.custom_details = details_str;
                                                 if (!splat2_presence.stage_image_uri.empty()) {
@@ -641,19 +575,9 @@ void App::presence_loop() {
                             }
                         }
 
-                        // Cache exactly what the one service probe contributed.
-                        // Empty values are intentional: a failed/unsupported
-                        // enrichment remains generic for the rest of this session.
-                        cached_custom_details = presence.custom_details;
-                        cached_custom_state = presence.custom_state;
-                        cached_custom_image_uri = presence.custom_image_uri;
-                    } else if (service != RpcGameService::None && enrichment_attempted) {
-                        // Normal recurring polls are Coral-only. Reuse the
-                        // original enrichment so Discord does not lose the useful
-                        // data just because we stopped contacting the game API.
-                        presence.custom_details = cached_custom_details;
-                        presence.custom_state = cached_custom_state;
-                        presence.custom_image_uri = cached_custom_image_uri;
+                        enrichment.complete(presence, service_ready, RpcEnrichmentCache::Clock::now());
+                        presence.zelda_notes_enabled = enabled &&
+                            service == RpcGameService::ZeldaNotes && enrichment.success;
                     }
 
                     // A sign-out clears Discord immediately. Do not allow a slow
@@ -661,6 +585,7 @@ void App::presence_loop() {
                     const auto latest = config_.snapshot();
                     if (!stopping_ && latest.discord_presence &&
                         latest.session_token == session_token &&
+                        rpc_revision_.load() == revision &&
                         account_generation_.load() == generation) {
                         discord_.update(presence);
                     }
@@ -899,6 +824,7 @@ int App::run() {
     };
 
     callbacks.toggle_discord = [this] {
+        rpc_revision_.fetch_add(1);
         const auto config = config_.update([](AppConfig& value) {
             value.discord_presence = !value.discord_presence;
             value.discord_presence_setting_version = 1;
@@ -930,6 +856,31 @@ int App::run() {
         }
     };
 
+    const auto toggle_rpc = [this](bool RpcSettings::*setting) {
+        const auto config = config_.update([setting](AppConfig& value) {
+            value.rpc.*setting = !(value.rpc.*setting);
+        });
+        discord_.set_rpc_settings(config.rpc);
+        update_menu();
+        if (setting == &RpcSettings::zelda || setting == &RpcSettings::animal_crossing ||
+            setting == &RpcSettings::splatoon3 || setting == &RpcSettings::splatoon2) {
+            rpc_revision_.fetch_add(1);
+            request_presence_refresh();
+        }
+    };
+    callbacks.toggle_rpc_zelda = [toggle_rpc] { toggle_rpc(&RpcSettings::zelda); };
+    callbacks.toggle_rpc_animal_crossing = [toggle_rpc] { toggle_rpc(&RpcSettings::animal_crossing); };
+    callbacks.toggle_rpc_splatoon3 = [toggle_rpc] { toggle_rpc(&RpcSettings::splatoon3); };
+    callbacks.toggle_rpc_splatoon2 = [toggle_rpc] { toggle_rpc(&RpcSettings::splatoon2); };
+    callbacks.toggle_rpc_username = [toggle_rpc] { toggle_rpc(&RpcSettings::show_username); };
+    callbacks.toggle_rpc_profile_picture = [toggle_rpc] { toggle_rpc(&RpcSettings::show_profile_picture); };
+    callbacks.toggle_rpc_play_time = [toggle_rpc] { toggle_rpc(&RpcSettings::show_play_time); };
+    callbacks.toggle_rpc_elapsed_time = [toggle_rpc] { toggle_rpc(&RpcSettings::show_elapsed_time); };
+    callbacks.refresh_rpc = [this] {
+        rpc_revision_.fetch_add(1);
+        request_presence_refresh();
+    };
+
     callbacks.select_folder = [this] {
         const auto current = config_.snapshot();
         const auto selected = ui_.choose_folder(current.destination_folder);
@@ -946,7 +897,7 @@ int App::run() {
     };
 
     callbacks.open_folder = [this] {
-        open_path(config_.snapshot().destination_folder);
+        open_path(path_from_utf8(config_.snapshot().destination_folder));
     };
 
     callbacks.toggle_start = [this] {

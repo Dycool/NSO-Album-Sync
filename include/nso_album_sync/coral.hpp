@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nso_album_sync/http.hpp"
+#include "nso_album_sync/rpc_settings.hpp"
 #include "nso_album_sync/json.hpp"
 #include "nso_album_sync/nintendo_auth.hpp"
 #include "nso_album_sync/nxapi.hpp"
@@ -42,6 +43,10 @@ struct NintendoPresence {
     std::int64_t updated_at = 0;
     std::int64_t total_play_time = 0;
 
+    RpcSettings rpc;
+    bool zelda_notes_enabled = true;
+    std::string profile_image_uri;
+    std::string custom_details_without_name;
     std::string custom_state;
     std::string custom_details;
     std::string custom_image_uri;

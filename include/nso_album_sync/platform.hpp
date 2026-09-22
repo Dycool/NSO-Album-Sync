@@ -1,5 +1,7 @@
 #pragma once
 
+#include "nso_album_sync/rpc_settings.hpp"
+
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -86,6 +88,7 @@ struct MenuState {
     bool auto_sync = false;
     bool notifications = false;
     bool discord = false;
+    RpcSettings rpc;
     bool start_on_boot = false;
     bool signed_in = false;
     int sync_interval_minutes = 60;
@@ -98,6 +101,15 @@ struct PlatformCallbacks {
     std::function<void()> toggle_auto;
     std::function<void()> toggle_notifications;
     std::function<void()> toggle_discord;
+    std::function<void()> toggle_rpc_zelda;
+    std::function<void()> toggle_rpc_animal_crossing;
+    std::function<void()> toggle_rpc_splatoon3;
+    std::function<void()> toggle_rpc_splatoon2;
+    std::function<void()> toggle_rpc_username;
+    std::function<void()> toggle_rpc_profile_picture;
+    std::function<void()> toggle_rpc_play_time;
+    std::function<void()> toggle_rpc_elapsed_time;
+    std::function<void()> refresh_rpc;
     std::function<void()> select_folder;
     std::function<void()> open_folder;
     std::function<void()> toggle_start;

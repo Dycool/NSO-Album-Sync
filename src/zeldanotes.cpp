@@ -1307,7 +1307,7 @@ ZeldaNotesClient::ZeldaNotesClient(HttpClient& http) : http_(http) {
 }
 
 ZeldaNotesClient::~ZeldaNotesClient() {
-    stop_live_session();
+    clear_cache();
     std::lock_guard lock(g_bridge_mutex);
     if (g_client == this) g_client = nullptr;
 }
@@ -1315,6 +1315,7 @@ ZeldaNotesClient::~ZeldaNotesClient() {
 void ZeldaNotesClient::set_locale(
     const std::string& language,
     const std::string& country) {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
     const auto next_language = language.empty() ? std::string("en-GB") : language;
     const auto next_country = country.empty() ? std::string("GB") : country;
     ZeldaNotesGame active_game = ZeldaNotesGame::Unknown;
@@ -1333,7 +1334,7 @@ void ZeldaNotesClient::set_locale(
     }
     if (active_game != ZeldaNotesGame::Unknown) {
         stop_live_session();
-        set_active_game(active_game);
+        set_active_game_locked(active_game);
     }
 }
 
@@ -1383,6 +1384,7 @@ bool ZeldaNotesClient::ensure_session(const std::string& web_service_token) {
 }
 
 void ZeldaNotesClient::clear_cache() {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
     stop_live_session();
     std::lock_guard lock(mutex_);
     source_web_token_.clear();
@@ -1399,14 +1401,17 @@ ZeldaNotesPresence ZeldaNotesClient::fetch_presence(
         std::lock_guard lock(mutex_);
         latest_web_token_ = web_service_token;
     }
-    try {
-        ensure_session(web_service_token);
-    } catch (...) {
-    }
+    // set_active_game starts the worker after the app has selected the current
+    // title. The worker owns bootstrap/retry so a transient failure is recoverable.
     return {};
 }
 
 void ZeldaNotesClient::set_active_game(ZeldaNotesGame game) {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    set_active_game_locked(game);
+}
+
+void ZeldaNotesClient::set_active_game_locked(ZeldaNotesGame game) {
     if (game == ZeldaNotesGame::Unknown) {
         stop_live_session();
         return;

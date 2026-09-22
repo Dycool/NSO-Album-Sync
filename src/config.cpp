@@ -1,4 +1,5 @@
 #include "nso_album_sync/config.hpp"
+#include "nso_album_sync/path.hpp"
 
 #include "nso_album_sync/json.hpp"
 #include "nso_album_sync/secure_store.hpp"
@@ -30,12 +31,13 @@ constexpr char kVolatileMarker[] = "volatile:v1";
 
 std::string environment_variable(const char* name) {
 #ifdef _WIN32
-    char* value = nullptr;
+    wchar_t* value = nullptr;
     std::size_t length = 0;
-    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
+    const std::wstring wide_name(name, name + std::char_traits<char>::length(name));
+    if (_wdupenv_s(&value, &length, wide_name.c_str()) != 0 || value == nullptr) {
         return {};
     }
-    std::string result(value);
+    const auto result = path_to_utf8(std::filesystem::path(value));
     std::free(value);
     return result;
 #else
@@ -47,7 +49,7 @@ std::string environment_variable(const char* name) {
 std::filesystem::path config_directory() {
 #ifdef _WIN32
     const auto app_data = environment_variable("APPDATA");
-    return std::filesystem::path(app_data.empty() ? "." : app_data) / "NSOAlbumSync";
+    return path_from_utf8(app_data.empty() ? "." : app_data) / "NSOAlbumSync";
 #elif __APPLE__
     const auto home = environment_variable("HOME");
     return std::filesystem::path(home.empty() ? "." : home) /
@@ -92,16 +94,16 @@ std::string default_album_folder() {
     for (const auto& candidate : candidates) {
         std::error_code ec;
         if (std::filesystem::exists(candidate, ec)) {
-            return candidate.string();
+            return path_to_utf8(candidate);
         }
     }
 
     if (has_pictures && pictures[0] != L'\0') {
-        return (std::filesystem::path(pictures) / L"Nintendo Switch").string();
+        return path_to_utf8(std::filesystem::path(pictures) / L"Nintendo Switch");
     }
     const auto profile = environment_variable("USERPROFILE");
-    return (std::filesystem::path(profile.empty() ? "." : profile) /
-            "Pictures" / "Nintendo Switch").string();
+    return path_to_utf8(path_from_utf8(profile.empty() ? "." : profile) /
+            "Pictures" / "Nintendo Switch");
 #elif __APPLE__
     const auto home = environment_variable("HOME");
     const std::filesystem::path base = home.empty() ? "." : home;
@@ -119,7 +121,7 @@ std::string default_album_folder() {
     for (const auto& candidate : candidates) {
         std::error_code ec;
         if (std::filesystem::exists(candidate, ec)) {
-            return candidate.string();
+            return path_to_utf8(candidate);
         }
     }
     return (base / "Pictures" / "Nintendo Switch").string();
@@ -140,7 +142,7 @@ std::string default_album_folder() {
     for (const auto& candidate : candidates) {
         std::error_code ec;
         if (std::filesystem::exists(candidate, ec)) {
-            return candidate.string();
+            return path_to_utf8(candidate);
         }
     }
     return (base / "Pictures" / "Nintendo Switch").string();
@@ -313,6 +315,14 @@ void ConfigManager::load() {
                 needs_config_rewrite = true;
             }
             config_.discord_presence_setting_version = 1;
+            config_.rpc.show_username = json.boolean("rpcShowUsername", true);
+            config_.rpc.show_profile_picture = json.boolean("rpcShowProfilePicture", true);
+            config_.rpc.show_play_time = json.boolean("rpcShowPlayTime", true);
+            config_.rpc.show_elapsed_time = json.boolean("rpcShowElapsedTime", true);
+            config_.rpc.zelda = json.boolean("rpcZelda", true);
+            config_.rpc.animal_crossing = json.boolean("rpcAnimalCrossing", true);
+            config_.rpc.splatoon3 = json.boolean("rpcSplatoon3", true);
+            config_.rpc.splatoon2 = json.boolean("rpcSplatoon2", true);
             config_.start_on_boot = bool_with_legacy_key(
                 json, "startOnBoot", "StartOnBoot", false);
             config_.sync_interval_minutes = static_cast<int>(std::clamp<std::int64_t>(
@@ -401,6 +411,14 @@ void ConfigManager::save_locked() {
          static_cast<std::int64_t>(config_.auto_sync_setting_version)},
         {"notifications", config_.notifications},
         {"discordPresence", config_.discord_presence},
+        {"rpcShowUsername", config_.rpc.show_username},
+        {"rpcShowProfilePicture", config_.rpc.show_profile_picture},
+        {"rpcShowPlayTime", config_.rpc.show_play_time},
+        {"rpcShowElapsedTime", config_.rpc.show_elapsed_time},
+        {"rpcZelda", config_.rpc.zelda},
+        {"rpcAnimalCrossing", config_.rpc.animal_crossing},
+        {"rpcSplatoon3", config_.rpc.splatoon3},
+        {"rpcSplatoon2", config_.rpc.splatoon2},
         {"discordPresenceSettingVersion",
          static_cast<std::int64_t>(config_.discord_presence_setting_version)},
         {"startOnBoot", config_.start_on_boot},

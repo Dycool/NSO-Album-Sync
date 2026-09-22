@@ -1,4 +1,5 @@
 #include "nso_album_sync/auth_callback.hpp"
+#include "nso_album_sync/path.hpp"
 
 #include <atomic>
 #include <cctype>
@@ -331,7 +332,7 @@ void clear_nintendo_auth_callback() {
                  std::filesystem::directory_options::skip_permission_denied,
                  error)) {
             if (error) break;
-            const auto name = entry.path().filename().string();
+            const auto name = path_to_utf8(entry.path().filename());
             if (name.rfind("auth-callback.tmp.", 0) == 0) {
                 std::filesystem::remove(entry.path(), error);
                 error.clear();

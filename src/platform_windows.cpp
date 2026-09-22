@@ -26,6 +26,11 @@ constexpr char kNxapiSourceUrl[] =
 enum Command : UINT {
     CmdSync = 1001, CmdCopy, CmdAuto, CmdNotifications, CmdDiscord, CmdFolder,
     CmdOpen, CmdStartup, CmdProxy, CmdAccount, CmdExit,
+    CmdRpcUsername,
+    CmdRpcProfilePicture,
+    CmdRpcPlayTime,
+    CmdRpcElapsedTime,
+    CmdRpcZelda, CmdRpcAnimalCrossing, CmdRpcSplatoon3, CmdRpcSplatoon2, CmdRpcRefresh,
 };
 
 std::wstring wide(const std::string& value) {
@@ -486,6 +491,15 @@ void invoke(PlatformUi::Impl* ui, UINT command) {
         case CmdAuto: c.toggle_auto(); break;
         case CmdNotifications: c.toggle_notifications(); break;
         case CmdDiscord: c.toggle_discord(); break;
+        case CmdRpcUsername: c.toggle_rpc_username(); break;
+        case CmdRpcProfilePicture: c.toggle_rpc_profile_picture(); break;
+        case CmdRpcPlayTime: c.toggle_rpc_play_time(); break;
+        case CmdRpcElapsedTime: c.toggle_rpc_elapsed_time(); break;
+        case CmdRpcZelda: c.toggle_rpc_zelda(); break;
+        case CmdRpcAnimalCrossing: c.toggle_rpc_animal_crossing(); break;
+        case CmdRpcSplatoon3: c.toggle_rpc_splatoon3(); break;
+        case CmdRpcSplatoon2: c.toggle_rpc_splatoon2(); break;
+        case CmdRpcRefresh: c.refresh_rpc(); break;
         case CmdFolder: c.select_folder(); break;
         case CmdOpen: c.open_folder(); break;
         case CmdStartup: c.toggle_start(); break;
@@ -522,10 +536,25 @@ void tray_menu(PlatformUi::Impl* ui) {
         CmdNotifications,
         L"Notifications",
         MF_STRING | (s.notifications ? MF_CHECKED : 0));
-    add(
-        CmdDiscord,
-        L"Discord Rich Presence",
-        MF_STRING | (s.discord ? MF_CHECKED : 0));
+    HMENU rpc = CreatePopupMenu();
+    const auto rpc_check = [&](UINT id, const wchar_t* label, bool checked) {
+        AppendMenuW(rpc, MF_STRING | (checked ? MF_CHECKED : 0), id, label);
+    };
+    rpc_check(CmdDiscord, L"Enabled", s.discord);
+    AppendMenuW(rpc, MF_SEPARATOR, 0, nullptr);
+    rpc_check(CmdRpcUsername, L"Show Switch username", s.rpc.show_username);
+    rpc_check(CmdRpcProfilePicture, L"Show profile picture", s.rpc.show_profile_picture);
+    rpc_check(CmdRpcPlayTime, L"Show total play time", s.rpc.show_play_time);
+    rpc_check(CmdRpcElapsedTime, L"Show elapsed timer", s.rpc.show_elapsed_time);
+    AppendMenuW(rpc, MF_SEPARATOR, 0, nullptr);
+    rpc_check(CmdRpcZelda, L"Zelda Notes live location", s.rpc.zelda);
+    rpc_check(CmdRpcAnimalCrossing, L"Animal Crossing details", s.rpc.animal_crossing);
+    rpc_check(CmdRpcSplatoon3, L"Splatoon 3 details", s.rpc.splatoon3);
+    rpc_check(CmdRpcSplatoon2, L"Splatoon 2 details", s.rpc.splatoon2);
+    AppendMenuW(rpc, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(rpc, MF_STRING | (s.discord && s.signed_in ? 0 : MF_GRAYED),
+        CmdRpcRefresh, L"Refresh Now");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(rpc), L"Discord Rich Presence");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     add(CmdFolder, L"Choose Album Folder…");
     add(CmdOpen, L"Open Album Folder");

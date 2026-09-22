@@ -1,4 +1,5 @@
 #include "nso_album_sync/discord.hpp"
+#include "nso_album_sync/rpc.hpp"
 #include "nso_album_sync/zeldanotes.hpp"
 
 #define DISCORDPP_IMPLEMENTATION
@@ -131,8 +132,8 @@ bool is_zelda_notes_presence(const NintendoPresence& presence) {
 }
 
 NintendoPresence with_live_zelda_location(const NintendoPresence& base) {
-    auto effective = base;
-    if (!is_zelda_notes_presence(base)) return effective;
+    auto effective = rpc_display_presence(base);
+    if (!base.rpc.zelda || !base.zelda_notes_enabled || !is_zelda_notes_presence(base)) return effective;
 
     const auto live = zelda_notes_current_live_presence();
     if (!live.active) return effective;
@@ -278,12 +279,12 @@ struct DiscordPresence::Impl {
     }
 
     void refresh_zelda_overlay() {
-        NintendoPresence base;
-        {
-            std::lock_guard lock(presence_mutex);
-            if (!has_last_base_presence || !last_base_presence.is_playing()) return;
-            base = last_base_presence;
-        }
+        // Serialize snapshot selection and publishing with account/title changes.
+        // A late live callback must never put an earlier game's RPC back.
+        std::lock_guard lock(presence_mutex);
+        if (!has_last_base_presence || !last_base_presence.is_playing()) return;
+        auto base = last_base_presence;
+        base.rpc = rpc_settings;
         publish(with_live_zelda_location(base));
     }
 
@@ -352,7 +353,8 @@ struct DiscordPresence::Impl {
                 ? presence.custom_large_image_uri
                 : presence.image_uri);
         const auto small_image_uri = normalize_discord_image_url(
-            presence, presence.custom_image_uri);
+            presence, presence.custom_image_uri.empty()
+                ? presence.profile_image_uri : presence.custom_image_uri);
         if (!presence.custom_image_uri.empty() &&
             !is_valid_discord_image_url(small_image_uri)) {
             log_rejected_custom_image(presence, small_image_uri);
@@ -375,7 +377,7 @@ struct DiscordPresence::Impl {
                 assets.SetSmallImage(small_image_uri);
                 if (!presence.user_name.empty()) {
                     assets.SetSmallText(presence.user_name);
-                } else if (!presence.custom_details.empty()) {
+                } else if (presence.rpc.show_username && !presence.custom_details.empty()) {
                     assets.SetSmallText(presence.custom_details);
                 }
             }
@@ -404,6 +406,7 @@ struct DiscordPresence::Impl {
 
     std::mutex presence_mutex;
     NintendoPresence last_base_presence;
+    RpcSettings rpc_settings;
     bool has_last_base_presence = false;
 };
 
@@ -435,6 +438,16 @@ bool DiscordPresence::self_test_runtime() {
     return impl_->ensure_client_locked();
 }
 
+void DiscordPresence::set_rpc_settings(const RpcSettings& settings) {
+    const auto impl = impl_;
+    if (!impl) return;
+    {
+        std::lock_guard lock(impl->presence_mutex);
+        impl->rpc_settings = settings;
+    }
+    impl->refresh_zelda_overlay();
+}
+
 void DiscordPresence::clear() {
     const auto impl = impl_;
     if (!impl) return;
@@ -460,13 +473,12 @@ void DiscordPresence::update(const NintendoPresence& presence) {
     // extra /ShowSelf request.
     impl->remember_base(presence);
 
-    // The existing one-shot Zelda branch has already cached its WebServiceToken
-    // before the first Discord update for this play session. This call only
-    // selects BOTW/TOTK and starts/stops the independent live map stream.
+    // The app enables live Zelda only after obtaining this session's token.
+    // The initial generic update stops any previous game's live map stream.
     zelda_notes_note_discord_presence(
-        presence.title_id, presence.game_name, true);
+        presence.title_id, presence.game_name, presence.zelda_notes_enabled);
 
-    impl->publish(with_live_zelda_location(presence));
+    impl->refresh_zelda_overlay();
 }
 
 }  // namespace nso

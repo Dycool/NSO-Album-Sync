@@ -328,7 +328,7 @@ MediaItem parse_media_item(const Json& item) {
 NintendoPresence parse_presence(const Json& result) {
     NintendoPresence presence;
     presence.user_name = result.string("name", result.string("nickname"));
-    presence.custom_image_uri = result.string("imageUri", result.string("image2Uri"));
+    presence.profile_image_uri = result.string("imageUri", result.string("image2Uri"));
     const auto* presence_json = result.find("presence");
     if (presence_json == nullptr) return presence;
 
