@@ -439,8 +439,16 @@ void App::presence_loop() {
                     const auto revision = rpc_revision_.load();
                     presence.rpc = config.rpc;
                     const auto service = rpc_game_service_for(presence);
-                    const auto game_key = !presence.title_id.empty()
+                    auto game_key = !presence.title_id.empty()
                         ? presence.title_id : presence.game_name;
+                    if (service == RpcGameService::ZeldaNotes) {
+                        const auto zelda_game = zelda_notes_game_for_presence(
+                            presence.title_id, presence.game_name);
+                        if (zelda_game != ZeldaNotesGame::Unknown) {
+                            game_key = std::string("zelda:") +
+                                zelda_notes_short_name(zelda_game);
+                        }
+                    }
                     const bool changed = enrichment.begin(game_key, generation, revision);
                     const bool enabled = rpc_service_enabled(service, config.rpc);
                     if (changed) zeldanotes_.clear_cache();

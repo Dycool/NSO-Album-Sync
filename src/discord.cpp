@@ -139,14 +139,18 @@ NintendoPresence with_live_zelda_location(
     std::string& last_zelda_key,
     std::chrono::steady_clock::time_point& last_zelda_time) {
     auto effective = rpc_display_presence(base);
-    if (!base.rpc.zelda || !base.zelda_notes_enabled || !is_zelda_notes_presence(base)) {
+    if (!base.rpc.zelda || !is_zelda_notes_presence(base)) {
         last_zelda = {};
         last_zelda_key.clear();
         last_zelda_time = {};
         return effective;
     }
 
-    const auto game_key = !base.title_id.empty() ? base.title_id : base.game_name;
+    const auto zelda_game = zelda_notes_game_for_presence(
+        base.title_id, base.game_name);
+    const auto game_key = zelda_game == ZeldaNotesGame::Unknown
+        ? (!base.title_id.empty() ? base.title_id : base.game_name)
+        : std::string("zelda:") + zelda_notes_short_name(zelda_game);
     if (last_zelda_key != game_key) {
         last_zelda_key = game_key;
         last_zelda = {};
@@ -522,10 +526,13 @@ void DiscordPresence::update(const NintendoPresence& presence) {
     // extra /ShowSelf request.
     impl->remember_base(presence);
 
-    // The app enables live Zelda only after obtaining this session's token.
-    // The initial generic update stops any previous game's live map stream.
+    // Keep an already-healthy Zelda worker alive across transient enrichment
+    // probe failures. A missing token still leaves the worker dormant, while
+    // leaving Zelda or disabling the Zelda RPC setting stops it immediately.
     zelda_notes_note_discord_presence(
-        presence.title_id, presence.game_name, presence.zelda_notes_enabled);
+        presence.title_id,
+        presence.game_name,
+        presence.rpc.zelda && is_zelda_notes_presence(presence));
 
     impl->refresh_zelda_overlay();
 }
