@@ -110,6 +110,7 @@ inline NintendoPresence rpc_display_presence(NintendoPresence presence) {
         presence.custom_large_image_uri.clear();
         presence.custom_large_text.clear();
     }
+    presence.rpc.show_username = presence.rpc.show_username && presence.rpc.show_profile_picture;
     if (!presence.rpc.show_username) {
         presence.user_name.clear();
         presence.custom_details = presence.custom_details_without_name;
@@ -119,7 +120,6 @@ inline NintendoPresence rpc_display_presence(NintendoPresence presence) {
         presence.sys_description.clear();
         presence.total_play_time = 0;
     }
-    if (!presence.rpc.show_elapsed_time) presence.elapsed_started_at_ms = 0;
     return presence;
 }
 

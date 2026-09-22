@@ -153,9 +153,11 @@ void append_check_item(
     GtkWidget* menu,
     const std::string& label,
     bool checked,
-    std::function<void()>* callback) {
+    std::function<void()>* callback,
+    bool enabled = true) {
     auto* item = gtk_check_menu_item_new_with_label(label.c_str());
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item), checked);
+    gtk_widget_set_sensitive(item, enabled ? TRUE : FALSE);
     g_signal_connect_swapped(
         item,
         "activate",
@@ -234,21 +236,18 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         "Copy Last Capture",
         &impl->callbacks.copy_last_capture,
         state.signed_in);
-    append_separator(impl->menu);
-    auto* notifications = gtk_menu_new();
-    auto* notifications_item = append_menu_item(impl->menu, "Notifications", nullptr);
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(notifications_item), notifications);
-    append_check_item(notifications, "Enabled", state.notifications,
+    append_check_item(impl->menu, "Notifications", state.notifications,
         &impl->callbacks.toggle_notifications);
     auto* rpc = gtk_menu_new();
     auto* rpc_item = append_menu_item(impl->menu, "Discord Rich Presence", nullptr);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(rpc_item), rpc);
     append_check_item(rpc, "Enabled", state.discord, &impl->callbacks.toggle_discord);
     append_separator(rpc);
-    append_check_item(rpc, "Show Switch username", state.rpc.show_username, &impl->callbacks.toggle_rpc_username);
+    append_check_item(rpc, "Show Switch username",
+        state.rpc.show_profile_picture && state.rpc.show_username,
+        &impl->callbacks.toggle_rpc_username, state.rpc.show_profile_picture);
     append_check_item(rpc, "Show profile picture", state.rpc.show_profile_picture, &impl->callbacks.toggle_rpc_profile_picture);
     append_check_item(rpc, "Show total play time", state.rpc.show_play_time, &impl->callbacks.toggle_rpc_play_time);
-    append_check_item(rpc, "Show elapsed timer", state.rpc.show_elapsed_time, &impl->callbacks.toggle_rpc_elapsed_time);
     append_separator(rpc);
     append_check_item(rpc, "Zelda Notes live location", state.rpc.zelda, &impl->callbacks.toggle_rpc_zelda);
     append_check_item(rpc, "Animal Crossing details", state.rpc.animal_crossing, &impl->callbacks.toggle_rpc_animal_crossing);

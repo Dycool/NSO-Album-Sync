@@ -109,7 +109,6 @@ struct PlatformCallbacks {
     std::function<void()> toggle_rpc_username;
     std::function<void()> toggle_rpc_profile_picture;
     std::function<void()> toggle_rpc_play_time;
-    std::function<void()> toggle_rpc_elapsed_time;
     std::function<void()> refresh_rpc;
     std::function<void()> select_folder;
     std::function<void()> open_folder;

@@ -318,7 +318,6 @@ void ConfigManager::load() {
             config_.rpc.show_username = json.boolean("rpcShowUsername", true);
             config_.rpc.show_profile_picture = json.boolean("rpcShowProfilePicture", true);
             config_.rpc.show_play_time = json.boolean("rpcShowPlayTime", true);
-            config_.rpc.show_elapsed_time = json.boolean("rpcShowElapsedTime", true);
             config_.rpc.zelda = json.boolean("rpcZelda", true);
             config_.rpc.animal_crossing = json.boolean("rpcAnimalCrossing", true);
             config_.rpc.splatoon3 = json.boolean("rpcSplatoon3", true);
@@ -414,7 +413,6 @@ void ConfigManager::save_locked() {
         {"rpcShowUsername", config_.rpc.show_username},
         {"rpcShowProfilePicture", config_.rpc.show_profile_picture},
         {"rpcShowPlayTime", config_.rpc.show_play_time},
-        {"rpcShowElapsedTime", config_.rpc.show_elapsed_time},
         {"rpcZelda", config_.rpc.zelda},
         {"rpcAnimalCrossing", config_.rpc.animal_crossing},
         {"rpcSplatoon3", config_.rpc.splatoon3},

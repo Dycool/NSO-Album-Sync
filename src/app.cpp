@@ -875,6 +875,7 @@ int App::run() {
 
     const auto toggle_rpc = [this](bool RpcSettings::*setting) {
         const auto config = config_.update([setting](AppConfig& value) {
+            if (setting == &RpcSettings::show_username && !value.rpc.show_profile_picture) return;
             value.rpc.*setting = !(value.rpc.*setting);
         });
         discord_.set_rpc_settings(config.rpc);
@@ -892,7 +893,6 @@ int App::run() {
     callbacks.toggle_rpc_username = [toggle_rpc] { toggle_rpc(&RpcSettings::show_username); };
     callbacks.toggle_rpc_profile_picture = [toggle_rpc] { toggle_rpc(&RpcSettings::show_profile_picture); };
     callbacks.toggle_rpc_play_time = [toggle_rpc] { toggle_rpc(&RpcSettings::show_play_time); };
-    callbacks.toggle_rpc_elapsed_time = [toggle_rpc] { toggle_rpc(&RpcSettings::show_elapsed_time); };
     callbacks.refresh_rpc = [this] {
         rpc_revision_.fetch_add(1);
         request_presence_refresh();

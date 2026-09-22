@@ -29,7 +29,6 @@ enum Command : UINT {
     CmdRpcUsername,
     CmdRpcProfilePicture,
     CmdRpcPlayTime,
-    CmdRpcElapsedTime,
     CmdRpcZelda, CmdRpcAnimalCrossing, CmdRpcSplatoon3, CmdRpcSplatoon2, CmdRpcRefresh,
 };
 
@@ -494,7 +493,6 @@ void invoke(PlatformUi::Impl* ui, UINT command) {
         case CmdRpcUsername: c.toggle_rpc_username(); break;
         case CmdRpcProfilePicture: c.toggle_rpc_profile_picture(); break;
         case CmdRpcPlayTime: c.toggle_rpc_play_time(); break;
-        case CmdRpcElapsedTime: c.toggle_rpc_elapsed_time(); break;
         case CmdRpcZelda: c.toggle_rpc_zelda(); break;
         case CmdRpcAnimalCrossing: c.toggle_rpc_animal_crossing(); break;
         case CmdRpcSplatoon3: c.toggle_rpc_splatoon3(); break;
@@ -532,21 +530,19 @@ void tray_menu(PlatformUi::Impl* ui) {
         auto_label(s.sync_interval_minutes),
         MF_STRING | (s.auto_sync ? MF_CHECKED : 0));
     add(CmdCopy, L"Copy Last Capture", s.signed_in ? MF_STRING : MF_GRAYED);
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    HMENU notifications = CreatePopupMenu();
-    AppendMenuW(notifications, MF_STRING | (s.notifications ? MF_CHECKED : 0),
-        CmdNotifications, L"Enabled");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(notifications), L"Notifications");
+    add(CmdNotifications, L"Notifications",
+        MF_STRING | (s.notifications ? MF_CHECKED : 0));
     HMENU rpc = CreatePopupMenu();
-    const auto rpc_check = [&](UINT id, const wchar_t* label, bool checked) {
-        AppendMenuW(rpc, MF_STRING | (checked ? MF_CHECKED : 0), id, label);
+    const auto rpc_check = [&](UINT id, const wchar_t* label, bool checked, bool enabled = true) {
+        AppendMenuW(rpc, MF_STRING | (checked ? MF_CHECKED : 0) |
+            (enabled ? 0 : MF_GRAYED), id, label);
     };
     rpc_check(CmdDiscord, L"Enabled", s.discord);
     AppendMenuW(rpc, MF_SEPARATOR, 0, nullptr);
-    rpc_check(CmdRpcUsername, L"Show Switch username", s.rpc.show_username);
+    rpc_check(CmdRpcUsername, L"Show Switch username",
+        s.rpc.show_profile_picture && s.rpc.show_username, s.rpc.show_profile_picture);
     rpc_check(CmdRpcProfilePicture, L"Show profile picture", s.rpc.show_profile_picture);
     rpc_check(CmdRpcPlayTime, L"Show total play time", s.rpc.show_play_time);
-    rpc_check(CmdRpcElapsedTime, L"Show elapsed timer", s.rpc.show_elapsed_time);
     AppendMenuW(rpc, MF_SEPARATOR, 0, nullptr);
     rpc_check(CmdRpcZelda, L"Zelda Notes live location", s.rpc.zelda);
     rpc_check(CmdRpcAnimalCrossing, L"Animal Crossing details", s.rpc.animal_crossing);

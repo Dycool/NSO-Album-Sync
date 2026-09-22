@@ -184,6 +184,7 @@ std::vector<std::string> set_cookie_lines(const HttpResponse& response) {
 }
 
 std::string session_cookie(const HttpResponse& response) {
+    std::string discovered_names;
     for (const auto& line : set_cookie_lines(response)) {
         std::size_t start = 0;
         while (start < line.size() &&
@@ -194,6 +195,8 @@ std::string session_cookie(const HttpResponse& response) {
         if (eq == std::string::npos) continue;
         const auto name = line.substr(start, eq - start);
         const auto lower_name = lower(name);
+        if (!discovered_names.empty()) discovered_names += ",";
+        discovered_names += name;
         if (lower_name != "a5_token" &&
             lower_name.find("session") == std::string::npos) {
             continue;
@@ -203,6 +206,30 @@ std::string session_cookie(const HttpResponse& response) {
         if (end == std::string::npos) end = line.size();
         return name + "=" + line.substr(value_start, end - value_start);
     }
+    for (const auto& line : set_cookie_lines(response)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        auto name = line.substr(0, eq);
+        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) name.erase(name.begin());
+        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+        const auto lower_name = lower(name);
+        if (lower_name.empty() || lower_name == "_abck" ||
+            lower_name == "bm_sz" || lower_name == "ak_bmsc" ||
+            lower_name == "akaze" || lower_name.find("tracking") != std::string::npos) {
+            continue;
+        }
+        auto end = line.find(';', eq + 1);
+        if (end == std::string::npos) end = line.size();
+        auto value = line.substr(eq + 1, end - eq - 1);
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) value.erase(value.begin());
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
+        if (!value.empty()) {
+            log_zelda("using application cookie: " + name);
+            return name + "=" + value;
+        }
+    }
+    log_zelda("title-select cookies discovered: " +
+        (discovered_names.empty() ? std::string("none") : discovered_names));
     return {};
 }
 

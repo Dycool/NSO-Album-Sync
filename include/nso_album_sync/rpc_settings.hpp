@@ -6,7 +6,6 @@ struct RpcSettings {
     bool show_username = true;
     bool show_profile_picture = true;
     bool show_play_time = true;
-    bool show_elapsed_time = true;
     bool zelda = true;
     bool animal_crossing = true;
     bool splatoon3 = true;

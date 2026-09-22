@@ -350,7 +350,7 @@ struct DiscordPresence::Impl {
             activity.SetState(presence.console_name());
         }
 
-        if (presence.rpc.show_elapsed_time && presence.elapsed_started_at_ms > 0) {
+        if (presence.elapsed_started_at_ms > 0) {
             discordpp::ActivityTimestamps timestamps;
             timestamps.SetStart(static_cast<std::uint64_t>(presence.elapsed_started_at_ms));
             activity.SetTimestamps(timestamps);
@@ -455,14 +455,7 @@ void DiscordPresence::set_rpc_settings(const RpcSettings& settings) {
     if (!impl) return;
     {
         std::lock_guard lock(impl->presence_mutex);
-        const bool removing_timer = impl->rpc_settings.show_elapsed_time &&
-            !settings.show_elapsed_time;
         impl->rpc_settings = settings;
-        if (removing_timer && impl->has_last_base_presence) {
-            // Drop the previous timed activity before publishing the untimed one.
-            // Keep the local session start for a later re-enable.
-            impl->clear_sdk_presence();
-        }
     }
     impl->refresh_zelda_overlay();
 }
