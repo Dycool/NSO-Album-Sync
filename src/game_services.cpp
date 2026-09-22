@@ -24,6 +24,7 @@ constexpr char kBlancoVersion[] = "2.1.1";
 constexpr auto kSessionTtl = std::chrono::minutes(90);
 
 void log_nooklink_failure(const std::string& stage) {
+    if (!debug_logging_enabled()) return;
     // Deliberately stage/status only. Never log GameWebServiceToken, _gtoken,
     // per-user auth tokens, Nintendo user IDs, cookies or profile payloads.
     const auto line = std::string("[NookLink RPC] ") + stage;

@@ -2,6 +2,7 @@
 #include "nso_album_sync/zeldanotes_regions.hpp"
 #include "nso_album_sync/json.hpp"
 #include "nso_album_sync/sse.hpp"
+#include "nso_album_sync/util.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -22,6 +23,7 @@ namespace nso {
 namespace {
 
 void log_zelda(const std::string& msg) {
+    if (!debug_logging_enabled()) return;
     std::cerr << "[ZeldaNotes] " << msg << "\n";
     try {
         const auto path = std::filesystem::temp_directory_path() / "nso-album-sync-rpc.log";
@@ -216,7 +218,9 @@ std::string session_cookie(const HttpResponse& response) {
         const auto lower_name = lower(name);
         if (lower_name.empty() || lower_name == "_abck" ||
             lower_name == "bm_sz" || lower_name == "ak_bmsc" ||
-            lower_name == "akaze" || lower_name.find("tracking") != std::string::npos) {
+            lower_name == "akaze" || lower_name == "awsalbtg" ||
+            lower_name == "awsalb" || lower_name == "awsalbc" ||
+            lower_name.find("tracking") != std::string::npos) {
             continue;
         }
         auto end = line.find(';', eq + 1);
@@ -1406,6 +1410,13 @@ bool ZeldaNotesClient::ensure_session(const std::string& web_service_token) {
             (header_names.empty() ? std::string("none") : header_names));
         return false;
     }
+    std::string cookie_name = cookie.substr(0, cookie.find('='));
+    std::transform(cookie_name.begin(), cookie_name.end(), cookie_name.begin(),
+        [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    if (cookie_name == "awsalbtg" || cookie_name == "awsalb" || cookie_name == "awsalbc") {
+        log_zelda("ensure_session: response contained only an AWS load-balancer cookie; Zelda session cookie is missing");
+        return false;
+    }
 
     std::lock_guard lock(mutex_);
     if (language_ != language || country_ != country) return false;
@@ -1645,6 +1656,16 @@ void ZeldaNotesClient::run_live_session(
                 },
                 20,
                 1024 * 1024);
+            log_zelda("SSE response HTTP " + std::to_string(response.status));
+            if (response.status != 200) {
+                std::string headers;
+                for (const auto& [name, value] : response.headers) {
+                    if (!headers.empty()) headers += ",";
+                    headers += name;
+                }
+                log_zelda("SSE response headers: " +
+                    (headers.empty() ? std::string("none") : headers));
+            }
 
             if (!game_session_id.empty()) {
                 try {

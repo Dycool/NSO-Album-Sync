@@ -7,6 +7,9 @@
 
 namespace nso {
 
+bool debug_logging_enabled();
+void set_debug_logging_enabled(bool enabled);
+
 std::string base64_encode(const std::vector<unsigned char>& data);
 std::vector<unsigned char> base64_decode(std::string text);
 std::string base64url(const std::vector<unsigned char>& data);

@@ -2,6 +2,7 @@
 #include "nso_album_sync/path.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -30,6 +31,20 @@ extern char** environ;
 #endif
 
 namespace nso {
+namespace {
+
+std::atomic<bool> g_debug_logging{false};
+
+}  // namespace
+
+bool debug_logging_enabled() {
+    return g_debug_logging.load(std::memory_order_relaxed);
+}
+
+void set_debug_logging_enabled(bool enabled) {
+    g_debug_logging.store(enabled, std::memory_order_relaxed);
+}
+
 namespace {
 
 #ifdef _WIN32

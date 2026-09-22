@@ -1,5 +1,6 @@
 #include "nso_album_sync/app.hpp"
 #include "nso_album_sync/auth_callback.hpp"
+#include "nso_album_sync/util.hpp"
 
 #ifdef _WIN32
 #include "nso_album_sync/windows_compat.hpp"
@@ -237,16 +238,24 @@ std::string auth_callback_from_command_line() {
 
 #ifdef _WIN32
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    nso::set_debug_logging_enabled(
+        command_line_has_argument(L"--debug") || command_line_has_argument(L"-debug"));
     if (command_line_has_argument(L"--self-test")) return run_self_test();
     return run_application(auth_callback_from_command_line());
 }
 #else
 int main(int argc, char* argv[]) {
+    bool debug = false;
     for (int i = 1; i < argc; ++i) {
+        if (argv[i] != nullptr &&
+            (std::string(argv[i]) == "--debug" || std::string(argv[i]) == "-debug")) {
+            debug = true;
+        }
         if (argv[i] != nullptr && std::string(argv[i]) == "--self-test") {
             return run_self_test();
         }
     }
+    nso::set_debug_logging_enabled(debug);
 
     std::string callback;
     for (int i = 1; i < argc; ++i) {
