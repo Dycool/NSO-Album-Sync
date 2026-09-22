@@ -166,7 +166,8 @@ std::string header_value(const HttpResponse& response, const std::string& key) {
 }
 
 std::vector<std::string> set_cookie_lines(const HttpResponse& response) {
-    const auto cookies = header_value(response, "set-cookie");
+    auto cookies = header_value(response, "set-cookie");
+    if (cookies.empty()) cookies = header_value(response, "set-cookie2");
     if (cookies.empty()) return {};
     std::vector<std::string> lines;
     std::size_t start = 0;
@@ -1396,8 +1397,13 @@ bool ZeldaNotesClient::ensure_session(const std::string& web_service_token) {
 
     const auto cookie = session_cookie(bootstrap);
     if (cookie.empty()) {
-        log_zelda(
-            "ensure_session: no session cookie in title-select response");
+        std::string header_names;
+        for (const auto& [name, value] : bootstrap.headers) {
+            if (!header_names.empty()) header_names += ",";
+            header_names += name;
+        }
+        log_zelda("ensure_session: no session cookie in title-select response; headers=" +
+            (header_names.empty() ? std::string("none") : header_names));
         return false;
     }
 

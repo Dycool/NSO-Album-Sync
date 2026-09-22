@@ -297,6 +297,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         false,
         state.signed_in,
         @"doc.on.clipboard");
+    [impl->menu addItem:[NSMenuItem separatorItem]];
     add_menu_item(impl->menu, @"Notifications", ToggleNotifications,
         state.notifications, true, @"bell");
     auto* rpc = [[NSMenu alloc] initWithTitle:@"Discord Rich Presence"];

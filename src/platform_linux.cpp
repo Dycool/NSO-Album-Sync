@@ -236,6 +236,7 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         "Copy Last Capture",
         &impl->callbacks.copy_last_capture,
         state.signed_in);
+    append_separator(impl->menu);
     append_check_item(impl->menu, "Notifications", state.notifications,
         &impl->callbacks.toggle_notifications);
     auto* rpc = gtk_menu_new();

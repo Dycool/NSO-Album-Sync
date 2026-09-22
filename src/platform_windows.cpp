@@ -530,6 +530,7 @@ void tray_menu(PlatformUi::Impl* ui) {
         auto_label(s.sync_interval_minutes),
         MF_STRING | (s.auto_sync ? MF_CHECKED : 0));
     add(CmdCopy, L"Copy Last Capture", s.signed_in ? MF_STRING : MF_GRAYED);
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     add(CmdNotifications, L"Notifications",
         MF_STRING | (s.notifications ? MF_CHECKED : 0));
     HMENU rpc = CreatePopupMenu();
