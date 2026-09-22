@@ -21,7 +21,8 @@ public:
         : config_(config), coral_(coral), http_(http) {}
 
     SyncResult sync(const std::function<bool()>& cancelled = {});
-    std::filesystem::path fetch_latest_capture();
+    std::filesystem::path fetch_latest_capture(
+        const std::function<void()>& video_download_started = {});
 
 private:
     ConfigManager& config_;

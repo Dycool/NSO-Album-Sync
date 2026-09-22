@@ -726,7 +726,8 @@ bool PlatformUi::copy_file_to_clipboard(const std::filesystem::path& path) {
             success = true;
             memory = nullptr;
         }
-        CloseClipboard();
+        const bool closed = CloseClipboard() != FALSE;
+        success = success && closed;
     }
 
     if (memory != nullptr) GlobalFree(memory);

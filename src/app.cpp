@@ -768,12 +768,19 @@ int App::run() {
             }
             update_menu();
 
-            const auto path = sync_.fetch_latest_capture();
+            const auto path = sync_.fetch_latest_capture([this, generation] {
+                if (stopping_ || account_generation_.load() != generation) return;
+                if (config_.snapshot().notifications) {
+                    ui_.notify("NSO Album Sync", "Downloading latest capture...");
+                }
+            });
             if (stopping_ || account_generation_.load() != generation) return;
             if (!ui_.copy_file_to_clipboard(path)) {
                 throw std::runtime_error("Could not place the latest capture on the clipboard");
             }
 
+            // The download is validated and closed, and the platform has
+            // confirmed clipboard ownership before we announce success.
             {
                 std::lock_guard state_lock(state_mutex_);
                 status_ = "Last capture copied to clipboard";

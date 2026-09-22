@@ -536,10 +536,10 @@ bool PlatformUi::copy_file_to_clipboard(const std::filesystem::path& path) {
         g_free(uri);
         return false;
     }
-    gtk_clipboard_set_uris(clipboard, uris);
-    gtk_clipboard_store(clipboard);
+    const bool success = gtk_clipboard_set_uris(clipboard, uris) != FALSE;
+    if (success) gtk_clipboard_store(clipboard);
     g_free(uri);
-    return true;
+    return success;
 #else
     (void)path;
     return false;

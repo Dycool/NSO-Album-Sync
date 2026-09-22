@@ -578,7 +578,8 @@ SyncResult SyncEngine::sync(const std::function<bool()>& cancelled) {
     return {static_cast<int>(media.size()), downloaded};
 }
 
-std::filesystem::path SyncEngine::fetch_latest_capture() {
+std::filesystem::path SyncEngine::fetch_latest_capture(
+    const std::function<void()>& video_download_started) {
     const auto config = config_.snapshot();
     if (config.session_token.empty()) {
         throw std::runtime_error("Not signed in to Nintendo Account");
@@ -597,13 +598,15 @@ std::filesystem::path SyncEngine::fetch_latest_capture() {
         });
     validate_media_item_for_download(*latest);
 
-    const std::string extension = lower(latest->type) == "video" ? "mp4" : "jpg";
+    const bool is_video = lower(latest->type) == "video";
+    const std::string extension = is_video ? "mp4" : "jpg";
     const auto cache_directory = config_.directory() / "clipboard-cache";
     std::filesystem::create_directories(cache_directory);
     const auto destination = cache_directory / ("latest-capture." + extension);
     auto temporary = destination;
     temporary += ".part";
 
+    if (is_video && video_download_started) video_download_started();
     const auto response = http_.get(latest->content_uri, {}, 60);
     if (response.status / 100 != 2) {
         throw std::runtime_error(
@@ -629,6 +632,8 @@ std::filesystem::path SyncEngine::fetch_latest_capture() {
                 static_cast<std::streamsize>(response.body.size()));
             file.flush();
             if (!file) throw std::runtime_error("Could not write clipboard media file");
+            file.close();
+            if (!file) throw std::runtime_error("Could not finish writing clipboard media file");
         }
 
         std::error_code remove_error;
