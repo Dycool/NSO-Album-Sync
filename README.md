@@ -55,6 +55,13 @@ The app shows a disclosure before sign-in because the Nintendo Account `id_token
 
 ---
 
+## 📚 References
+
+- **Zelda Notes RPC** — Thanks to [@benlawrencez](https://github.com/benlawrencez) for the Zelda Notes RPC reference work that helped inform the live-location Rich Presence integration.
+- **nxapi-znca-api** — [samuelthomas2774/nxapi-znca-api](https://github.com/samuelthomas2774/nxapi-znca-api) provides the Nintendo Switch Online request attestation and Coral encryption service used by NSO Album Sync.
+
+---
+
 ## ⚖️ Legal Disclaimer
 
 NSO Album Sync is an independent, unofficial open-source project and is not affiliated with, endorsed by, or sponsored by Nintendo. Nintendo Switch and Nintendo Switch Online are registered trademarks of Nintendo Co., Ltd. and Nintendo of America Inc. All game titles, screenshots, and artwork remain the property of their respective owners.
