@@ -57,7 +57,7 @@ The app shows a disclosure before sign-in because the Nintendo Account `id_token
 
 ## 📚 References
 
-- **Zelda Notes RPC** — Thanks to benlawrencez for the Zelda Notes RPC reference work that helped inform the live-location Rich Presence integration.
+- **Zelda Notes RPC** — Thanks to [Bentheminernz](https://github.com/Bentheminernz) for the Zelda Notes RPC reference work that helped inform the live-location Rich Presence integration.
 - **nxapi-znca-api** — [nxapi-znca-api](https://github.com/samuelthomas2774/nxapi-znca-api) provides the Nintendo Switch Online request attestation and Coral encryption service used by NSO Album Sync.
 
 ---
