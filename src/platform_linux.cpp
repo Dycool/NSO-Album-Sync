@@ -218,6 +218,9 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         state.signed_in
             ? "Connected as " + state.nickname
             : "Not signed in");
+    if (!state.status.empty() && state.status != "Ready") {
+        append_status_item(impl->menu, state.status);
+    }
     append_status_item(impl->menu, "Last sync: " + state.last_sync);
     append_separator(impl->menu);
 
