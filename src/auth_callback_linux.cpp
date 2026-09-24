@@ -3,6 +3,7 @@
 #if defined(__linux__)
 
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -19,6 +20,10 @@ constexpr char kDesktopId[] = "nso-album-sync-auth.desktop";
 constexpr char kMimeType[] = "x-scheme-handler/npf71b963c1b7b6d119";
 
 std::filesystem::path desktop_file() {
+    if (const char* data_home = std::getenv("XDG_DATA_HOME");
+        data_home != nullptr && std::filesystem::path(data_home).is_absolute()) {
+        return std::filesystem::path(data_home) / "applications" / kDesktopId;
+    }
     const char* home = std::getenv("HOME");
     if (home == nullptr || *home == '\0') return {};
     return std::filesystem::path(home) / ".local" / "share" / "applications" / kDesktopId;
@@ -41,6 +46,24 @@ std::string desktop_quote(const std::string& value) {
         escaped.push_back(ch);
     }
     return "\"" + escaped + "\"";
+}
+
+bool refresh_desktop_database(const std::filesystem::path& directory) {
+    // Portal application choosers discover scheme handlers through mimeinfo.cache,
+    // not just the default association written by xdg-mime.
+    const auto path = directory.string();
+    const pid_t child = fork();
+    if (child < 0) return false;
+    if (child == 0) {
+        execlp("update-desktop-database", "update-desktop-database", path.c_str(),
+            static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) return false;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 std::pair<bool, std::string> query_default_handler() {
@@ -90,6 +113,9 @@ bool register_nintendo_auth_protocol() {
         return false;
     }
 
+    // Refresh even when we already own the default: the executable may have
+    // moved, or an older version may never have populated the MIME cache.
+    if (!refresh_desktop_database(file.parent_path())) return false;
     if (current == kDesktopId) return true;
     const std::string command = std::string("xdg-mime default ") + kDesktopId + " " + kMimeType + " >/dev/null 2>&1";
     const int status = std::system(command.c_str());

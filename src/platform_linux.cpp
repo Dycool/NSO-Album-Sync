@@ -213,12 +213,12 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         state = impl->state;
     }
 
-    append_status_item(
-        impl->menu,
-        state.signed_in
-            ? "Connected as " + state.nickname
-            : "Not signed in");
-    if (!state.status.empty() && state.status != "Ready") {
+    const std::string account_status = state.signed_in
+        ? "Connected as " + state.nickname
+        : "Not signed in";
+    append_status_item(impl->menu, account_status);
+    if (!state.status.empty() && state.status != "Ready" &&
+        state.status != account_status) {
         append_status_item(impl->menu, state.status);
     }
     append_status_item(impl->menu, "Last sync: " + state.last_sync);

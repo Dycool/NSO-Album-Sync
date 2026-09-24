@@ -517,6 +517,8 @@ std::string build_request_headers(
         (destination.scheme == "https" && destination.port != 443) ||
         (destination.scheme == "http" && destination.port != 80);
     if (non_default_port) request << ':' << destination.port;
+    request << "\r\n";
+    request << "Connection: close\r\n";
     for (const auto& header : headers) {
         const auto colon = header.find(':');
         auto name = colon == std::string::npos ? header : header.substr(0, colon);
