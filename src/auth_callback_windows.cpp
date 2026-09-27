@@ -23,12 +23,76 @@ bool g_created_handler = false;
 
 struct ExistingUserHandler {
     bool present = false;
-    std::wstring description;
-    std::wstring command;
-    bool has_url_protocol = false;
+    struct Value {
+        std::wstring name;
+        DWORD type = 0;
+        std::vector<BYTE> data;
+    };
+    struct Key {
+        std::wstring path;
+        std::vector<Value> values;
+    };
+    std::vector<Key> keys;
 };
 
 ExistingUserHandler g_previous_handler;
+
+bool snapshot_registry_key(
+    HKEY root,
+    const std::wstring& path,
+    const std::wstring& relative_path,
+    ExistingUserHandler& snapshot) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(root, path.c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    DWORD value_count = 0;
+    DWORD max_value_name = 0;
+    DWORD max_value_data = 0;
+    DWORD subkey_count = 0;
+    DWORD max_subkey_name = 0;
+    RegQueryInfoKeyW(
+        key, nullptr, nullptr, nullptr, &subkey_count, &max_subkey_name,
+        nullptr, &value_count, &max_value_name, &max_value_data, nullptr,
+        nullptr);
+
+    ExistingUserHandler::Key saved_key;
+    saved_key.path = relative_path;
+    std::vector<wchar_t> value_name(max_value_name + 1);
+    std::vector<BYTE> value_data(max_value_data == 0 ? 1 : max_value_data);
+    for (DWORD i = 0; i < value_count; ++i) {
+        DWORD name_length = static_cast<DWORD>(value_name.size());
+        DWORD data_size = static_cast<DWORD>(value_data.size());
+        DWORD type = 0;
+        if (RegEnumValueW(
+                key, i, value_name.data(), &name_length, nullptr, &type,
+                value_data.data(), &data_size) == ERROR_SUCCESS) {
+            ExistingUserHandler::Value value;
+            value.name.assign(value_name.data(), name_length);
+            value.type = type;
+            value.data.assign(value_data.begin(), value_data.begin() + data_size);
+            saved_key.values.push_back(std::move(value));
+        }
+    }
+    snapshot.keys.push_back(std::move(saved_key));
+
+    std::vector<wchar_t> subkey_name(max_subkey_name + 1);
+    for (DWORD i = 0; i < subkey_count; ++i) {
+        DWORD name_length = static_cast<DWORD>(subkey_name.size());
+        if (RegEnumKeyExW(
+                key, i, subkey_name.data(), &name_length, nullptr, nullptr,
+                nullptr, nullptr) == ERROR_SUCCESS) {
+            const std::wstring child_name(subkey_name.data(), name_length);
+            const auto child_path = path + L"\\" + child_name;
+            const auto child_relative = relative_path.empty()
+                ? child_name : relative_path + L"\\" + child_name;
+            snapshot_registry_key(root, child_path, child_relative, snapshot);
+        }
+    }
+    RegCloseKey(key);
+    return true;
+}
 
 std::wstring executable_path() {
     std::vector<wchar_t> buffer(1024);
@@ -124,48 +188,34 @@ bool current_handler_is_ours() {
 
 ExistingUserHandler save_existing_user_handler() {
     ExistingUserHandler saved;
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kUserSchemeKey, 0, KEY_READ, &key) !=
-        ERROR_SUCCESS) {
+    if (!snapshot_registry_key(
+            HKEY_CURRENT_USER, kUserSchemeKey, L"", saved)) {
         return saved;
     }
     saved.present = true;
-    saved.description = read_default_value(HKEY_CURRENT_USER, kUserSchemeKey);
-    DWORD type = 0;
-    DWORD bytes = 0;
-    if (RegQueryValueExW(key, L"URL Protocol", nullptr, &type, nullptr, &bytes) ==
-        ERROR_SUCCESS) {
-        saved.has_url_protocol = true;
-    }
-    RegCloseKey(key);
-    saved.command = read_default_value(
-        HKEY_CURRENT_USER, std::wstring(kUserSchemeKey) + kCommandSuffix);
     return saved;
 }
 
 void restore_existing_user_handler() {
     if (!g_previous_handler.present) return;
 
-    HKEY key = nullptr;
-    if (RegCreateKeyExW(
-            HKEY_CURRENT_USER, kUserSchemeKey, 0, nullptr, 0, KEY_WRITE,
-            nullptr, &key, nullptr) == ERROR_SUCCESS) {
-        write_string_value(key, nullptr, g_previous_handler.description);
-        if (g_previous_handler.has_url_protocol) {
-            write_string_value(key, L"URL Protocol", L"");
+    for (const auto& saved_key : g_previous_handler.keys) {
+        const auto path = saved_key.path.empty()
+            ? std::wstring(kUserSchemeKey)
+            : std::wstring(kUserSchemeKey) + L"\\" + saved_key.path;
+        HKEY key = nullptr;
+        if (RegCreateKeyExW(
+                HKEY_CURRENT_USER, path.c_str(), 0, nullptr, 0, KEY_WRITE,
+                nullptr, &key, nullptr) != ERROR_SUCCESS) {
+            continue;
+        }
+        for (const auto& value : saved_key.values) {
+            RegSetValueExW(
+                key, value.name.empty() ? nullptr : value.name.c_str(), 0,
+                value.type, value.data.empty() ? nullptr : value.data.data(),
+                static_cast<DWORD>(value.data.size()));
         }
         RegCloseKey(key);
-    }
-
-    if (!g_previous_handler.command.empty()) {
-        HKEY command_key = nullptr;
-        const auto command_path = std::wstring(kUserSchemeKey) + kCommandSuffix;
-        if (RegCreateKeyExW(
-                HKEY_CURRENT_USER, command_path.c_str(), 0, nullptr, 0,
-                KEY_WRITE, nullptr, &command_key, nullptr) == ERROR_SUCCESS) {
-            write_string_value(command_key, nullptr, g_previous_handler.command);
-            RegCloseKey(command_key);
-        }
     }
 }
 
