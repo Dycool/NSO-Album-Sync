@@ -21,6 +21,15 @@ constexpr wchar_t kHandlerDescription[] =
 
 bool g_created_handler = false;
 
+struct ExistingUserHandler {
+    bool present = false;
+    std::wstring description;
+    std::wstring command;
+    bool has_url_protocol = false;
+};
+
+ExistingUserHandler g_previous_handler;
+
 std::wstring executable_path() {
     std::vector<wchar_t> buffer(1024);
     for (;;) {
@@ -113,9 +122,51 @@ bool current_handler_is_ours() {
            equal_case_insensitive(command, desired);
 }
 
-bool user_handler_was_created_by_us() {
-    return read_default_value(HKEY_CURRENT_USER, kUserSchemeKey) ==
-           kHandlerDescription;
+ExistingUserHandler save_existing_user_handler() {
+    ExistingUserHandler saved;
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kUserSchemeKey, 0, KEY_READ, &key) !=
+        ERROR_SUCCESS) {
+        return saved;
+    }
+    saved.present = true;
+    saved.description = read_default_value(HKEY_CURRENT_USER, kUserSchemeKey);
+    DWORD type = 0;
+    DWORD bytes = 0;
+    if (RegQueryValueExW(key, L"URL Protocol", nullptr, &type, nullptr, &bytes) ==
+        ERROR_SUCCESS) {
+        saved.has_url_protocol = true;
+    }
+    RegCloseKey(key);
+    saved.command = read_default_value(
+        HKEY_CURRENT_USER, std::wstring(kUserSchemeKey) + kCommandSuffix);
+    return saved;
+}
+
+void restore_existing_user_handler() {
+    if (!g_previous_handler.present) return;
+
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(
+            HKEY_CURRENT_USER, kUserSchemeKey, 0, nullptr, 0, KEY_WRITE,
+            nullptr, &key, nullptr) == ERROR_SUCCESS) {
+        write_string_value(key, nullptr, g_previous_handler.description);
+        if (g_previous_handler.has_url_protocol) {
+            write_string_value(key, L"URL Protocol", L"");
+        }
+        RegCloseKey(key);
+    }
+
+    if (!g_previous_handler.command.empty()) {
+        HKEY command_key = nullptr;
+        const auto command_path = std::wstring(kUserSchemeKey) + kCommandSuffix;
+        if (RegCreateKeyExW(
+                HKEY_CURRENT_USER, command_path.c_str(), 0, nullptr, 0,
+                KEY_WRITE, nullptr, &command_key, nullptr) == ERROR_SUCCESS) {
+            write_string_value(command_key, nullptr, g_previous_handler.command);
+            RegCloseKey(command_key);
+        }
+    }
 }
 
 }  // namespace
@@ -136,18 +187,23 @@ bool register_nintendo_auth_protocol() {
             KEY_READ,
             &existing) == ERROR_SUCCESS) {
         RegCloseKey(existing);
-        if (!user_handler_was_created_by_us()) {
-            return false;
+        // Preserve any per-user handler so the temporary login override can
+        // be removed without stealing the scheme from another application.
+        if (!current_handler_is_ours()) {
+            g_previous_handler = save_existing_user_handler();
         }
-
-        // A previous crash or moving/updating the executable can leave our old
-        // command registered. It is safe to replace only our own marked HKCU
-        // handler; never take the scheme away from nxapi or another client.
         RegDeleteTreeW(HKEY_CURRENT_USER, kUserSchemeKey);
     }
 
+    if (!g_previous_handler.present) {
+        g_previous_handler = save_existing_user_handler();
+    }
     const auto command = desired_command();
     if (command.empty()) {
+        // No override was successfully installed; put back anything we
+        // removed while preparing the temporary registration.
+        restore_existing_user_handler();
+        g_previous_handler = {};
         return false;
     }
 
@@ -171,6 +227,8 @@ bool register_nintendo_auth_protocol() {
     RegCloseKey(scheme);
     if (!root_ok) {
         RegDeleteTreeW(HKEY_CURRENT_USER, kUserSchemeKey);
+        restore_existing_user_handler();
+        g_previous_handler = {};
         return false;
     }
 
@@ -188,6 +246,8 @@ bool register_nintendo_auth_protocol() {
             &command_key,
             nullptr) != ERROR_SUCCESS) {
         RegDeleteTreeW(HKEY_CURRENT_USER, kUserSchemeKey);
+        restore_existing_user_handler();
+        g_previous_handler = {};
         return false;
     }
 
@@ -195,6 +255,8 @@ bool register_nintendo_auth_protocol() {
     RegCloseKey(command_key);
     if (!command_ok) {
         RegDeleteTreeW(HKEY_CURRENT_USER, kUserSchemeKey);
+        restore_existing_user_handler();
+        g_previous_handler = {};
         return false;
     }
 
@@ -207,6 +269,8 @@ void unregister_nintendo_auth_protocol() {
         return;
     }
     RegDeleteTreeW(HKEY_CURRENT_USER, kUserSchemeKey);
+    restore_existing_user_handler();
+    g_previous_handler = {};
     g_created_handler = false;
 }
 
