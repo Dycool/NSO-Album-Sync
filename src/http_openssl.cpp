@@ -9,6 +9,8 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <mutex>
@@ -268,6 +270,58 @@ void wait_for_ssl(SSL* ssl, int error, std::chrono::steady_clock::time_point dea
     if (ready < 0 && errno != EINTR) throw std::runtime_error("TLS handshake wait failed");
 }
 
+void load_tls_trust(SSL_CTX* context) {
+#ifdef __linux__
+    // A statically linked AppImage retains the build distro's OpenSSL paths.
+    // Explicit overrides are authoritative: never silently broaden their trust.
+    const char* file = std::getenv("SSL_CERT_FILE");
+    const char* directory = std::getenv("SSL_CERT_DIR");
+    if (file != nullptr || directory != nullptr) {
+        if ((file != nullptr && *file == '\0') ||
+            (directory != nullptr && *directory == '\0')) {
+            throw std::runtime_error("TLS trust override is empty; unset it or provide a CA location");
+        }
+        if (directory != nullptr) {
+            // OpenSSL accepts colon-separated hashed certificate directories.
+            std::istringstream directories(directory);
+            std::string path;
+            while (std::getline(directories, path, ':')) {
+                std::error_code error;
+                if (path.empty() || !std::filesystem::is_directory(path, error) || error) {
+                    throw std::runtime_error("TLS SSL_CERT_DIR contains an unavailable directory");
+                }
+            }
+        }
+        if (SSL_CTX_load_verify_locations(context, file, directory) != 1) {
+            throw std::runtime_error("TLS could not load SSL_CERT_FILE / SSL_CERT_DIR override");
+        }
+        return;
+    }
+
+    // Use the host's maintained bundle, including locally installed CA roots.
+    // Do not ship a frozen bundle or assume the Ubuntu build host's layout.
+    constexpr const char* bundles[] = {
+        "/etc/ssl/certs/ca-certificates.crt",           // Debian, Ubuntu, Arch
+        "/etc/pki/tls/certs/ca-bundle.crt",             // Fedora, RHEL
+        "/etc/ssl/ca-bundle.pem",                      // openSUSE
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+    };
+    for (const char* bundle : bundles) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(bundle, error) || error) continue;
+        if (SSL_CTX_load_verify_locations(context, bundle, nullptr) == 1) return;
+        ERR_clear_error();
+    }
+#endif
+    // Retain native OpenSSL behavior on other platforms and unusual layouts.
+    // Success does not guarantee a default file exists; handshake verification
+    // still fails closed if no trusted issuer can be found.
+    if (SSL_CTX_set_default_verify_paths(context) != 1) {
+        throw std::runtime_error("Could not load system TLS trust store");
+    }
+}
+
 void enable_tls(Connection& connection, const ParsedUrl& destination) {
     connection.context = SSL_CTX_new(TLS_client_method());
     if (connection.context == nullptr) throw std::runtime_error("SSL_CTX_new failed");
@@ -275,9 +329,7 @@ void enable_tls(Connection& connection, const ParsedUrl& destination) {
     SSL_CTX_set_options(connection.context, SSL_OP_IGNORE_UNEXPECTED_EOF);
 #endif
     SSL_CTX_set_verify(connection.context, SSL_VERIFY_PEER, nullptr);
-    if (SSL_CTX_set_default_verify_paths(connection.context) != 1) {
-        throw std::runtime_error("Could not load system TLS trust store");
-    }
+    load_tls_trust(connection.context);
 
     connection.ssl = SSL_new(connection.context);
     if (connection.ssl == nullptr) throw std::runtime_error("SSL_new failed");
@@ -303,7 +355,7 @@ void enable_tls(Connection& connection, const ParsedUrl& destination) {
             wait_for_ssl(connection.ssl, error, deadline);
             continue;
         }
-        if (error == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (error == SSL_ERROR_SYSCALL && (socket_error == EAGAIN || socket_error == EWOULDBLOCK)) {
             wait_for_ssl(connection.ssl, SSL_ERROR_WANT_READ, deadline);
             continue;
         }

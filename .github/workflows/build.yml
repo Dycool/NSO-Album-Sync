@@ -223,9 +223,48 @@ jobs:
           path: dist/nso-album-sync.AppImage
           if-no-files-found: error
 
+  linux-portability:
+    name: Linux package / ${{ matrix.distro }}
+    needs: linux
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: Ubuntu 22.04
+            image: ubuntu:22.04
+            install: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates libgl1 libpulse0 libasound2
+          - distro: Debian 12
+            image: debian:12
+            install: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates libgl1 libpulse0 libasound2
+          - distro: Fedora
+            image: fedora:latest
+            install: dnf install -y ca-certificates mesa-libGL pulseaudio-libs alsa-lib
+          - distro: Arch Linux
+            image: archlinux:base
+            install: pacman -Syu --noconfirm ca-certificates libglvnd libpulse alsa-lib
+          - distro: openSUSE Tumbleweed
+            image: opensuse/tumbleweed:latest
+            install: zypper --non-interactive install ca-certificates ca-certificates-mozilla libGL1 libpulse0 libasound2
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v5
+        with:
+          name: nso-album-sync-linux
+          path: dist
+      - name: Test release AppImage in target distribution
+        env:
+          DISTRO_IMAGE: ${{ matrix.image }}
+          INSTALL_COMMAND: ${{ matrix.install }}
+        run: |
+          set -euo pipefail
+          chmod +x dist/nso-album-sync.AppImage
+          docker run --rm -v "$PWD:/work:ro" "$DISTRO_IMAGE" \
+            bash -c "$INSTALL_COMMAND && APPIMAGE_EXTRACT_AND_RUN=1 /work/dist/nso-album-sync.AppImage --self-test"
+
   release:
     name: Release
-    needs: [windows, macos, linux]
+    needs: [windows, macos, linux, linux-portability]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
