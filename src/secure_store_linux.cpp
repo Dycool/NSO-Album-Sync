@@ -1,4 +1,6 @@
 #include "nso_album_sync/secure_store.hpp"
+#include "nso_album_sync/util.hpp"
+#include <iostream>
 
 #if defined(__linux__)
 
@@ -52,10 +54,16 @@ std::optional<std::string> lookup_key(const std::string& key) {
         nullptr);
 
     if (error != nullptr) {
+        if (debug_logging_enabled()) {
+            std::cerr << "[keyring] Credential lookup failed: " << error->message << '\n';
+        }
         g_error_free(error);
         return std::nullopt;
     }
-    if (password == nullptr) return std::nullopt;
+    if (password == nullptr) {
+        if (debug_logging_enabled()) std::cerr << "[keyring] No matching credential found\n";
+        return std::nullopt;
+    }
 
     std::string result(password);
     secret_password_free(password);

@@ -5,6 +5,7 @@
 #include "nso_album_sync/util.hpp"
 
 #include <algorithm>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
@@ -118,8 +119,13 @@ AuthResult NintendoAuthManager::complete_login(const std::string& callback_url) 
     std::string nickname = "Nintendo Switch Player";
     try {
         const auto profile = fetch_profile(tokens.access_token);
-        if (!profile.nickname.empty()) nickname = profile.nickname;
-    } catch (...) {
+        if (!profile.nickname.empty()) {
+            nickname = profile.nickname;
+        } else {
+            std::cerr << "Nintendo profile returned no nickname\n";
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "Nintendo profile lookup failed: " << error.what() << '\n';
     }
 
     return {session_token, tokens.id_token, tokens.access_token, nickname};
@@ -215,7 +221,8 @@ UserProfile NintendoAuthManager::fetch_profile(const std::string& access_token) 
     });
 
     if (response.status / 100 != 2) {
-        throw std::runtime_error("Nintendo profile request failed: " + response.text());
+        throw std::runtime_error("Nintendo profile request failed (HTTP " +
+            std::to_string(response.status) + ")");
     }
 
     const auto json = Json::parse(response.text());

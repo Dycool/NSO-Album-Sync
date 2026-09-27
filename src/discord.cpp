@@ -1,4 +1,5 @@
 #include "nso_album_sync/discord.hpp"
+#include "nso_album_sync/util.hpp"
 #include "nso_album_sync/rpc.hpp"
 #include "nso_album_sync/zeldanotes.hpp"
 #include "nso_album_sync/zeldanotes_regions.hpp"
@@ -441,6 +442,8 @@ struct DiscordPresence::Impl {
                 if (!result.Successful()) {
                     std::cerr << "[DiscordPresence] UpdateRichPresence failed: "
                               << result.Error() << "\n";
+                } else if (debug_logging_enabled()) {
+                    std::cerr << "[DiscordPresence] UpdateRichPresence accepted by Discord\n";
                 }
             });
     }

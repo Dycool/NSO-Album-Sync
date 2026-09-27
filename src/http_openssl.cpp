@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cctype>
 #include <chrono>
+#include <cstring>
 #include <iomanip>
 #include <limits>
 #include <mutex>
@@ -292,7 +293,10 @@ void enable_tls(Connection& connection, const ParsedUrl& destination) {
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(safe_timeout(30));
     for (;;) {
+        ERR_clear_error();
+        errno = 0;
         const int connect_result = SSL_connect(connection.ssl);
+        const int socket_error = errno;
         if (connect_result == 1) break;
         const int error = SSL_get_error(connection.ssl, connect_result);
         if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
@@ -303,7 +307,23 @@ void enable_tls(Connection& connection, const ParsedUrl& destination) {
             wait_for_ssl(connection.ssl, SSL_ERROR_WANT_READ, deadline);
             continue;
         }
-        throw std::runtime_error("TLS handshake failed");
+        std::string message = "TLS handshake failed for " + destination.host;
+        const long verification = SSL_get_verify_result(connection.ssl);
+        if (verification != X509_V_OK) {
+            message += ": ";
+            message += X509_verify_cert_error_string(verification);
+        } else if (const auto reason = ERR_peek_last_error(); reason != 0) {
+            if (const char* description = ERR_reason_error_string(reason)) {
+                message += ": ";
+                message += description;
+            }
+        } else if (error == SSL_ERROR_SYSCALL && socket_error != 0) {
+            message += ": ";
+            message += std::strerror(socket_error);
+        } else {
+            message += " (SSL error " + std::to_string(error) + ")";
+        }
+        throw std::runtime_error(message);
     }
 
     connection.io = BIO_new(BIO_f_ssl());

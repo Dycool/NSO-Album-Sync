@@ -89,6 +89,33 @@ App::App()
     http_.set_proxy(config.proxy_url);
     discord_.set_rpc_settings(config.rpc);
     last_sync_ = config.last_sync.empty() ? "Never" : config.last_sync;
+    if (debug_logging_enabled()) {
+        std::cerr << "[auth] Saved session available: "
+                  << (!config.session_token.empty() ? "yes" : "no") << '\n';
+        if (!config.session_token.empty()) {
+            try {
+                const auto tokens = auth_.exchange_session_token(config.session_token);
+                std::cerr << "[auth] Token exchange succeeded\n";
+                const auto profile = auth_.fetch_profile(tokens.access_token);
+                std::cerr << "[auth] Profile request succeeded; nickname present: "
+                          << (!profile.nickname.empty() ? "yes" : "no") << '\n';
+                if (!profile.nickname.empty()) {
+                    config_.update([&](AppConfig& value) {
+                        value.user_nickname = profile.nickname;
+                    });
+                }
+            } catch (const std::exception& error) {
+                // Token exchange errors can contain server response bodies.
+                const std::string message = error.what();
+                if (message.starts_with("TLS ") ||
+                    message.starts_with("Nintendo profile request failed (HTTP ")) {
+                    std::cerr << "[auth] " << message << '\n';
+                } else {
+                    std::cerr << "[auth] Startup profile check failed (response details omitted)\n";
+                }
+            }
+        }
+    }
 }
 
 App::~App() {

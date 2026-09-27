@@ -97,8 +97,8 @@ void install_nso_css() {
 
     static constexpr char kCss[] =
         ".nso-title { color: #e60012; font-weight: 700; font-size: 16px; }"
-        ".nso-subtle { color: #666666; }"
-        ".nso-dialog { background: #f7f7f7; }"
+        ".nso-subtle { color: @theme_fg_color; }"
+        ".nso-dialog { background-color: @theme_bg_color; color: @theme_fg_color; }"
         ".nso-dialog button.suggested-action {"
         "  background-image: none; background-color: #e60012; color: white;"
         "  border-radius: 4px; min-height: 30px; min-width: 92px;"
@@ -213,12 +213,16 @@ void rebuild_menu(PlatformUi::Impl* impl) {
         state = impl->state;
     }
 
+    const bool has_account_name = !state.nickname.empty() &&
+        state.nickname != "Nintendo Switch Player";
     const std::string account_status = state.signed_in
-        ? "Connected as " + state.nickname
+        ? (has_account_name ? "Connected as " + state.nickname
+                            : "Connected to Nintendo Account (name unavailable)")
         : "Not signed in";
     append_status_item(impl->menu, account_status);
     if (!state.status.empty() && state.status != "Ready" &&
-        state.status != account_status) {
+        state.status != account_status &&
+        state.status != "Connected as " + state.nickname) {
         append_status_item(impl->menu, state.status);
     }
     append_status_item(impl->menu, "Last sync: " + state.last_sync);
