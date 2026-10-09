@@ -374,8 +374,6 @@ std::vector<unsigned char> NxapiClient::encrypted_login_body(
              {"parameter",
               Json::object{
                   {"naIdToken", id_token},
-                  {"naBirthday", profile.birthday},
-                  {"naCountry", profile.country},
                   {"language", profile.language},
                   {"f", ""},
                   {"requestId", ""},

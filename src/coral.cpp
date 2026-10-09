@@ -521,8 +521,6 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
             -> std::pair<HttpResponse, std::string> {
         const Json parameter(Json::object{
             {"naIdToken", nintendo_tokens.id_token},
-            {"naBirthday", profile.birthday},
-            {"naCountry", profile.country},
             {"language", profile.language},
             {"f", candidate.f},
             {"requestId", candidate.request_id},
