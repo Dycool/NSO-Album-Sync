@@ -28,7 +28,7 @@ constexpr char kNxapiAuthUrl[] =
     "https://nxapi-auth.fancy.org.uk/api/oauth/token";
 constexpr char kUserAgent[] =
     "nso-album-sync/2.0.0 (+https://github.com/Dycool/NSO-Album-Sync)";
-constexpr char kZncaClientVersion[] = "w8zSLBsxR7rVoGJA";
+constexpr char kZncaClientVersion[] = "d8fAZDPzwimzQ7c6";
 constexpr char kCoralLoginUrl[] =
     "https://api-lp1.znc.srv.nintendo.net/v4/Account/Login";
 
