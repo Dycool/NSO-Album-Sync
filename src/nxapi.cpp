@@ -401,12 +401,17 @@ FAttestation NxapiClient::generate_f(
     const std::string& na_id,
     const std::string& coral_user_id) {
     const auto version = nso_version();
-    const Json payload(Json::object{
+    // The /f API accepts coral_user_id only for hash method 2.
+    // Passing an empty coral_user_id for method 1 fails request validation.
+    Json::object fields{
         {"hash_method", std::to_string(hash_method)},
         {"token", token},
         {"na_id", na_id},
-        {"coral_user_id", coral_user_id},
-    });
+    };
+    if (hash_method == 2 && !coral_user_id.empty()) {
+        fields.emplace("coral_user_id", coral_user_id);
+    }
+    const Json payload(std::move(fields));
 
     const auto response = znca_request(
         "POST", "/f", payload.dump(), "application/json", znca_headers(version));

@@ -29,46 +29,18 @@ constexpr char kShowSelfPath[] = "/v4/User/ShowSelf";
 constexpr char kCoralCredentialAccount[] = "CoralCredential";
 constexpr char kWebServiceCredentialsAccount[] = "GameWebServiceTokens";
 constexpr char kLegacyWebServiceCredentialAccount[] = "GameWebServiceToken";
-constexpr char kWorkerBaseUrl[] = "https://nso-worker-backend.diogoenes0.workers.dev";
-constexpr char kWorkerClientId[] = "nso-album-sync";
-
-// These limits apply only when the desktop client actually falls back to
-// nxapi's f-generation endpoint. They deliberately live in process memory:
+// The desktop app uses nxapi for both attestation methods. These limits
+// apply only to nxapi f-generation and live in process memory:
 // Coral/Nintendo requests are not locally rate-limited or persisted.
 constexpr std::size_t kNxapiMethod1MaxRequests = 10;
 constexpr auto kNxapiMethod1Window = std::chrono::minutes(60);
 constexpr std::size_t kNxapiMethod2MaxRequests = 20;
 constexpr auto kNxapiMethod2Window = std::chrono::minutes(30);
-constexpr auto kWorkerFCircuitBreakerDuration = std::chrono::hours(6);
-
-std::mutex g_worker_f_health_mutex;
-std::chrono::system_clock::time_point g_worker_f_method1_disabled_until{};
-std::chrono::system_clock::time_point g_worker_f_method2_disabled_until{};
-
 std::mutex g_nxapi_f_rate_limit_mutex;
 std::unordered_map<std::string,
     std::deque<std::chrono::system_clock::time_point>> g_nxapi_f_method1_attempts;
 std::unordered_map<std::string,
     std::deque<std::chrono::system_clock::time_point>> g_nxapi_f_method2_attempts;
-
-bool worker_f_enabled(int hash_method) {
-    std::lock_guard lock(g_worker_f_health_mutex);
-    const auto now = std::chrono::system_clock::now();
-    if (hash_method == 1) return now >= g_worker_f_method1_disabled_until;
-    if (hash_method == 2) return now >= g_worker_f_method2_disabled_until;
-    return false;
-}
-
-void disable_worker_f(int hash_method) {
-    std::lock_guard lock(g_worker_f_health_mutex);
-    const auto until = std::chrono::system_clock::now() +
-        kWorkerFCircuitBreakerDuration;
-    if (hash_method == 1) {
-        g_worker_f_method1_disabled_until = until;
-    } else if (hash_method == 2) {
-        g_worker_f_method2_disabled_until = until;
-    }
-}
 
 FAttestation nxapi_generate_f_limited(
     NxapiClient& nxapi,
@@ -125,60 +97,6 @@ std::string coral_url(const char* path) {
     std::string url(kCoralBaseUrl);
     url.append(path);
     return url;
-}
-
-std::string worker_url(const char* path) {
-    std::string url(kWorkerBaseUrl);
-    url.append(path);
-    return url;
-}
-
-FAttestation worker_generate_f(
-    HttpClient& http,
-    int hash_method,
-    const std::string& token,
-    const std::string& na_id,
-    const std::string& coral_user_id) {
-    const Json body(Json::object{
-        {"clientId", kWorkerClientId},
-        {"hashMethod", std::to_string(hash_method)},
-        {"token", token},
-        {"naId", na_id},
-        {"coralUserId", coral_user_id},
-    });
-    const auto response = http.post(
-        worker_url("/api/nso/f"),
-        body.dump(),
-        {"Accept: application/json", "User-Agent: nso-album-sync/2.0.0"});
-    if (response.status / 100 != 2) {
-        throw std::runtime_error(
-            "Native f-token generation failed (HTTP " +
-            std::to_string(response.status) + "): " + response.text());
-    }
-
-    const auto json = Json::parse(response.text());
-    FAttestation attestation;
-    attestation.f = json.string("f");
-    attestation.request_id = json.string("requestId", json.string("request_id"));
-    attestation.timestamp = json.integer("timestamp");
-    if (attestation.f.empty() || attestation.request_id.empty() ||
-        attestation.timestamp == 0) {
-        throw std::runtime_error("Native f-token response was incomplete");
-    }
-    return attestation;
-}
-
-bool is_f_rejection_payload(const std::string& payload) {
-    if (payload.empty()) return false;
-    try {
-        const auto json = Json::parse(payload);
-        const auto status = json.integer("status");
-        if (status == 9403 || status == 9599) return true;
-        const auto message = json.string("errorMessage");
-        return message == "Invalid token." || message == "Unexpected error.";
-    } catch (...) {
-        return false;
-    }
 }
 
 std::string session_hash(const std::string& session_token) {
@@ -499,21 +417,8 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
     const auto nintendo_tokens = auth_.exchange_session_token(session_token);
     const auto profile = auth_.fetch_profile(nintendo_tokens.access_token);
 
-    bool used_worker_f = false;
-    FAttestation attestation;
-    if (worker_f_enabled(1)) {
-        try {
-            attestation = worker_generate_f(
-                http_, 1, nintendo_tokens.id_token, profile.id, "");
-            used_worker_f = true;
-        } catch (...) {
-            attestation = nxapi_generate_f_limited(
-                nxapi_, 1, nintendo_tokens.id_token, profile.id, "");
-        }
-    } else {
-        attestation = nxapi_generate_f_limited(
-            nxapi_, 1, nintendo_tokens.id_token, profile.id, "");
-    }
+    const auto attestation = nxapi_generate_f_limited(
+        nxapi_, 1, nintendo_tokens.id_token, profile.id, "");
 
     const auto nso_version = nxapi_.nso_version();
     const auto perform_login_request =
@@ -558,13 +463,6 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
     };
 
     auto login_attempt = perform_login_request(attestation);
-    bool recovered_from_worker_f = false;
-    if (used_worker_f && is_f_rejection_payload(login_attempt.second)) {
-        const auto nxapi_attestation = nxapi_generate_f_limited(
-            nxapi_, 1, nintendo_tokens.id_token, profile.id, "");
-        login_attempt = perform_login_request(nxapi_attestation);
-        recovered_from_worker_f = true;
-    }
 
     const auto& response = login_attempt.first;
     const auto& decrypted_login = login_attempt.second;
@@ -588,9 +486,6 @@ std::string CoralClient::ensure_session(const std::string& session_token) {
     const auto access_token = credential->string("accessToken");
     if (access_token.empty()) {
         throw std::runtime_error("Coral login missing access token");
-    }
-    if (recovered_from_worker_f) {
-        disable_worker_f(1);
     }
     std::string user_id = exact_integer_field_in_object(decrypted_login, "user", "id");
     if (user_id.empty()) {
@@ -778,21 +673,8 @@ std::string CoralClient::get_web_service_token(
 
         std::lock_guard request_lock(request_mutex_);
 
-        bool used_worker_f = false;
-        FAttestation attestation;
-        if (worker_f_enabled(2)) {
-            try {
-                attestation = worker_generate_f(
-                    http_, 2, access_token, na_id, coral_user_id);
-                used_worker_f = true;
-            } catch (...) {
-                attestation = nxapi_generate_f_limited(
-                    nxapi_, 2, access_token, na_id, coral_user_id);
-            }
-        } else {
-            attestation = nxapi_generate_f_limited(
-                nxapi_, 2, access_token, na_id, coral_user_id);
-        }
+        const auto attestation = nxapi_generate_f_limited(
+            nxapi_, 2, access_token, na_id, coral_user_id);
 
         const auto nso_version = nxapi_.nso_version();
         const auto perform_web_service_token_request =
@@ -843,13 +725,6 @@ std::string CoralClient::get_web_service_token(
         };
 
         auto token_attempt = perform_web_service_token_request(attestation);
-        bool recovered_from_worker_f = false;
-        if (used_worker_f && is_f_rejection_payload(token_attempt.second)) {
-            const auto nxapi_attestation = nxapi_generate_f_limited(
-                nxapi_, 2, access_token, na_id, coral_user_id);
-            token_attempt = perform_web_service_token_request(nxapi_attestation);
-            recovered_from_worker_f = true;
-        }
 
         const auto& response = token_attempt.first;
         const auto& decrypted = token_attempt.second;
@@ -870,10 +745,6 @@ std::string CoralClient::get_web_service_token(
 
         const auto token = result->string("accessToken");
         if (token.empty()) return {};
-
-        if (recovered_from_worker_f) {
-            disable_worker_f(2);
-        }
 
         const auto expires_in = result->integer("expiresIn", 10800);
         const auto ttl = std::chrono::seconds(
